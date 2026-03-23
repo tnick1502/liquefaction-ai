@@ -1,0 +1,21 @@
+[project]
+name = "liquefaction-ai"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "tnick1502",email = "tnick1502@mail.ru"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "plotly",
+    "jupyter",
+    "nbformat",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
