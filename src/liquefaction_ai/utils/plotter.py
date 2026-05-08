@@ -1,7 +1,108 @@
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import plotly.graph_objects as go
+
+_DEFAULT_COLORS: Tuple[str, ...] = (
+    "#636EFA",
+    "#EF553B",
+    "#00CC96",
+    "#AB63FA",
+    "#FFA15A",
+    "#19D3F3",
+    "#FF6692",
+    "#B6E880",
+    "#FF97FF",
+    "#FECB52",
+)
+
+
+def _build_x_grid(x_range: Tuple[float, float], n_points: int, log_x: bool) -> np.ndarray:
+    x_min, x_max = x_range
+    if log_x:
+        return np.logspace(np.log10(max(x_min, 1e-12)), np.log10(x_max), n_points)
+    return np.linspace(x_min, x_max, n_points)
+
+
+def plot_curves_overlay(
+    curves: Sequence[Dict[str, Any]],
+    x_range: Tuple[float, float],
+    n_points: int = 500,
+    x_arg_name: str = "n_cycles",
+    title: Optional[str] = None,
+    x_label: str = "X",
+    y_label: str = "Y",
+    y_label_secondary: Optional[str] = None,
+    log_x: bool = False,
+    log_y: bool = False,
+    log_y_secondary: bool = False,
+    scatter_points: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    scatter_label: str = "Экспериментальные точки",
+) -> go.Figure:
+    """
+    Несколько модельных кривых на одном графике (общая сетка по оси X).
+
+    Каждый элемент ``curves`` — словарь с ключами:
+    - ``func`` — вызываемая функция (первый аргумент с именем ``x_arg_name`` — массив X);
+    - ``func_params`` — именованные параметры без X;
+    - ``label`` — подпись в легенде;
+    - ``secondary_y`` (опционально) — если True, ось Y справа (например u в кПа рядом с PPR).
+    """
+    x_values = _build_x_grid(x_range, n_points, log_x)
+    fig = go.Figure()
+    any_secondary = any(bool(c.get("secondary_y")) for c in curves)
+
+    for i, curve in enumerate(curves):
+        func: Callable[..., Union[np.ndarray, float]] = curve["func"]
+        func_params: Dict[str, Any] = dict(curve.get("func_params", {}))
+        label = str(curve.get("label", f"model_{i}"))
+        secondary = bool(curve.get("secondary_y", False))
+        call_kw: Dict[str, Any] = {x_arg_name: x_values, **func_params}
+        y_values = np.asarray(func(**call_kw), dtype=np.float64)
+        yaxis = "y2" if secondary else "y"
+        fig.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=y_values,
+                mode="lines",
+                name=label,
+                line=dict(width=2, color=_DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]),
+                yaxis=yaxis,
+            )
+        )
+
+    if scatter_points is not None:
+        x_pts, y_pts = scatter_points
+        fig.add_trace(
+            go.Scatter(
+                x=np.asarray(x_pts),
+                y=np.asarray(y_pts),
+                mode="markers",
+                name=scatter_label,
+                marker=dict(size=8, symbol="circle"),
+                yaxis="y",
+            )
+        )
+
+    layout: Dict[str, Any] = {
+        "title": title,
+        "xaxis_title": x_label,
+        "template": "plotly_white",
+        "legend": dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    }
+    if log_x:
+        layout["xaxis_type"] = "log"
+
+    layout["yaxis"] = dict(title=y_label, type="log" if log_y else "linear")
+
+    if any_secondary:
+        y2: Dict[str, Any] = dict(overlaying="y", side="right", type="log" if log_y_secondary else "linear")
+        if y_label_secondary:
+            y2["title"] = y_label_secondary
+        layout["yaxis2"] = y2
+
+    fig.update_layout(**layout)
+    return fig
 
 
 def plot_function(

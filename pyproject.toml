@@ -5,7 +5,6 @@ description = ""
 authors = [
     {name = "tnick1502",email = "tnick1502@mail.ru"}
 ]
-readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
@@ -13,9 +12,18 @@ dependencies = [
     "plotly",
     "jupyter",
     "nbformat",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "scikit-learn>=1.3",
+    "torch>=2.0",
+    "pyarrow>=14.0",
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+package-mode = true
+packages = [{ include = "liquefaction_ai", from = "src" }]

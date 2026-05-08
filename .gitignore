@@ -24,3 +24,10 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated datasets at repo root (keep data/.gitkeep)
+data/*
+!data/.gitkeep
+
+models/**/*.pt
+models/**/*.pth
