@@ -28,6 +28,8 @@ __all__ = [
     "resolve_nliq_prediction",
     "expected_calibration_error",
     "safe_binary_metrics",
+    "fit_temperature",
+    "apply_temperature",
     "compute_metrics",
     "grouped_metrics",
     "subsample_split",
@@ -257,6 +259,47 @@ def expected_calibration_error(y_true: np.ndarray, y_prob: np.ndarray, n_bins: i
         conf = y_prob[mask].mean()
         ece += np.abs(acc - conf) * (mask.sum() / len(y_true))
     return float(ece)
+
+
+def fit_temperature(logits: np.ndarray, labels: np.ndarray, max_iter: int = 200) -> float:
+    """
+    Подобрать температуру калибровки T, минимизируя BCE на валидации.
+
+    Post-hoc калибровка Платта/температурой: масштабирование логитов риска на скаляр T
+    приближает предсказанные вероятности к наблюдаемым частотам, улучшая Brier/ECE без
+    изменения ранжирования (AUROC сохраняется).
+
+    :param logits: логиты риска на валидации (если есть только вероятности — передайте logit(p))
+    :param labels: бинарные истинные метки разжижения
+    :param max_iter: максимум итераций оптимизатора
+    :return: оптимальная температура T > 0
+    """
+    logit = torch.tensor(np.asarray(logits, dtype=np.float64))
+    target = torch.tensor(np.asarray(labels, dtype=np.float64))
+    log_t = torch.zeros(1, dtype=torch.float64, requires_grad=True)
+    optimizer = torch.optim.LBFGS([log_t], lr=0.2, max_iter=max_iter)
+
+    def closure() -> torch.Tensor:
+        optimizer.zero_grad()
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(logit / torch.exp(log_t), target)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    return float(torch.exp(log_t).detach().item())
+
+
+def apply_temperature(risk_prob: np.ndarray, temperature: float) -> np.ndarray:
+    """
+    Применить температуру калибровки к вероятностям риска.
+
+    :param risk_prob: исходные вероятности риска в (0, 1)
+    :param temperature: температура T > 0 (из :func:`fit_temperature`)
+    :return: откалиброванные вероятности sigmoid(logit(p) / T)
+    """
+    p = np.clip(np.asarray(risk_prob, dtype=np.float64), 1e-6, 1.0 - 1e-6)
+    logit = np.log(p / (1.0 - p))
+    return 1.0 / (1.0 + np.exp(-logit / max(temperature, 1e-6)))
 
 
 def safe_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> Tuple[float, float, float]:

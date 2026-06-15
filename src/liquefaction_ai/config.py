@@ -64,7 +64,7 @@ class ExperimentConfig:
     benchmark_val_fraction: float = 0.15
     batch_size: int = 256
     baseline_epochs: int = 4
-    physics_epochs: int = 5
+    physics_epochs: int = 6
     ablation_epochs: int = 2
     learning_rate: float = 2e-3
     weight_decay: float = 1e-4

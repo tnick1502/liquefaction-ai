@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
+from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 from liquefaction_ai.training.losses import gaussian_nll
 
 __all__ = ["EVTNeuralSSM"]
@@ -45,6 +46,7 @@ class EVTNeuralSSM(nn.Module):
         use_trigger_head: bool = True,
         structured_post_event: bool = True,
         use_crr_damage: bool = True,
+        integrator: str = "heun",
     ):
         """
         :param static_dim: размерность статических признаков
@@ -57,23 +59,34 @@ class EVTNeuralSSM(nn.Module):
         :param use_trigger_head: использовать ли мягкий триггер события g
         :param structured_post_event: использовать ли структурированную постсобытийную динамику
         :param use_crr_damage: использовать ли CRR-основанное уравнение повреждения z
+        :param integrator: схема интегрирования ODE: ``"heun"`` (RK2, точнее) или ``"euler"`` (быстрее)
         """
         super().__init__()
         self.seq_len = seq_len
         self.use_trigger_head = use_trigger_head
         self.structured_post_event = structured_post_event
         self.use_crr_damage = use_crr_damage
+        self.integrator = integrator
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
 
         context_dim = static_dim + prefix_dim + 2 * self.prefix_len
         self.context_encoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
         self.param_head = nn.Linear(hidden_dim, 33)
+        # Усиленная поправочная сеть с LayerNorm и большей глубиной
         self.correction_net = nn.Sequential(
             nn.Linear(hidden_dim + seq_dim + 4, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 3),
         )
+        # Обучаемый старт состояния PPR (вместо шумного первого наблюдения)
+        self.r0_head = nn.Linear(hidden_dim, 1)
+        # Обучаемые головы риска и гетероскедастичной неопределённости
+        self.risk_head = RiskHead(hidden_dim)
+        self.logvar_head_seq = SeqLogvarHead(hidden_dim, seq_len)
 
     def build_context(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -205,84 +218,88 @@ class EVTNeuralSSM(nn.Module):
 
         batch_size, seq_len = batch["cycles"].shape
         eps = 1e-6
-        z_states: List[torch.Tensor] = [torch.zeros(batch_size, device=batch["cycles"].device)]
-        r_states: List[torch.Tensor] = [batch["prefix_obs"][:, 0]]
-        c_states: List[torch.Tensor] = [torch.zeros(batch_size, device=batch["cycles"].device)]
+        cycles, dcyc, csr, seq_in = batch["cycles"], batch["delta_cycles"], batch["csr"], batch["seq_in"]
+
+        def trigger(z_state: torch.Tensor) -> torch.Tensor:
+            """Мягкий триггер события g = sigmoid(κ·(z − z0))."""
+            if self.use_trigger_head:
+                return torch.sigmoid(params["kappa"] * (z_state - params["z0"]))
+            return torch.zeros_like(z_state)
+
+        def derivatives(z_s, r_s, c_s, g_s, step):
+            """Приращения (dz, dr, dc) физики + нейронной поправки на шаге."""
+            ratio = csr[:, step] / (crr[:, step] + eps)
+            phi = F.softplus(6.0 * (ratio - 0.90)) / 6.0
+            corr_in = torch.cat([encoded, seq_in[:, step, :], z_s[:, None], r_s[:, None], c_s[:, None], g_s[:, None]], dim=-1)
+            raw_corr = torch.tanh(self.correction_net(corr_in))
+            # Поправки к скоростям dz/dr масштабируются до уровня физических скоростей
+            # (иначе при умножении на большой ΔN они доминируют и траектория дрейфует).
+            dz_corr = 0.004 * raw_corr[:, 0]
+            dr_corr = 0.004 * raw_corr[:, 1]
+            dc_corr = 0.5 * raw_corr[:, 2]
+            if self.use_crr_damage:
+                dz_pre = (params["lambda_pre"] * torch.pow(torch.clamp(ratio, min=eps), params["m"])
+                          * torch.pow(torch.clamp(1.0 - z_s, min=eps), params["nu"]) + dz_corr)
+            else:
+                dz_pre = 0.10 * torch.tanh(dz_corr) + 0.02 * phi
+            dr_pre = (params["alpha_pre"] * phi * torch.pow(torch.clamp(1.0 - r_s, min=eps), params["p_pre"])
+                      + params["beta_pre"] / (cycles[:, step] + params["tau_pre"])
+                      - params["gamma_pre"] * r_s + dr_corr)
+            if self.structured_post_event:
+                dz_post = params["lambda_post"] * torch.clamp(1.0 - z_s, min=eps) + 0.5 * dz_corr
+                dr_post = (params["alpha_post"] * torch.pow(torch.clamp(1.0 - r_s, min=eps), params["p_post"])
+                           + params["beta_post"] / (cycles[:, step] + 0.70 * params["tau_pre"])
+                           - params["gamma_post"] * r_s + 0.5 * dr_corr)
+            else:
+                dz_post, dr_post = dz_pre, dr_pre
+            dz = (1.0 - g_s) * dz_pre + g_s * dz_post
+            dr = (1.0 - g_s) * dr_pre + g_s * dr_post
+            return dz, dr, dc_corr
+
+        # Обучаемый малый старт состояния PPR вместо шумного первого наблюдения
+        z_curr = torch.zeros(batch_size, device=cycles.device)
+        r_curr = 0.10 * torch.sigmoid(self.r0_head(encoded)).squeeze(-1)
+        c_curr = torch.zeros(batch_size, device=cycles.device)
+        z_states: List[torch.Tensor] = [z_curr]
+        r_states: List[torch.Tensor] = [r_curr]
+        c_states: List[torch.Tensor] = [c_curr]
         g_states: List[torch.Tensor] = []
 
         for step in range(seq_len):
-            z_curr = z_states[-1]
-            r_curr = r_states[-1]
-            c_curr = c_states[-1]
-            g_step = torch.sigmoid(params["kappa"] * (z_curr - params["z0"])) if self.use_trigger_head else torch.zeros_like(z_curr)
+            g_step = trigger(z_curr)
             g_states.append(g_step)
             if step == seq_len - 1:
                 break
-
-            ratio = batch["csr"][:, step] / (crr[:, step] + eps)
-            phi = F.softplus(6.0 * (ratio - 0.90)) / 6.0
-
-            correction_input = torch.cat(
-                [
-                    encoded,
-                    batch["seq_in"][:, step, :],
-                    z_curr[:, None],
-                    r_curr[:, None],
-                    c_curr[:, None],
-                    g_step[:, None],
-                ],
-                dim=-1,
-            )
-            correction = 0.05 * torch.tanh(self.correction_net(correction_input))
-            dz_corr, dr_corr, dc_corr = correction.unbind(dim=-1)
-
-            if self.use_crr_damage:
-                dz_pre = (
-                    params["lambda_pre"]
-                    * torch.pow(torch.clamp(ratio, min=eps), params["m"])
-                    * torch.pow(torch.clamp(1.0 - z_curr, min=eps), params["nu"])
-                    + dz_corr
-                )
+            dn = dcyc[:, step + 1]
+            dz1, dr1, dc1 = derivatives(z_curr, r_curr, c_curr, g_step, step)
+            if self.integrator == "heun":
+                # Интегратор Хойна (RK2): прогноз → коррекция по среднему наклону
+                z_e = torch.clamp(z_curr + dn * dz1, 0.0, 0.999)
+                r_e = torch.clamp(r_curr + dn * dr1, 0.0, 1.02)
+                c_e = torch.tanh(params["c_decay"] * c_curr + dc1)
+                dz2, dr2, dc2 = derivatives(z_e, r_e, c_e, trigger(z_e), step)
+                dz_step, dr_step, dc_step = 0.5 * (dz1 + dz2), 0.5 * (dr1 + dr2), 0.5 * (dc1 + dc2)
             else:
-                dz_pre = 0.10 * torch.tanh(dz_corr) + 0.02 * phi
-
-            dr_pre = (
-                params["alpha_pre"] * phi * torch.pow(torch.clamp(1.0 - r_curr, min=eps), params["p_pre"])
-                + params["beta_pre"] / (batch["cycles"][:, step] + params["tau_pre"])
-                - params["gamma_pre"] * r_curr
-                + dr_corr
-            )
-
-            if self.structured_post_event:
-                dz_post = params["lambda_post"] * torch.clamp(1.0 - z_curr, min=eps) + 0.5 * dz_corr
-                dr_post = (
-                    params["alpha_post"] * torch.pow(torch.clamp(1.0 - r_curr, min=eps), params["p_post"])
-                    + params["beta_post"] / (batch["cycles"][:, step] + 0.70 * params["tau_pre"])
-                    - params["gamma_post"] * r_curr
-                    + 0.5 * dr_corr
-                )
-            else:
-                dz_post = dz_pre
-                dr_post = dr_pre
-
-            dz = (1.0 - g_step) * dz_pre + g_step * dz_post
-            dr = (1.0 - g_step) * dr_pre + g_step * dr_post
-            z_next = torch.clamp(z_curr + batch["delta_cycles"][:, step + 1] * dz, min=0.0, max=0.999)
-            r_next = torch.clamp(r_curr + batch["delta_cycles"][:, step + 1] * dr, min=0.0, max=1.02)
-            c_next = torch.tanh(params["c_decay"] * c_curr + dc_corr)
-            z_states.append(z_next)
-            r_states.append(r_next)
-            c_states.append(c_next)
+                dz_step, dr_step, dc_step = dz1, dr1, dc1
+            z_curr = torch.clamp(z_curr + dn * dz_step, 0.0, 0.999)
+            r_curr = torch.clamp(r_curr + dn * dr_step, 0.0, 1.02)
+            c_curr = torch.tanh(params["c_decay"] * c_curr + dc_step)
+            z_states.append(z_curr)
+            r_states.append(r_curr)
+            c_states.append(c_curr)
 
         z = torch.stack(z_states, dim=1)
         r = torch.stack(r_states, dim=1)
         c = torch.stack(c_states, dim=1)
         g = torch.stack(g_states, dim=1)
-        nliq = self.soft_first_hitting(r, g, batch["cycles"])
+        nliq = self.soft_first_hitting(r, g, cycles)
         mcr = torch.as_tensor(self.max_cycle_reference, device=nliq.device, dtype=nliq.dtype)
         nliq_norm = torch.log1p(nliq) / torch.log1p(mcr)
-        risk_logit = 6.0 * (0.50 * r.amax(dim=1) + 0.25 * g.amax(dim=1) + 0.25 * z.amax(dim=1) - 0.75)
-        traj_logvar = 2.0 * torch.log(params["noise"].unsqueeze(1).expand_as(r))
+        summary = physics_summary(r, z, g, nliq_norm)
+        # Физический prior риска + обучаемая остаточная поправка (калибровка)
+        risk_prior = 6.0 * (0.50 * r.amax(dim=1) + 0.25 * g.amax(dim=1) + 0.25 * z.amax(dim=1) - 0.75)
+        risk_logit = risk_prior + self.risk_head(encoded, summary)
+        traj_logvar = self.logvar_head_seq(encoded)
         return {
             "traj_mean": r,
             "traj_logvar": traj_logvar,
@@ -306,11 +323,18 @@ class EVTNeuralSSM(nn.Module):
         :param batch: словарь батча с таргетами и масками
         :return: словарь выходов с добавленным ключом ``loss``
         """
+        from liquefaction_ai.training.losses import masked_mse
+
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         trigger_loss = F.binary_cross_entropy(outputs["g"], batch["trigger_zone"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        risk_cal = F.mse_loss(outputs["risk_prob"], batch["risk_true"])
         nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
+        # Глубокая супервизия скрытой физики по истинным траекториям
+        z_loss = masked_mse(outputs["z"], batch["z_true"], batch["mask"])
+        g_loss = masked_mse(outputs["g"], batch["g_true"], batch["mask"])
+        crr_loss = masked_mse(outputs["crr"], batch["crr_mix_true"], batch["mask"])
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
         state_smoothness = (
             torch.abs(outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]).mean()
@@ -325,8 +349,12 @@ class EVTNeuralSSM(nn.Module):
         loss = (
             traj_loss
             + 0.30 * trigger_loss
-            + 0.30 * risk_loss
+            + 0.40 * risk_loss
+            + 0.20 * risk_cal
             + 0.25 * nliq_loss
+            + 0.10 * z_loss
+            + 0.06 * g_loss
+            + 0.05 * crr_loss
             + 0.02 * switch_reg
             + 0.01 * state_smoothness
             + 0.03 * boundedness

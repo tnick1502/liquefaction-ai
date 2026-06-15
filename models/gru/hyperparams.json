@@ -2,7 +2,7 @@
   "model_type": "GRUBaseline",
   "display_name": "GRU",
   "model_kwargs": {
-    "static_dim": 26,
+    "static_dim": 35,
     "seq_dim": 5,
     "hidden_dim": 96
   },

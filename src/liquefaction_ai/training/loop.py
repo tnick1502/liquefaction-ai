@@ -61,6 +61,16 @@ def evaluate_epoch_metrics(
     return metrics
 
 
+def _val_loss(model: nn.Module, val_split: Dict[str, object], config: ExperimentConfig, device: torch.device) -> float:
+    """Средний валидационный loss модели в текущем состоянии."""
+    model.eval()
+    losses: List[float] = []
+    with torch.no_grad():
+        for batch in iterate_minibatches(val_split, config.batch_size, device, shuffle=False):
+            losses.append(float(model.compute_loss(batch)["loss"].detach().cpu()))
+    return float(np.mean(losses))
+
+
 def train_model(
     model: nn.Module,
     train_split: Dict[str, object],
@@ -71,6 +81,8 @@ def train_model(
     device: torch.device,
     track_metrics: bool = False,
     verbose: bool = True,
+    scheduler: str = "none",
+    ema_decay: float = 0.0,
 ) -> Tuple[nn.Module, pd.DataFrame]:
     """
     Обучить модель и вернуть лучшее по валидации состояние и историю обучения.
@@ -78,8 +90,10 @@ def train_model(
     Каждую эпоху выполняется проход по обучающим мини-батчам с обратным
     распространением и отсечением нормы градиента (max_norm=1.0), затем оценивается
     средний loss на валидации. Состояние с наименьшим валидационным loss сохраняется и
-    восстанавливается в конце (ранняя остановка по лучшему чекпоинту). При
-    ``track_metrics=True`` дополнительно фиксируются валидационные метрики по эпохам.
+    восстанавливается в конце (ранняя остановка по лучшему чекпоинту). Опционально
+    включаются косинусный LR-график с прогревом (``scheduler="cosine"``) и экспоненциальное
+    усреднение весов EMA (``ema_decay>0``); при EMA лучший чекпоинт выбирается по
+    усреднённым весам. При ``track_metrics=True`` фиксируются валидационные метрики по эпохам.
 
     :param model: модель PyTorch с методом ``compute_loss(batch) -> {"loss": ...}``
     :param train_split: обучающая выборка (из ``prepare_benchmark_dataset``)
@@ -90,53 +104,63 @@ def train_model(
     :param device: устройство обучения
     :param track_metrics: фиксировать ли валидационные метрики (AUROC/Brier/RMSE) по эпохам
     :param verbose: печатать ли прогресс по эпохам
-    :return: кортеж (обученная модель с лучшими весами, история обучения в виде DataFrame
-             с колонками ``epoch``/``train_loss``/``val_loss`` и, при ``track_metrics``, метриками)
+    :param scheduler: ``"none"`` или ``"cosine"`` (косинусный LR с коротким прогревом)
+    :param ema_decay: коэффициент EMA весов (0 — выключено; типично 0.998–0.999)
+    :return: кортеж (обученная модель с лучшими весами, история обучения DataFrame)
     """
     optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    lr_sched = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(epochs, 1), eta_min=config.learning_rate * 0.05) \
+        if scheduler == "cosine" else None
+    use_ema = ema_decay > 0.0
+    ema_state = {k: v.detach().clone() for k, v in model.state_dict().items()} if use_ema else None
+
     best_state = clone_state_dict(model)
     best_val = float("inf")
     history: List[Dict[str, float]] = []
+    warmup_epochs = 1
 
     for epoch in range(1, epochs + 1):
+        # Линейный прогрев LR на первой эпохе
+        if scheduler == "cosine" and epoch <= warmup_epochs:
+            for group in optimizer.param_groups:
+                group["lr"] = config.learning_rate * epoch / max(warmup_epochs, 1)
+
         model.train()
         train_losses: List[float] = []
-        for batch in iterate_minibatches(
-            train_split,
-            config.batch_size,
-            device,
-            shuffle=True,
-            seed=config.seed + epoch,
-        ):
+        for batch in iterate_minibatches(train_split, config.batch_size, device, shuffle=True, seed=config.seed + epoch):
             optimizer.zero_grad(set_to_none=True)
             loss_dict = model.compute_loss(batch)
             loss_dict["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_losses.append(float(loss_dict["loss"].detach().cpu()))
+            if use_ema:
+                with torch.no_grad():
+                    for key, value in model.state_dict().items():
+                        if value.dtype.is_floating_point:
+                            ema_state[key].mul_(ema_decay).add_(value.detach(), alpha=1.0 - ema_decay)
+                        else:
+                            ema_state[key].copy_(value)
 
-        model.eval()
-        val_losses: List[float] = []
-        with torch.no_grad():
-            for batch in iterate_minibatches(
-                val_split,
-                config.batch_size,
-                device,
-                shuffle=False,
-            ):
-                loss_dict = model.compute_loss(batch)
-                val_losses.append(float(loss_dict["loss"].detach().cpu()))
+        if lr_sched is not None and epoch > warmup_epochs:
+            lr_sched.step()
 
+        # Оцениваем (при EMA — усреднённые веса, временно подменяя состояние)
+        if use_ema:
+            backup = clone_state_dict(model)
+            model.load_state_dict(ema_state)
         train_loss = float(np.mean(train_losses))
-        val_loss = float(np.mean(val_losses))
+        val_loss = _val_loss(model, val_split, config, device)
         record: Dict[str, float] = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss}
         if track_metrics:
             record.update(evaluate_epoch_metrics(model, val_split, config, device))
         history.append(record)
-
         if val_loss < best_val:
             best_val = val_loss
             best_state = clone_state_dict(model)
+        if use_ema:
+            model.load_state_dict(backup)
+
         if verbose:
             extra = ""
             if track_metrics:

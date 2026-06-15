@@ -2,7 +2,7 @@
   "model_type": "EVTNeuralSSM",
   "display_name": "EVT-NeuralSSM",
   "model_kwargs": {
-    "static_dim": 26,
+    "static_dim": 35,
     "prefix_dim": 6,
     "seq_dim": 5,
     "seq_len": 72,
@@ -11,6 +11,7 @@
     "use_trigger_head": true,
     "structured_post_event": true,
     "use_crr_damage": true,
+    "integrator": "euler",
     "hidden_dim": 112
   },
   "search": {
@@ -25,7 +26,7 @@
       "hidden_dim": 112
     }
   },
-  "epochs": 5,
+  "epochs": 6,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

@@ -2,7 +2,7 @@
   "model_type": "DPIFlow",
   "display_name": "DPI-Flow",
   "model_kwargs": {
-    "static_dim": 26,
+    "static_dim": 35,
     "prefix_dim": 6,
     "seq_len": 72,
     "prefix_len": 12,
@@ -30,7 +30,7 @@
       "calibration_steps": 2
     }
   },
-  "epochs": 5,
+  "epochs": 6,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

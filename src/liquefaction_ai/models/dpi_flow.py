@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
+from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 from liquefaction_ai.training.losses import gaussian_nll, masked_mse
 
 __all__ = ["ConditionalAffineFlow", "AnalyticalLiquefactionLayer", "DPIFlow"]
@@ -307,6 +308,10 @@ class DPIFlow(nn.Module):
         self.flow = ConditionalAffineFlow(theta_dim, hidden_dim)
         self.ode_layer = AnalyticalLiquefactionLayer(seq_len=seq_len, max_cycle_reference=max_cycle_reference)
 
+        # Обучаемые головы: калиброванный риск и гетероскедастичная неопределённость
+        self.risk_head = RiskHead(hidden_dim)
+        self.logvar_head_seq = SeqLogvarHead(hidden_dim, seq_len)
+
         self.direct_decoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
         self.direct_traj_head = nn.Linear(hidden_dim, seq_len)
         self.direct_logvar_head = nn.Linear(hidden_dim, seq_len)
@@ -387,12 +392,17 @@ class DPIFlow(nn.Module):
 
         if self.use_analytical_layer:
             outputs = self.ode_layer.simulate(theta, batch["cycles"], batch["delta_cycles"], batch["csr"])
-            risk_logit = 6.0 * (
+            summary = physics_summary(outputs["traj_mean"], outputs["z"], outputs["g"], outputs["nliq_norm"])
+            # Физический prior риска + обучаемая остаточная поправка (калибровка)
+            risk_prior = 6.0 * (
                 0.50 * outputs["traj_mean"].amax(dim=1)
                 + 0.25 * outputs["g"].amax(dim=1)
                 + 0.25 * outputs["z"].amax(dim=1)
                 - 0.75
             )
+            risk_logit = risk_prior + self.risk_head(encoded, summary)
+            # Гетероскедастичная неопределённость (зависит от сценария и шага)
+            outputs["traj_logvar"] = self.logvar_head_seq(encoded)
             outputs.update(
                 {
                     "risk_logit": risk_logit,
@@ -442,16 +452,30 @@ class DPIFlow(nn.Module):
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        # Калибровка риска к мягкой метке риск-скора
+        risk_cal = F.mse_loss(outputs["risk_prob"], batch["risk_true"])
         monotonicity = torch.relu(outputs["crr"][:, 1:] - outputs["crr"][:, :-1]).mean()
         boundedness = (torch.relu(outputs["traj_mean"] - 1.02) + torch.relu(-outputs["traj_mean"])).mean()
         smoothness = torch.abs(
             outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]
         ).mean()
         kl_loss = outputs["kl"].mean() if self.probabilistic else torch.zeros(1, device=outputs["traj_mean"].device).squeeze()
+
+        # Глубокая супервизия скрытой физики (только при аналитическом ODE-слое)
+        if self.use_analytical_layer:
+            z_loss = masked_mse(outputs["z"], batch["z_true"], batch["mask"])
+            g_loss = masked_mse(outputs["g"], batch["g_true"], batch["mask"])
+            crr_loss = masked_mse(outputs["crr"], batch["crr_mix_true"], batch["mask"])
+            physics_sup = 0.10 * z_loss + 0.06 * g_loss + 0.05 * crr_loss
+        else:
+            physics_sup = torch.zeros((), device=outputs["traj_mean"].device)
+
         loss = (
             traj_loss
-            + 0.35 * risk_loss
+            + 0.40 * risk_loss
+            + 0.20 * risk_cal
             + 0.25 * nliq_loss
+            + physics_sup
             + 0.03 * monotonicity
             + 0.03 * boundedness
             + 0.01 * smoothness

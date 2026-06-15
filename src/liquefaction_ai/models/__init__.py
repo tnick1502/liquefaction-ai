@@ -12,6 +12,7 @@ from liquefaction_ai.models.baselines import GRUBaseline, RiskMLP, TCNBaseline
 from liquefaction_ai.models.blocks import CausalTemporalBlock, ResidualMLP
 from liquefaction_ai.models.dpi_flow import AnalyticalLiquefactionLayer, ConditionalAffineFlow, DPIFlow
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
+from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 
 __all__ = [
     "ResidualMLP",
@@ -23,4 +24,7 @@ __all__ = [
     "AnalyticalLiquefactionLayer",
     "DPIFlow",
     "EVTNeuralSSM",
+    "RiskHead",
+    "SeqLogvarHead",
+    "physics_summary",
 ]
