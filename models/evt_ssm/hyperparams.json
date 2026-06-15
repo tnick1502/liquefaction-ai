@@ -1,0 +1,33 @@
+{
+  "model_type": "EVTNeuralSSM",
+  "display_name": "EVT-NeuralSSM",
+  "model_kwargs": {
+    "static_dim": 26,
+    "prefix_dim": 6,
+    "seq_dim": 5,
+    "seq_len": 72,
+    "prefix_len": 12,
+    "max_cycle_reference": 1500.0,
+    "use_trigger_head": true,
+    "structured_post_event": true,
+    "use_crr_damage": true,
+    "hidden_dim": 112
+  },
+  "search": {
+    "grid": {
+      "hidden_dim": [
+        112,
+        144
+      ]
+    },
+    "score_metric": "Traj_RMSE",
+    "best": {
+      "hidden_dim": 112
+    }
+  },
+  "epochs": 5,
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "batch_size": 256,
+  "seed": 42
+}

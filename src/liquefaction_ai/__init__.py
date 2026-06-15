@@ -1,13 +1,26 @@
-"""Пакет DPI-Flow / EVT-NeuralSSM: конфиг, `nn`, общие `utils` (данные, обучение, метрики)."""
+"""
+Пакет моделирования разжижения грунтов: DPI-Flow и EVT-NeuralSSM.
+
+Структура пакета организована по доменам:
+- ``config`` / ``constants`` — конфигурация эксперимента и таксономия грунтов/нагружений;
+- ``data``       — генерация синтетической популяции, сплиты, сериализация, локализация;
+- ``physics``    — аналитические модели CRR и PPR (теоретическая основа);
+- ``models``     — нейросетевые архитектуры (базовые и физически-структурированные);
+- ``training``   — функции потерь и универсальный цикл обучения;
+- ``evaluation`` — метрики качества, агрегаты и эксперименты;
+- ``viz``        — визуализация кривых (Plotly) и разведочного анализа (matplotlib).
+
+Наиболее востребованные объекты реэкспортируются на верхний уровень пакета.
+"""
 
 from liquefaction_ai.config import DEMO_PALETTE, ExperimentConfig, get_default_config, set_global_seed
-from liquefaction_ai.utils import (
+from liquefaction_ai.data import (
     generate_population,
     load_population_artifact,
     prepare_benchmark_dataset,
     save_population_artifact,
-    train_model,
 )
+from liquefaction_ai.training import train_model
 
 __all__ = [
     "DEMO_PALETTE",

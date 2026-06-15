@@ -29,5 +29,13 @@ Thumbs.db
 data/*
 !data/.gitkeep
 
+# Веса моделей (артефакты обучения); гиперпараметры и история коммитятся
 models/**/*.pt
 models/**/*.pth
+
+# Сгенерированные фигуры ноутбуков (keep results/figs/.gitkeep)
+results/figs/*
+!results/figs/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/
