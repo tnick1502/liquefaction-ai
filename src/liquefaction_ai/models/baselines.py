@@ -67,18 +67,16 @@ class RiskMLP(nn.Module):
         """
         Вычислить суммарную функцию потерь и выходы по батчу.
 
-        Складывает BCE-риск, Smooth-L1 по N_liq, MSE-калибровку к истинному риск-скору
-        и штраф согласования прокси неопределённости.
+        Использует только наблюдаемые сигналы: бинарную метку разжижения и число циклов до
+        разжижения (BCE-риск + Smooth-L1 по N_liq).
 
-        :param batch: словарь батча с таргетами ``label``/``n_liq_norm``/``risk_true``/``uncertainty_proxy``
+        :param batch: словарь батча с наблюдаемыми таргетами ``label``/``n_liq_norm``
         :return: словарь выходов с добавленным ключом ``loss``
         """
         outputs = self.forward_batch(batch)
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
         nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
-        calibration_loss = F.mse_loss(outputs["risk_prob"], batch["risk_true"])
-        uncertainty_penalty = F.mse_loss(outputs["uncertainty"], batch["uncertainty_proxy"])
-        loss = risk_loss + 0.45 * nliq_loss + 0.20 * calibration_loss + 0.05 * uncertainty_penalty
+        loss = risk_loss + 0.45 * nliq_loss
         outputs["loss"] = loss
         return outputs
 

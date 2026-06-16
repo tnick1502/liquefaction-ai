@@ -52,6 +52,8 @@ class ExperimentConfig:
     :param max_csr_clip: верхняя отсечка значений CSR(N) в генераторе
     :param max_cycle_reference: опорное максимальное число циклов для логарифмической нормировки N_liq
     :param risk_threshold: порог классификации риска разжижения по умолчанию
+    :param measured_crr_fraction: доля грунтов с «измеренной» кривой CRR(N) (имитация серии из
+        6 образцов); такие кривые используются как опциональная наблюдаемая супервизия границы CRR
     """
 
     seed: int = 42
@@ -74,6 +76,7 @@ class ExperimentConfig:
     max_csr_clip: float = 0.65
     max_cycle_reference: float = 1_500.0
     risk_threshold: float = 0.5
+    measured_crr_fraction: float = 0.25
 
 
 def get_default_config() -> ExperimentConfig:

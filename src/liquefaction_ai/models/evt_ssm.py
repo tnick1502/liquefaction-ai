@@ -19,7 +19,7 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import gaussian_nll
+from liquefaction_ai.training.losses import gaussian_nll, observed_aux_loss
 
 __all__ = ["EVTNeuralSSM"]
 
@@ -317,24 +317,20 @@ class EVTNeuralSSM(nn.Module):
         """
         Вычислить суммарную функцию потерь и выходы по батчу.
 
-        Складывает гауссовскую NLL траектории, BCE по зоне триггера и риску, Smooth-L1
-        по N_liq и регуляризаторы переключения/гладкости/ограниченности состояний.
+        Использует только наблюдаемые в лабораторном опыте сигналы: измеренную траекторию
+        порового давления (``r_obs``), бинарную метку разжижения (``label``) и число циклов
+        до разжижения (``n_liq_norm``). Скрытые состояния z, g, c и граница CRR остаются
+        латентными (не супервизируются) — модель готова к реальным данным. Дополнительно
+        включены саморегуляризаторы без участия истины: плавность переключения, гладкость и
+        ограниченность состояний.
 
-        :param batch: словарь батча с таргетами и масками
+        :param batch: словарь батча с наблюдаемыми таргетами и масками
         :return: словарь выходов с добавленным ключом ``loss``
         """
-        from liquefaction_ai.training.losses import masked_mse
-
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        trigger_loss = F.binary_cross_entropy(outputs["g"], batch["trigger_zone"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        risk_cal = F.mse_loss(outputs["risk_prob"], batch["risk_true"])
         nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
-        # Глубокая супервизия скрытой физики по истинным траекториям
-        z_loss = masked_mse(outputs["z"], batch["z_true"], batch["mask"])
-        g_loss = masked_mse(outputs["g"], batch["g_true"], batch["mask"])
-        crr_loss = masked_mse(outputs["crr"], batch["crr_mix_true"], batch["mask"])
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
         state_smoothness = (
             torch.abs(outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]).mean()
@@ -348,16 +344,12 @@ class EVTNeuralSSM(nn.Module):
         ).mean()
         loss = (
             traj_loss
-            + 0.30 * trigger_loss
             + 0.40 * risk_loss
-            + 0.20 * risk_cal
             + 0.25 * nliq_loss
-            + 0.10 * z_loss
-            + 0.06 * g_loss
-            + 0.05 * crr_loss
             + 0.02 * switch_reg
             + 0.01 * state_smoothness
             + 0.03 * boundedness
         )
+        loss = loss + observed_aux_loss(outputs, batch, use_states=True)
         outputs["loss"] = loss
         return outputs

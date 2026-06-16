@@ -19,7 +19,7 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import gaussian_nll, masked_mse
+from liquefaction_ai.training.losses import gaussian_nll, masked_mse, observed_aux_loss
 
 __all__ = ["ConditionalAffineFlow", "AnalyticalLiquefactionLayer", "DPIFlow"]
 
@@ -441,19 +441,21 @@ class DPIFlow(nn.Module):
         """
         Вычислить суммарную функцию потерь и выходы по батчу.
 
-        Складывает гауссовскую NLL траектории, BCE-риск, Smooth-L1 по N_liq и
-        физически-мотивированные регуляризаторы (монотонность CRR, ограниченность,
-        гладкость второго порядка) и KL-дивергенцию вероятностной головы.
+        Использует только наблюдаемые в лабораторном опыте сигналы: измеренную траекторию
+        порового давления (``r_obs``), бинарную метку разжижения (``label``) и число циклов
+        до разжижения (``n_liq_norm``). Скрытые состояния z, g и граница CRR остаются
+        латентными (не супервизируются), что готовит модель к реальным данным. Дополнительно
+        включены саморегуляризаторы без участия истины: монотонность CRR, ограниченность,
+        гладкость второго порядка и KL-дивергенция вероятностной головы.
 
-        :param batch: словарь батча с таргетами и масками
+        :param batch: словарь батча с наблюдаемыми таргетами и масками
         :return: словарь выходов с добавленным ключом ``loss``
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        # Калибровка риска к мягкой метке риск-скора
-        risk_cal = F.mse_loss(outputs["risk_prob"], batch["risk_true"])
+        # Саморегуляризаторы (без участия истинных латентных состояний)
         monotonicity = torch.relu(outputs["crr"][:, 1:] - outputs["crr"][:, :-1]).mean()
         boundedness = (torch.relu(outputs["traj_mean"] - 1.02) + torch.relu(-outputs["traj_mean"])).mean()
         smoothness = torch.abs(
@@ -461,25 +463,15 @@ class DPIFlow(nn.Module):
         ).mean()
         kl_loss = outputs["kl"].mean() if self.probabilistic else torch.zeros(1, device=outputs["traj_mean"].device).squeeze()
 
-        # Глубокая супервизия скрытой физики (только при аналитическом ODE-слое)
-        if self.use_analytical_layer:
-            z_loss = masked_mse(outputs["z"], batch["z_true"], batch["mask"])
-            g_loss = masked_mse(outputs["g"], batch["g_true"], batch["mask"])
-            crr_loss = masked_mse(outputs["crr"], batch["crr_mix_true"], batch["mask"])
-            physics_sup = 0.10 * z_loss + 0.06 * g_loss + 0.05 * crr_loss
-        else:
-            physics_sup = torch.zeros((), device=outputs["traj_mean"].device)
-
         loss = (
             traj_loss
             + 0.40 * risk_loss
-            + 0.20 * risk_cal
             + 0.25 * nliq_loss
-            + physics_sup
             + 0.03 * monotonicity
             + 0.03 * boundedness
             + 0.01 * smoothness
             + 0.02 * kl_loss
         )
+        loss = loss + observed_aux_loss(outputs, batch, use_states=self.use_analytical_layer)
         outputs["loss"] = loss
         return outputs

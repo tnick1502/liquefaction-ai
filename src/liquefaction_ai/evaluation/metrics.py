@@ -364,7 +364,9 @@ def compute_metrics(
 
     if "traj_mean" in outputs:
         pred = outputs["traj_mean"]
-        true = split["r_true"].cpu().numpy()
+        # Эталон траектории — измеренное поровое давление (как в реальном опыте), а не
+        # синтетически «чистая» кривая. Для реальных данных доступно только измеренное.
+        true = split["r_obs"].cpu().numpy()
         mask = split["mask"].cpu().numpy()
         mse = float(np.sum(((pred - true) ** 2) * mask) / np.maximum(mask.sum(), 1.0))
         mae = float(np.sum(np.abs(pred - true) * mask) / np.maximum(mask.sum(), 1.0))

@@ -27,6 +27,7 @@ from scipy.special import expit
 from liquefaction_ai.config import ExperimentConfig
 from liquefaction_ai.constants import LOAD_NAMES, SOIL_NAMES
 from liquefaction_ai.data.grainsize import TYPE_GROUND_PROBS
+from liquefaction_ai.data.observed import derive_observed_targets
 from liquefaction_ai.data.soil_profile import sample_soil_profiles
 from liquefaction_ai.data.splits import make_benchmark_splits
 from liquefaction_ai.physics.crr_physical import crr_curve
@@ -486,6 +487,10 @@ def build_observations(
         + 0.02 * (mode_id == LOAD_NAMES.index("seismic"))
     ).astype(np.float32)
 
+    # Наблюдаемые вспомогательные цели, выводимые из измеренной кривой PPR (доступны и на
+    # реальных данных): мягкий триггер по PPR≈1 и мягкий риск по пиковому PPR.
+    observed_targets = derive_observed_targets(r_obs, valid_mask)
+
     return {
         "r_obs": r_obs,
         "valid_mask": valid_mask,
@@ -495,6 +500,8 @@ def build_observations(
         "n_liq_true": n_liq,
         "risk_score": risk_score,
         "uncertainty_proxy": uncertainty_proxy,
+        "g_obs": observed_targets["g_obs"],
+        "risk_proxy": observed_targets["risk_proxy"],
     }
 
 
@@ -686,6 +693,12 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     meta["trigger_max_true"] = g_true.max(axis=1)
     meta["CSR_max"] = csr.max(axis=1)
 
+    # «Измеренная» кривая CRR(N) доступна лишь для доли грунтов (имитация серии из 6 образцов)
+    rng_crr = np.random.default_rng(config.seed + 777)
+    crr_obs_mask = (rng_crr.random(config.n_scenarios) < config.measured_crr_fraction).astype(np.float32)
+    crr_obs = hidden["crr_mix"].astype(np.float32)
+    meta["has_measured_crr"] = crr_obs_mask.astype(int)
+
     benchmark = make_benchmark_splits(meta, config.benchmark_subset, config.seed, config)
 
     return {
@@ -705,6 +718,10 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
         "risk_score_true": observations["risk_score"].astype(np.float32),
         "n_liq_true": observations["n_liq_true"].astype(np.float32),
         "uncertainty_proxy": observations["uncertainty_proxy"].astype(np.float32),
+        "g_obs": observations["g_obs"].astype(np.float32),
+        "risk_proxy": observations["risk_proxy"].astype(np.float32),
+        "crr_obs": crr_obs,
+        "crr_obs_mask": crr_obs_mask,
         "static_features": features["static_features"].astype(np.float32),
         "static_feature_names": features["static_feature_names"],
         "prefix_summary": features["prefix_summary"].astype(np.float32),

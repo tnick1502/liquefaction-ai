@@ -68,8 +68,10 @@ def stratified_subset_indices(meta: pd.DataFrame, subset_size: int, seed: int) -
     :return: отсортированный массив абсолютных индексов отобранных сценариев
     """
     subset_size = min(subset_size, len(meta))
-    strata = safe_strata(meta, ["soil_type", "load_mode", "liq_label"])
     idx = np.arange(len(meta))
+    if subset_size >= len(meta):  # подмножество — вся популяция
+        return idx
+    strata = safe_strata(meta, ["soil_type", "load_mode", "liq_label"])
     keep_idx, _ = train_test_split(idx, train_size=subset_size, stratify=strata, random_state=seed)
     return np.sort(keep_idx)
 
@@ -145,6 +147,7 @@ def prepare_benchmark_dataset(
     benchmark_idx = population_dict["benchmark"]["benchmark_idx"]
     bench_meta = population_dict["meta"].iloc[benchmark_idx].reset_index(drop=True)
 
+    # Наблюдаемые (доступные в реальном опыте) массивы — обязательные
     static_raw = population_dict["static_features"][benchmark_idx]
     prefix_raw = population_dict["prefix_summary"][benchmark_idx]
     seq_raw = population_dict["seq_inputs"][benchmark_idx]
@@ -152,17 +155,11 @@ def prepare_benchmark_dataset(
     delta_cycles = population_dict["delta_cycles"][benchmark_idx]
     csr = population_dict["csr"][benchmark_idx]
     r_obs = population_dict["r_obs"][benchmark_idx]
-    r_true = population_dict["r_true"][benchmark_idx]
-    z_true = population_dict["z_true"][benchmark_idx]
-    g_true = population_dict["g_true"][benchmark_idx]
     valid_mask = population_dict["valid_mask"][benchmark_idx]
     prefix_mask = population_dict["prefix_mask"][benchmark_idx]
     prefix_obs = population_dict["prefix_obs"][benchmark_idx]
     liq_label = population_dict["liq_label"][benchmark_idx]
-    risk_score_true = population_dict["risk_score_true"][benchmark_idx]
     n_liq_true = population_dict["n_liq_true"][benchmark_idx]
-    uncertainty_proxy = population_dict["uncertainty_proxy"][benchmark_idx]
-    crr_mix = population_dict["crr_mix"][benchmark_idx]
 
     train_rel = population_dict["benchmark"]["train_rel"]
     val_rel = population_dict["benchmark"]["val_rel"]
@@ -178,7 +175,6 @@ def prepare_benchmark_dataset(
     prefix_scaled = prefix_scaler.transform(prefix_raw).astype(np.float32)
     seq_scaled = ((seq_raw - seq_mean[None, None, :]) / seq_std[None, None, :]).astype(np.float32)
     n_liq_norm = (np.log1p(n_liq_true) / np.log1p(config.max_cycle_reference)).astype(np.float32)
-    trigger_zone = (g_true > 0.70).astype(np.float32)
 
     benchmark_arrays = {
         "static": static_scaled,
@@ -191,20 +187,36 @@ def prepare_benchmark_dataset(
         "delta_cycles": delta_cycles.astype(np.float32),
         "csr": csr.astype(np.float32),
         "r_obs": r_obs.astype(np.float32),
-        "r_true": r_true.astype(np.float32),
-        "z_true": z_true.astype(np.float32),
-        "g_true": g_true.astype(np.float32),
-        "trigger_zone": trigger_zone,
         "mask": valid_mask.astype(np.float32),
         "prefix_mask": prefix_mask.astype(np.float32),
         "prefix_obs": prefix_obs.astype(np.float32),
         "label": liq_label.astype(np.float32),
-        "risk_true": risk_score_true.astype(np.float32),
         "n_liq_true": n_liq_true.astype(np.float32),
         "n_liq_norm": n_liq_norm.astype(np.float32),
-        "uncertainty_proxy": uncertainty_proxy.astype(np.float32),
-        "crr_mix_true": crr_mix.astype(np.float32),
     }
+
+    # Наблюдаемые вспомогательные цели (выводятся из измеренной PPR — доступны и на реальных
+    # данных) и опциональная измеренная CRR(N); плюс синтетические латентные поля (только для
+    # диагностики, не для обучения/оценки на реальных данных).
+    optional_fields = {
+        # наблюдаемые
+        "g_obs": "g_obs",
+        "risk_proxy": "risk_proxy",
+        "crr_obs": "crr_obs",
+        "crr_obs_mask": "crr_obs_mask",
+        # синтетические латентные (диагностика)
+        "r_true": "r_true",
+        "z_true": "z_true",
+        "g_true": "g_true",
+        "risk_true": "risk_score_true",
+        "uncertainty_proxy": "uncertainty_proxy",
+        "crr_mix_true": "crr_mix",
+    }
+    for split_key, pop_key in optional_fields.items():
+        if pop_key in population_dict and population_dict[pop_key] is not None:
+            benchmark_arrays[split_key] = population_dict[pop_key][benchmark_idx].astype(np.float32)
+    if "g_true" in benchmark_arrays:
+        benchmark_arrays["trigger_zone"] = (benchmark_arrays["g_true"] > 0.70).astype(np.float32)
 
     def make_split(rel_idx: np.ndarray) -> Dict[str, object]:
         """Собрать словарь одной выборки из benchmark-массивов по относительным индексам."""

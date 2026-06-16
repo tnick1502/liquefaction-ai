@@ -8,6 +8,11 @@
 
 from liquefaction_ai.data.io import load_population_artifact, save_population_artifact
 from liquefaction_ai.data.meta import localize_meta_frame, localize_series
+from liquefaction_ai.data.real_adapter import (
+    build_observed_prefix,
+    build_population_from_experiments,
+    compute_crr_features,
+)
 from liquefaction_ai.data.splits import (
     iterate_minibatches,
     make_benchmark_splits,
@@ -28,4 +33,7 @@ __all__ = [
     "iterate_minibatches",
     "localize_meta_frame",
     "localize_series",
+    "build_population_from_experiments",
+    "build_observed_prefix",
+    "compute_crr_features",
 ]
