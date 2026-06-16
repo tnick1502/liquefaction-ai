@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from scipy.special import erf
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 from liquefaction_ai.config import ExperimentConfig
@@ -128,6 +129,53 @@ METRICS: Dict[str, "MetricInfo"] = {
         "Mean width of the predicted 90% interval for PPR(N). At fixed coverage, narrower intervals "
         "mean sharper, more informative uncertainty.",
         "–", lower_is_better=True),
+    "N_liq_RMSE": MetricInfo(
+        "N_liq_RMSE", "RMSE of N_liq",
+        "Root-mean-square error of predicted cycles to liquefaction N_liq; penalises large timing errors.",
+        "cycles", lower_is_better=True, fmt=".1f"),
+    "N_liq_logMAE": MetricInfo(
+        "N_liq_logMAE", "log-MAE of N_liq",
+        "Mean absolute error of N_liq in log1p scale. Cycles span orders of magnitude and scale "
+        "non-linearly, so log-error reflects relative timing accuracy more fairly than raw cycles.",
+        "log-cycles", lower_is_better=True, fmt=".3f"),
+    "N_liq_logRMSE": MetricInfo(
+        "N_liq_logRMSE", "log-RMSE of N_liq",
+        "Root-mean-square error of N_liq in log1p scale; relative timing error robust to the wide dynamic range of cycles.",
+        "log-cycles", lower_is_better=True, fmt=".3f"),
+    "Physics_Violation_Rate": MetricInfo(
+        "Physics_Violation_Rate", "Physics violation rate",
+        "Fraction of predictions whose PPR(N) curve is physically impossible: non-monotone (ru must "
+        "not decrease) or outside [0, 1.05]. Lower is better; structurally-constrained models should be near 0.",
+        "–", lower_is_better=True, target=0.0, fmt=".3f"),
+    "Coverage_80": MetricInfo(
+        "Coverage_80", "80% interval coverage",
+        "Empirical fraction of true PPR values inside the predicted 80% interval (ideal = 0.80).",
+        "–", lower_is_better=False, target=0.80, fmt=".3f"),
+    "Coverage_95": MetricInfo(
+        "Coverage_95", "95% interval coverage",
+        "Empirical fraction of true PPR values inside the predicted 95% interval (ideal = 0.95).",
+        "–", lower_is_better=False, target=0.95, fmt=".3f"),
+    "Calibration_Error": MetricInfo(
+        "Calibration_Error", "Calibration error",
+        "Mean absolute gap between empirical and nominal interval coverage across the 80/90/95% levels. "
+        "Lower means more trustworthy uncertainty — a key strength of the probabilistic physics models.",
+        "–", lower_is_better=True, target=0.0, fmt=".3f"),
+    "Traj_NLL": MetricInfo(
+        "Traj_NLL", "Trajectory NLL",
+        "Gaussian negative log-likelihood of the observed PPR under the predicted mean/variance. A proper "
+        "scoring rule rewarding both accuracy and well-calibrated uncertainty.",
+        "nats", lower_is_better=True, fmt=".3f"),
+    "Traj_CRPS": MetricInfo(
+        "Traj_CRPS", "Trajectory CRPS",
+        "Continuous ranked probability score of the predicted PPR distribution. A proper scoring rule; "
+        "lower values reward sharp, calibrated probabilistic trajectories.",
+        "–", lower_is_better=True, fmt=".4f"),
+    "CRR_RMSE": MetricInfo(
+        "CRR_RMSE", "CRR-curve RMSE",
+        "RMSE between the predicted cyclic-resistance curve CRR(N) and the measured liquefaction-potential "
+        "curve, where available. Only the physics-structured models (DPI-Flow, EVT-NeuralSSM) output a CRR "
+        "boundary at all — a capability black-box baselines lack.",
+        "–", lower_is_better=True, fmt=".4f"),
 }
 """Каталог метрик качества с подробными описаниями (используется ноутбуками и grid search)."""
 
@@ -351,10 +399,17 @@ def compute_metrics(
     sample_df["nliq_pred"] = nliq_pred
     sample_df["nliq_abs_err"] = np.abs(nliq_pred - nliq_true)
 
+    # Ошибки N_liq: абсолютные и в логарифмической шкале (циклы масштабируются нелинейно)
+    nliq_err = nliq_pred - nliq_true
+    log_err = np.log1p(np.maximum(nliq_pred, 0.0)) - np.log1p(np.maximum(nliq_true, 0.0))
     metrics: Dict[str, object] = {
         "model": model_name,
-        "N_liq_MAE": float(np.mean(np.abs(nliq_pred - nliq_true))),
+        "N_liq_MAE": float(np.mean(np.abs(nliq_err))),
+        "N_liq_RMSE": float(np.sqrt(np.mean(nliq_err ** 2))),
+        "N_liq_logMAE": float(np.mean(np.abs(log_err))),
+        "N_liq_logRMSE": float(np.sqrt(np.mean(log_err ** 2))),
     }
+    sample_df["nliq_log_err"] = np.abs(log_err)
 
     auroc, auprc, brier = safe_binary_metrics(y_true, y_prob)
     metrics["AUROC"] = auroc
@@ -378,27 +433,77 @@ def compute_metrics(
         sample_mask_count = np.maximum(mask.sum(axis=1), 1.0)
         sample_df["traj_rmse"] = np.sqrt(np.sum(((pred - true) ** 2) * mask, axis=1) / sample_mask_count)
 
+        # Физические нарушения: доля предсказаний с «невозможной» кривой PPR(N) — заметно
+        # убывающей (ru должна монотонно расти) или выходящей за физические границы [0, 1.05].
+        diffs = pred[:, 1:] - pred[:, :-1]
+        decreasing = ((diffs < -0.02) * mask[:, 1:]).sum(axis=1) > 0
+        out_of_bounds = (((pred > 1.05) | (pred < -0.02)) * mask).sum(axis=1) > 0
+        violation = decreasing | out_of_bounds
+        metrics["Physics_Violation_Rate"] = float(violation.mean())
+        sample_df["physics_violation"] = violation.astype(float)
+
         if "traj_logvar" in outputs:
-            std = np.sqrt(np.exp(outputs["traj_logvar"]))
-            lower = pred - 1.64 * std
-            upper = pred + 1.64 * std
-            coverage = float(np.sum(((true >= lower) & (true <= upper)) * mask) / np.maximum(mask.sum(), 1.0))
-            width = float(np.sum((upper - lower) * mask) / np.maximum(mask.sum(), 1.0))
-            metrics["Coverage_90"] = coverage
-            metrics["Interval_Width_90"] = width
-            sample_df["interval_width"] = np.sum((upper - lower) * mask, axis=1) / sample_mask_count
+            std = np.maximum(np.sqrt(np.exp(outputs["traj_logvar"])), 1e-6)
+            # Калибровка: эмпирическое покрытие интервалов на нескольких уровнях
+            cov_gaps = []
+            for level, z in [(80, 1.2816), (90, 1.6449), (95, 1.9600)]:
+                lower = pred - z * std
+                upper = pred + z * std
+                cov = float(np.sum(((true >= lower) & (true <= upper)) * mask) / np.maximum(mask.sum(), 1.0))
+                width = float(np.sum((upper - lower) * mask) / np.maximum(mask.sum(), 1.0))
+                metrics[f"Coverage_{level}"] = cov
+                metrics[f"Interval_Width_{level}"] = width
+                cov_gaps.append(abs(cov - level / 100.0))
+            # Сводная ошибка калибровки интервалов (среднее |покрытие − номинал| по уровням)
+            metrics["Calibration_Error"] = float(np.mean(cov_gaps))
+            # Гауссовская NLL — собственно правило (proper scoring) для вероятностного прогноза
+            nll = 0.5 * (np.log(2 * np.pi * std ** 2) + ((true - pred) ** 2) / (std ** 2))
+            metrics["Traj_NLL"] = float(np.sum(nll * mask) / np.maximum(mask.sum(), 1.0))
+            # CRPS для гауссовского предиктива (награждает калиброванную остроту)
+            z0 = (true - pred) / std
+            phi = np.exp(-0.5 * z0 ** 2) / np.sqrt(2 * np.pi)
+            Phi = 0.5 * (1.0 + erf(z0 / np.sqrt(2.0)))
+            crps = std * (z0 * (2 * Phi - 1) + 2 * phi - 1.0 / np.sqrt(np.pi))
+            metrics["Traj_CRPS"] = float(np.sum(crps * mask) / np.maximum(mask.sum(), 1.0))
+            std90 = 1.6449 * std
+            sample_df["interval_width"] = np.sum((2 * std90) * mask, axis=1) / sample_mask_count
         else:
-            metrics["Coverage_90"] = float("nan")
-            metrics["Interval_Width_90"] = float("nan")
+            for level in (80, 90, 95):
+                metrics[f"Coverage_{level}"] = float("nan")
+                metrics[f"Interval_Width_{level}"] = float("nan")
+            metrics["Calibration_Error"] = float("nan")
+            metrics["Traj_NLL"] = float("nan")
+            metrics["Traj_CRPS"] = float("nan")
             sample_df["interval_width"] = np.nan
     else:
         metrics["Traj_MSE"] = float("nan")
         metrics["Traj_MAE"] = float("nan")
         metrics["Traj_RMSE"] = float("nan")
-        metrics["Coverage_90"] = float("nan")
-        metrics["Interval_Width_90"] = float("nan")
+        metrics["Physics_Violation_Rate"] = float("nan")
+        for level in (80, 90, 95):
+            metrics[f"Coverage_{level}"] = float("nan")
+            metrics[f"Interval_Width_{level}"] = float("nan")
+        metrics["Calibration_Error"] = float("nan")
+        metrics["Traj_NLL"] = float("nan")
+        metrics["Traj_CRPS"] = float("nan")
         sample_df["traj_rmse"] = np.nan
         sample_df["interval_width"] = np.nan
+        sample_df["physics_violation"] = np.nan
+
+    # Восстановление границы CRR(N): уникальная способность физически-структурированных моделей
+    # (DPI-Flow / EVT-NeuralSSM). Сравнение с измеренной кривой потенциала разжижения, где она есть.
+    crr_rmse = float("nan")
+    if "crr" in outputs and "crr_obs" in split and "crr_obs_mask" in split:
+        crr_pred = outputs["crr"]
+        crr_true = split["crr_obs"].cpu().numpy()
+        crr_m = split["crr_obs_mask"].cpu().numpy()
+        tmask = split["mask"].cpu().numpy()
+        per = np.sqrt(np.sum(((crr_pred - crr_true) ** 2) * tmask, axis=1) / np.maximum(tmask.sum(axis=1), 1.0))
+        sel = crr_m > 0
+        if sel.any():
+            crr_rmse = float(per[sel].mean())
+    metrics["CRR_RMSE"] = crr_rmse
+    metrics["Produces_CRR"] = "crr" in outputs
 
     return metrics, sample_df
 
@@ -425,8 +530,10 @@ def grouped_metrics(sample_df: pd.DataFrame, group_col: str) -> pd.DataFrame:
             liquefaction_rate=("liq_label", "mean"),
             mean_risk_pred=("risk_prob_pred", "mean"),
             mean_nliq_abs_err=("nliq_abs_err", "mean"),
+            mean_nliq_log_err=("nliq_log_err", "mean"),
             mean_traj_rmse=("traj_rmse", "mean"),
             mean_interval_width=("interval_width", "mean"),
+            physics_violation_rate=("physics_violation", "mean"),
         )
         .reset_index()
     )
@@ -612,6 +719,9 @@ def localize_metric_table(df: pd.DataFrame) -> pd.DataFrame:
 METRIC_COLUMN_EN = {
     "model": "Model",
     "N_liq_MAE": "MAE N_liq (cycles)",
+    "N_liq_RMSE": "RMSE N_liq (cycles)",
+    "N_liq_logMAE": "log-MAE N_liq",
+    "N_liq_logRMSE": "log-RMSE N_liq",
     "AUROC": "AUROC",
     "AUPRC": "AUPRC",
     "Brier": "Brier",
@@ -619,14 +729,26 @@ METRIC_COLUMN_EN = {
     "Traj_MSE": "Trajectory MSE",
     "Traj_MAE": "Trajectory MAE",
     "Traj_RMSE": "Trajectory RMSE",
+    "Physics_Violation_Rate": "Physics violations",
+    "Calibration_Error": "Calibration error",
+    "Traj_NLL": "Trajectory NLL",
+    "Traj_CRPS": "Trajectory CRPS",
+    "CRR_RMSE": "CRR-curve RMSE",
+    "Produces_CRR": "Produces CRR",
+    "Coverage_80": "Coverage@80%",
     "Coverage_90": "Coverage@90%",
+    "Coverage_95": "Coverage@95%",
+    "Interval_Width_80": "Interval width@80%",
     "Interval_Width_90": "Interval width@90%",
+    "Interval_Width_95": "Interval width@95%",
     "samples": "N samples",
     "liquefaction_rate": "Liquefaction rate",
     "mean_risk_pred": "Mean predicted risk",
     "mean_nliq_abs_err": "Mean |ΔN_liq| (cycles)",
+    "mean_nliq_log_err": "Mean log-error N_liq",
     "mean_traj_rmse": "Mean trajectory RMSE",
     "mean_interval_width": "Mean interval width",
+    "physics_violation_rate": "Physics violations",
 }
 """Соответствия технических имён колонок метрик их англоязычным публикационным подписям."""
 

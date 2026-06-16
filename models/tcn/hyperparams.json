@@ -2,7 +2,7 @@
   "model_type": "TCNBaseline",
   "display_name": "TCN",
   "model_kwargs": {
-    "static_dim": 35,
+    "static_dim": 34,
     "seq_dim": 5,
     "hidden_dim": 64
   },
@@ -18,7 +18,7 @@
       "hidden_dim": 64
     }
   },
-  "epochs": 2,
+  "epochs": 4,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

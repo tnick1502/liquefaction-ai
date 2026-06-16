@@ -2,7 +2,7 @@
   "model_type": "DPIFlow",
   "display_name": "DPI-Flow",
   "model_kwargs": {
-    "static_dim": 35,
+    "static_dim": 34,
     "prefix_dim": 6,
     "seq_len": 72,
     "prefix_len": 12,

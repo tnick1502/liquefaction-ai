@@ -109,9 +109,12 @@ def materialize_dataset(source: str, repo_root: Path, config: ExperimentConfig) 
 
     canonical = repo_root / CANONICAL_DIR
     if canonical.resolve() != src.resolve():
-        if canonical.exists():
-            shutil.rmtree(canonical)
-        shutil.copytree(src, canonical)
+        # Пофайловое перезаписывание (не rmtree+copytree): надёжнее, когда каталог-приёмник
+        # лежит на ФС без права удаления (примонтированные папки), и сохраняет каталог на месте.
+        canonical.mkdir(parents=True, exist_ok=True)
+        for item in src.iterdir():
+            if item.is_file():
+                shutil.copy2(item, canonical / item.name)
     return canonical
 
 

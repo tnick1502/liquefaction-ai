@@ -682,8 +682,12 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     )
 
     meta = pd.concat([soil_df, load_df], axis=1)
+    # OCR не входит в данные (не измеряется в выданных опытах разжижения): остаётся лишь
+    # внутренней переменной генерации физики CRR, в мету/признаки не попадает.
+    meta = meta.drop(columns=["OCR"], errors="ignore")
     meta["liq_label"] = observations["liq_label"].astype(int)
-    meta["risk_score_true"] = observations["risk_score"]
+    # Риск в мете — наблюдаемый пик PPR (PPR_max_true) во всех ноутбуках; синтетический
+    # латентный risk_score_true не публикуется, чтобы real/synthetic были согласованы.
     meta["N_liq_true"] = observations["n_liq_true"]
     meta["uncertainty_proxy"] = observations["uncertainty_proxy"]
     meta["PPR_max_true"] = r_true.max(axis=1)
@@ -713,7 +717,6 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
         "prefix_mask": observations["prefix_mask"].astype(np.float32),
         "prefix_obs": observations["prefix_obs"].astype(np.float32),
         "liq_label": observations["liq_label"].astype(np.float32),
-        "risk_score_true": observations["risk_score"].astype(np.float32),
         "n_liq_true": observations["n_liq_true"].astype(np.float32),
         "uncertainty_proxy": observations["uncertainty_proxy"].astype(np.float32),
         "g_obs": observations["g_obs"].astype(np.float32),

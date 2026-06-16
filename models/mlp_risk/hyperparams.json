@@ -2,7 +2,7 @@
   "model_type": "RiskMLP",
   "display_name": "MLP-Risk",
   "model_kwargs": {
-    "static_dim": 35,
+    "static_dim": 34,
     "prefix_dim": 6,
     "hidden_dim": 128
   },

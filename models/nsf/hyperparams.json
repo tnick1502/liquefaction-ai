@@ -1,0 +1,27 @@
+{
+  "model_type": "NeuralSplineFlow",
+  "display_name": "Neural Spline Flow",
+  "model_kwargs": {
+    "static_dim": 34,
+    "prefix_dim": 6,
+    "seq_len": 72,
+    "n_layers": 5
+  },
+  "search": {
+    "grid": {
+      "n_layers": [
+        4,
+        5
+      ]
+    },
+    "score_metric": "Traj_RMSE",
+    "best": {
+      "n_layers": 5
+    }
+  },
+  "epochs": 4,
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "batch_size": 256,
+  "seed": 42
+}

@@ -216,7 +216,6 @@ def prepare_benchmark_dataset(
         "r_true": "r_true",
         "z_true": "z_true",
         "g_true": "g_true",
-        "risk_true": "risk_score_true",
         "uncertainty_proxy": "uncertainty_proxy",
         "crr_mix_true": "crr_mix",
     }

@@ -1,0 +1,26 @@
+{
+  "model_type": "FTTransformer",
+  "display_name": "FT-Transformer",
+  "model_kwargs": {
+    "static_dim": 34,
+    "prefix_dim": 6,
+    "n_layers": 2
+  },
+  "search": {
+    "grid": {
+      "n_layers": [
+        2,
+        3
+      ]
+    },
+    "score_metric": "Brier",
+    "best": {
+      "n_layers": 2
+    }
+  },
+  "epochs": 4,
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "batch_size": 256,
+  "seed": 42
+}

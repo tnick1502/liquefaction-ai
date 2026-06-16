@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from liquefaction_ai.models.blocks import CausalTemporalBlock, ResidualMLP
 from liquefaction_ai.training.losses import gaussian_nll, masked_mean
 
-__all__ = ["RiskMLP", "GRUBaseline", "TCNBaseline"]
+__all__ = ["RiskMLP", "GRUBaseline", "TCNBaseline", "LSTMBaseline", "TransformerBaseline"]
 
 
 class RiskMLP(nn.Module):
@@ -133,6 +133,151 @@ class GRUBaseline(nn.Module):
 
         Складывает гауссовскую NLL по траектории PPR, BCE-риск, Smooth-L1 по N_liq
         и штраф гладкости первого порядка.
+
+        :param batch: словарь батча с таргетами и масками
+        :return: словарь выходов с добавленным ключом ``loss``
+        """
+        outputs = self.forward_batch(batch)
+        traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
+        risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        smoothness = masked_mean(
+            torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
+        )
+        loss = traj_loss + 0.35 * risk_loss + 0.25 * nliq_loss + 0.02 * smoothness
+        outputs["loss"] = loss
+        return outputs
+
+
+class LSTMBaseline(nn.Module):
+    """
+    Рекуррентный (LSTM) последовательностный базлайн с вероятностной головой PPR.
+
+    Аналог :class:`GRUBaseline`, но с LSTM-ячейкой. Статические признаки проецируются и
+    конкатенируются с последовательностными входами на каждом шаге; двухслойный LSTM
+    предсказывает поэлементные среднее и логдисперсию траектории PPR, а из последнего
+    скрытого состояния — риск и N_liq.
+    """
+
+    def __init__(self, static_dim: int, seq_dim: int, hidden_dim: int = 96):
+        """
+        :param static_dim: размерность статических признаков
+        :param seq_dim: размерность последовательностных признаков на шаге
+        :param hidden_dim: размерность скрытого состояния LSTM
+        """
+        super().__init__()
+        self.static_proj = nn.Sequential(nn.Linear(static_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
+        self.lstm = nn.LSTM(input_size=seq_dim + hidden_dim, hidden_size=hidden_dim, batch_first=True, num_layers=2, dropout=0.10)
+        self.mean_head = nn.Linear(hidden_dim, 1)
+        self.logvar_head = nn.Linear(hidden_dim, 1)
+        self.risk_head = nn.Linear(hidden_dim, 1)
+        self.nliq_head = nn.Linear(hidden_dim, 1)
+
+    def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Прямой проход по батчу.
+
+        :param batch: словарь батча (поля ``static``, ``seq_in`` и др.)
+        :return: словарь выходов: ``traj_mean``, ``traj_logvar``, ``risk_logit``, ``risk_prob``, ``nliq_pred``
+        """
+        static_embed = self.static_proj(batch["static"]).unsqueeze(1).expand(-1, batch["seq_in"].shape[1], -1)
+        x = torch.cat([batch["seq_in"], static_embed], dim=-1)
+        h, _ = self.lstm(x)
+        mean = torch.sigmoid(self.mean_head(h).squeeze(-1))
+        logvar = torch.clamp(self.logvar_head(h).squeeze(-1), min=-6.0, max=2.0)
+        pooled = h[:, -1]
+        risk_logit = self.risk_head(pooled).squeeze(-1)
+        nliq_pred = torch.sigmoid(self.nliq_head(pooled).squeeze(-1))
+        return {
+            "traj_mean": mean,
+            "traj_logvar": logvar,
+            "risk_logit": risk_logit,
+            "risk_prob": torch.sigmoid(risk_logit),
+            "nliq_pred": nliq_pred,
+        }
+
+    def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Гауссовская NLL по траектории PPR + BCE-риск + Smooth-L1 по N_liq + штраф гладкости.
+
+        :param batch: словарь батча с таргетами и масками
+        :return: словарь выходов с добавленным ключом ``loss``
+        """
+        outputs = self.forward_batch(batch)
+        traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
+        risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        smoothness = masked_mean(
+            torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
+        )
+        loss = traj_loss + 0.35 * risk_loss + 0.25 * nliq_loss + 0.02 * smoothness
+        outputs["loss"] = loss
+        return outputs
+
+
+class TransformerBaseline(nn.Module):
+    """
+    Каузальный Transformer-энкодер как последовательностный базлайн с вероятностной головой PPR.
+
+    Последовательностные признаки проецируются в скрытое пространство, к ним добавляются
+    обучаемые позиционные эмбеддинги и спроецированные статические признаки. Стек слоёв
+    ``TransformerEncoder`` с каузальной маской (шаг t видит только ≤ t) предсказывает
+    поэлементные среднее и логдисперсию PPR; риск и N_liq — из последнего шага.
+    """
+
+    def __init__(self, static_dim: int, seq_dim: int, seq_len: int, hidden_dim: int = 96,
+                 n_heads: int = 4, n_layers: int = 2):
+        """
+        :param static_dim: размерность статических признаков
+        :param seq_dim: размерность последовательностных признаков на шаге
+        :param seq_len: длина последовательности (для позиционных эмбеддингов)
+        :param hidden_dim: размерность модели (d_model)
+        :param n_heads: число голов внимания
+        :param n_layers: число слоёв энкодера
+        """
+        super().__init__()
+        self.seq_len = seq_len
+        self.input_proj = nn.Linear(seq_dim, hidden_dim)
+        self.static_proj = nn.Sequential(nn.Linear(static_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, hidden_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=n_heads, dim_feedforward=4 * hidden_dim,
+                                           dropout=0.10, batch_first=True, activation="gelu")
+        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.mean_head = nn.Linear(hidden_dim, 1)
+        self.logvar_head = nn.Linear(hidden_dim, 1)
+        self.risk_head = nn.Linear(hidden_dim, 1)
+        self.nliq_head = nn.Linear(hidden_dim, 1)
+
+    def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Прямой проход по батчу с каузальной маской внимания.
+
+        :param batch: словарь батча (поля ``static``, ``seq_in`` и др.)
+        :return: словарь выходов: ``traj_mean``, ``traj_logvar``, ``risk_logit``, ``risk_prob``, ``nliq_pred``
+        """
+        seq = batch["seq_in"]
+        T = seq.shape[1]
+        static_embed = self.static_proj(batch["static"]).unsqueeze(1)
+        h = self.input_proj(seq) + self.pos_embed[:, :T] + static_embed
+        mask = torch.triu(torch.ones(T, T, device=seq.device, dtype=torch.bool), diagonal=1)
+        h = self.encoder(h, mask=mask)
+        mean = torch.sigmoid(self.mean_head(h).squeeze(-1))
+        logvar = torch.clamp(self.logvar_head(h).squeeze(-1), min=-6.0, max=2.0)
+        pooled = h[:, -1]
+        risk_logit = self.risk_head(pooled).squeeze(-1)
+        nliq_pred = torch.sigmoid(self.nliq_head(pooled).squeeze(-1))
+        return {
+            "traj_mean": mean,
+            "traj_logvar": logvar,
+            "risk_logit": risk_logit,
+            "risk_prob": torch.sigmoid(risk_logit),
+            "nliq_pred": nliq_pred,
+        }
+
+    def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Гауссовская NLL по траектории PPR + BCE-риск + Smooth-L1 по N_liq + штраф гладкости.
 
         :param batch: словарь батча с таргетами и масками
         :return: словарь выходов с добавленным ключом ``loss``

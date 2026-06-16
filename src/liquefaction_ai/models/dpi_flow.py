@@ -277,6 +277,7 @@ class DPIFlow(nn.Module):
         calibration_steps: int = 2,
         calibration_lr: float = 0.10,
         use_analytical_layer: bool = True,
+        use_flow: bool = True,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -298,6 +299,7 @@ class DPIFlow(nn.Module):
         self.calibration_steps = calibration_steps
         self.calibration_lr = calibration_lr
         self.use_analytical_layer = use_analytical_layer
+        self.use_flow = use_flow
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
 
@@ -348,7 +350,8 @@ class DPIFlow(nn.Module):
         else:
             latent = mu
             raw_logvar = torch.zeros_like(mu)
-        theta = self.flow(latent, encoded_context)
+        # Нормализующий flow можно отключить (абляция «ODE без flow»): тогда θ = латент
+        theta = self.flow(latent, encoded_context) if self.use_flow else latent
         return theta, mu, raw_logvar
 
     def calibrate_theta(self, theta: torch.Tensor, batch: Dict[str, torch.Tensor]) -> torch.Tensor:

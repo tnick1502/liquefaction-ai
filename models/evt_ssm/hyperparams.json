@@ -2,7 +2,7 @@
   "model_type": "EVTNeuralSSM",
   "display_name": "EVT-NeuralSSM",
   "model_kwargs": {
-    "static_dim": 35,
+    "static_dim": 34,
     "prefix_dim": 6,
     "seq_dim": 5,
     "seq_len": 72,

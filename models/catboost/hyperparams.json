@@ -1,0 +1,8 @@
+{
+  "model_type": "CatBoostBaseline",
+  "display_name": "CatBoost",
+  "model_kwargs": {
+    "static_dim": 34,
+    "prefix_dim": 6
+  }
+}
