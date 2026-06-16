@@ -54,7 +54,9 @@ def evaluate_epoch_metrics(
 
     if "traj_mean" in outputs:
         pred = outputs["traj_mean"]
-        true = split["r_true"].cpu().numpy()
+        # На реальных данных истинной траектории нет — сравниваем с измеренной PPR (r_obs)
+        true_key = "r_true" if "r_true" in split else "r_obs"
+        true = split[true_key].cpu().numpy()
         mask = split["mask"].cpu().numpy()
         mse = float(np.sum(((pred - true) ** 2) * mask) / np.maximum(mask.sum(), 1.0))
         metrics["val_traj_rmse"] = float(np.sqrt(mse))

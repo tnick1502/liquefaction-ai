@@ -27,7 +27,8 @@ from liquefaction_ai.data.splits import make_benchmark_splits
 from liquefaction_ai.data.synthetic import build_feature_matrices
 from liquefaction_ai.physics.crr_physical import RESPONSE_TYPES, compute_crr_components
 
-__all__ = ["compute_crr_features", "enrich_crr_breakdown", "build_observed_prefix", "build_population_from_experiments"]
+__all__ = ["compute_crr_features", "enrich_crr_breakdown", "build_observed_prefix",
+           "build_population_from_experiments", "ensure_analysis_columns"]
 
 
 def _col(df: pd.DataFrame, name: str, default) -> np.ndarray:
@@ -35,6 +36,92 @@ def _col(df: pd.DataFrame, name: str, default) -> np.ndarray:
     if name in df.columns:
         return df[name].to_numpy()
     return np.full(len(df), default, dtype=float)
+
+
+# Характерные значения по типу грунта ГОСТ (1…9): D50 (мм) — для образцов без грансостава;
+# e_min/e_max — если рыхлое/плотное состояние не измерено в опыте
+_TYPE_D50 = {1: 3.0, 2: 0.7, 3: 0.4, 4: 0.15, 5: 0.08, 6: 0.03, 7: 0.012, 8: 0.002, 9: 0.05}
+_TYPE_EMIN = {1: 0.40, 2: 0.45, 3: 0.50, 4: 0.55, 5: 0.55, 6: 0.50, 7: 0.55, 8: 0.60, 9: 1.50}
+_TYPE_EMAX = {1: 0.75, 2: 0.80, 3: 0.85, 4: 0.95, 5: 1.05, 6: 0.95, 7: 1.10, 8: 1.35, 9: 3.00}
+_GRAN_COLS = ["gran_10", "gran_5", "gran_2", "gran_1", "gran_05", "gran_025",
+              "gran_01", "gran_005", "gran_001", "gran_0002", "gran_0000"]
+
+
+def ensure_analysis_columns(soil_df: pd.DataFrame, load_df: pd.DataFrame,
+                            crr_obs_mask: Optional[np.ndarray] = None) -> None:
+    """
+    Дополнить таблицы свойств/нагрузки колонками, совместимыми с синтетическим артефактом.
+
+    Делает мету реальных данных column-complete для ноутбуков анализа/оценки. Производные
+    гранулометрические параметры ``D10/D50/D60`` и ``plaxis_class`` вычисляются **по
+    алгоритму digitrock** (:func:`liquefaction_ai.data.grainsize.plaxis_classification`:
+    лог-интерполяция кумулятивной кривой грансостава, бины PLAXIS по D50). Остальные
+    производные (``e_min/e_max``, ``n_porosity``, ``soil_name_en`` …) — из имеющихся свойств
+    или характерных значений по типу грунта ГОСТ. Латентные «истины» (``risk_score_true`` и
+    т.п.) на реальных данных **не добавляются** — ноутбуки анализа сами подставляют
+    наблюдаемый прокси (пик PPR). Изменяет ``soil_df`` и ``load_df`` на месте.
+
+    :param soil_df: таблица свойств грунта (изменяется на месте)
+    :param load_df: таблица параметров нагружения (изменяется на месте)
+    :param crr_obs_mask: маска наличия измеренной кривой CRR (для ``has_measured_crr``)
+    :return: None
+    """
+    from liquefaction_ai.data.grainsize import FRACTION_KEYS, plaxis_classification
+
+    n = len(soil_df)
+    cls = soil_df["class_id"].astype(int).to_numpy() if "class_id" in soil_df.columns else np.zeros(n, int)
+    tg = np.clip(cls + 1, 1, 9)
+
+    def setdefault(df: pd.DataFrame, col: str, values) -> None:
+        if col not in df.columns:
+            df[col] = values
+
+    setdefault(soil_df, "soil_name_en", [SOIL_NAMES[int(i)] for i in cls])
+
+    # Грансостав → D10/D50/D60/Cu/plaxis_class по алгоритму digitrock там, где грансостав
+    # задан; где не задан (типично для глин/суглинков) — D50 по типу ГОСТ, далее те же бины
+    gran_cols = [f"gran_{k}" for k in FRACTION_KEYS]
+    for col in gran_cols:
+        setdefault(soil_df, col, np.zeros(n))
+    fractions = soil_df[gran_cols].to_numpy(dtype=float)
+    pc = plaxis_classification(fractions)
+    has_gran = fractions.sum(axis=1) > 1.0           # есть измеренный грансостав
+    type_d50 = np.array([_TYPE_D50.get(int(t), 0.01) for t in tg])
+    d50 = np.where(has_gran, pc["D50"].astype(float), type_d50)
+    d10 = np.where(has_gran, pc["D10"].astype(float), type_d50 / 5.0)
+    d60 = np.where(has_gran, pc["D60"].astype(float), type_d50 * 1.5)
+    plaxis = np.select([d50 > 10.0, d50 > 2.0, d50 > 0.25, d50 > 0.075],
+                       ["very coarse", "coarse", "medium", "fine"], default="very fine")
+    setdefault(soil_df, "D10", d10)
+    setdefault(soil_df, "D50", d50)
+    setdefault(soil_df, "D60", d60)
+    setdefault(soil_df, "plaxis_class", plaxis.astype(object))
+    cu_prev = _col(soil_df, "Cu", 5.0)
+    soil_df["Cu"] = np.where(has_gran, pc["Cu"].astype(float), cu_prev)
+
+    setdefault(soil_df, "e_min", np.array([_TYPE_EMIN.get(int(t), 0.5) for t in tg]))
+    setdefault(soil_df, "e_max", np.array([_TYPE_EMAX.get(int(t), 1.0) for t in tg]))
+    e_arr = _col(soil_df, "e", 0.7)
+    setdefault(soil_df, "n_porosity", e_arr / (1.0 + np.maximum(e_arr, 1e-3)) * 100.0)
+    setdefault(soil_df, "damping_ratio", _col(soil_df, "xi", 0.03) * 100.0)
+    setdefault(soil_df, "saturation", np.ones(n))
+    setdefault(soil_df, "B_value", np.full(n, 0.95))
+    setdefault(soil_df, "aging_years", np.ones(n))
+    setdefault(soil_df, "cementation_index", np.zeros(n))
+
+    # Колонки, которых может не быть на реальных данных (физика/химия) — NaN
+    for col in ["rs", "rd", "r", "W", "Wl", "Wp", "ground_water_depth",
+                "cohesion", "phi", "E_modulus", "calcite", "dolomite", "insoluble_residue"]:
+        setdefault(soil_df, col, np.full(n, np.nan))
+
+    # Флаг наличия измеренной кривой CRR (серия потенциала разжижения)
+    has_crr = np.zeros(n, bool) if crr_obs_mask is None else (np.asarray(crr_obs_mask) > 0)
+    setdefault(soil_df, "has_measured_crr", has_crr)
+
+    # Параметры формы нагрузки (для реальных опытов — стационарные)
+    setdefault(load_df, "phase", np.zeros(n))
+    setdefault(load_df, "burst_1", np.zeros(n))
+    setdefault(load_df, "burst_2", np.zeros(n))
 
 
 def compute_crr_features(soil_df: pd.DataFrame) -> Dict[str, np.ndarray]:
@@ -186,6 +273,9 @@ def build_population_from_experiments(
         soil_df["Cu"] = 5.0
     if "Vs1" not in soil_df.columns:
         soil_df["Vs1"] = _col(soil_df, "V_s", 180.0)
+
+    # Колонки, совместимые с синтетическим артефактом (для ноутбуков анализа/оценки)
+    ensure_analysis_columns(soil_df, load_df, crr_obs_mask)
 
     delta_cycles = np.diff(np.concatenate([np.zeros((n, 1)), cycles], axis=1), axis=1).astype(np.float32)
     observations = build_observed_prefix(r_measured.astype(np.float32), valid_mask.astype(np.float32), config.prefix_len)

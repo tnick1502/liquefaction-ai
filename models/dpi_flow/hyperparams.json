@@ -11,7 +11,7 @@
     "probabilistic": true,
     "use_analytical_layer": true,
     "hidden_dim": 128,
-    "calibration_steps": 1
+    "calibration_steps": 2
   },
   "search": {
     "grid": {
@@ -27,7 +27,7 @@
     "score_metric": "Traj_RMSE",
     "best": {
       "hidden_dim": 128,
-      "calibration_steps": 1
+      "calibration_steps": 2
     }
   },
   "epochs": 6,

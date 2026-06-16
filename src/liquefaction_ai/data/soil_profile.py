@@ -181,7 +181,7 @@ def sample_soil_profiles(n: int, rng: np.random.Generator, type_ground_probs: np
         "depth": depth.astype(np.float32), "ground_water_depth": gwl.astype(np.float32),
         # Механические параметры (вход CRR-модели)
         "D_r": Dr.astype(np.float32), "V_s": Vs1.astype(np.float32), "Vs1": Vs1.astype(np.float32),
-        "sigma_eff": sigma_v_eff.astype(np.float32), "OCR": OCR.astype(np.float32), "K0": K0.astype(np.float32),
+        "sigma_eff": sigma_v_eff.astype(np.float32), "K0": K0.astype(np.float32),
         "static_shear_ratio": static_shear_ratio.astype(np.float32),
         "cementation_index": cementation_index.astype(np.float32), "aging_years": aging_years.astype(np.float32),
         "saturation": saturation.astype(np.float32), "B_value": B_value.astype(np.float32),

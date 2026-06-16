@@ -1,14 +1,12 @@
 """
 Единый выбор источника данных для всего пайплайна.
 
-Проект умеет работать с тремя взаимозаменяемыми датасетами одного формата (артефакт
+Проект умеет работать с двумя взаимозаменяемыми датасетами одного формата (артефакт
 популяции из :func:`liquefaction_ai.data.io.save_population_artifact`):
 
 * ``synthetic`` — синтетическая популяция (гладкие кривые PPR(N) по построению);
 * ``real_objects`` — реальные объекты, собранные ноутбуком ``1_1_3`` (пиклы + ведомость,
-  гладкая линия PPR по верхней огибающей);
-* ``real_objects_dhfbv`` — реальные объекты, собранные альтернативным ноутбуком ``1_1_4``
-  (бывший ``dhfbv``), с той же гладкой огибающей.
+  гладкая линия PPR по верхней огибающей).
 
 «Одно место выбора»: достаточно задать имя источника и вызвать :func:`materialize_dataset`
 — выбранный артефакт копируется в канонический каталог ``data/demo_run``, который читают все
@@ -37,7 +35,6 @@ __all__ = [
 DATASET_SOURCES: Dict[str, str] = {
     "synthetic": "data/demo_source_synthetic",
     "real_objects": "data/real_objects",
-    "real_objects_dhfbv": "data/real_objects_dhfbv",
 }
 
 # Канонический каталог, который читают все ноутбуки анализа/обучения/оценки.
@@ -107,7 +104,7 @@ def materialize_dataset(source: str, repo_root: Path, config: ExperimentConfig) 
         if not _is_artifact(src):
             raise FileNotFoundError(
                 f"Артефакт источника '{source}' не найден в {src}. Сначала соберите его "
-                f"соответствующим ноутбуком (1_1_3 для real_objects, 1_1_4 для real_objects_dhfbv)."
+                f"ноутбуком 1_1_3 (real_objects)."
             )
 
     canonical = repo_root / CANONICAL_DIR
