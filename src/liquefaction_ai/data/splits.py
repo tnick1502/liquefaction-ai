@@ -55,7 +55,15 @@ def safe_strata(meta: pd.DataFrame, fine_columns: List[str]) -> np.ndarray:
     if medium_counts.min() >= 2:
         return medium.to_numpy()
 
-    return meta["liq_label"].astype(str).to_numpy()
+    # Огрубление до одной метки разжижения
+    coarse = meta["liq_label"].astype(str)
+    coarse_counts = coarse.value_counts()
+    if coarse_counts.min() >= 2:
+        return coarse.to_numpy()
+
+    # Вырожденный случай (на реальных данных разжижается почти 100 %, минорный класс
+    # может содержать <2 наблюдений) — отказываемся от стратификации: единая страта.
+    return np.zeros(len(meta), dtype=int)
 
 
 def stratified_subset_indices(meta: pd.DataFrame, subset_size: int, seed: int) -> np.ndarray:

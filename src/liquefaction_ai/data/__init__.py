@@ -6,8 +6,19 @@
 и локализацию метаданных (``meta``).
 """
 
+from liquefaction_ai.data.dataset_source import (
+    available_sources,
+    dataset_dir,
+    load_active_population,
+    materialize_dataset,
+)
 from liquefaction_ai.data.io import load_population_artifact, save_population_artifact
 from liquefaction_ai.data.meta import localize_meta_frame, localize_series
+from liquefaction_ai.data.ppr_envelope import (
+    extract_upper_envelope,
+    monotone_smooth,
+    smooth_ppr_trajectory,
+)
 from liquefaction_ai.data.real_adapter import (
     build_observed_prefix,
     build_population_from_experiments,
@@ -36,4 +47,11 @@ __all__ = [
     "build_population_from_experiments",
     "build_observed_prefix",
     "compute_crr_features",
+    "smooth_ppr_trajectory",
+    "extract_upper_envelope",
+    "monotone_smooth",
+    "materialize_dataset",
+    "load_active_population",
+    "available_sources",
+    "dataset_dir",
 ]

@@ -54,6 +54,9 @@ class ExperimentConfig:
     :param risk_threshold: порог классификации риска разжижения по умолчанию
     :param measured_crr_fraction: доля грунтов с «измеренной» кривой CRR(N) (имитация серии из
         6 образцов); такие кривые используются как опциональная наблюдаемая супервизия границы CRR
+    :param dataset_source: активный источник данных пайплайна — один из
+        ``synthetic`` / ``real_objects`` / ``real_objects_dhfbv`` (см.
+        :mod:`liquefaction_ai.data.dataset_source`)
     """
 
     seed: int = 42
@@ -77,6 +80,7 @@ class ExperimentConfig:
     max_cycle_reference: float = 1_500.0
     risk_threshold: float = 0.5
     measured_crr_fraction: float = 0.25
+    dataset_source: str = "synthetic"
 
 
 def get_default_config() -> ExperimentConfig:

@@ -1,0 +1,23 @@
+{
+  "seed": 42,
+  "n_scenarios": 24000,
+  "benchmark_subset": 8000,
+  "ablation_subset": 4000,
+  "seq_len": 72,
+  "prefix_len": 12,
+  "benchmark_train_fraction": 0.7,
+  "benchmark_val_fraction": 0.15,
+  "batch_size": 256,
+  "baseline_epochs": 4,
+  "physics_epochs": 6,
+  "ablation_epochs": 2,
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "mc_samples_eval": 8,
+  "export_figures": false,
+  "figure_dir": "reports/liquefaction_demo_figures",
+  "max_csr_clip": 0.65,
+  "max_cycle_reference": 1500.0,
+  "risk_threshold": 0.5,
+  "measured_crr_fraction": 0.25
+}
