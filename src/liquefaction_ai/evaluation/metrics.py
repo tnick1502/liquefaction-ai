@@ -804,3 +804,10 @@ def english_metric_table(df: pd.DataFrame) -> pd.DataFrame:
     """
     rename_map = {key: value for key, value in METRIC_COLUMN_EN.items() if key in df.columns}
     return df.rename(columns=rename_map)
+
+
+# --- P³-ranking вынесен в отдельный модуль (работает поверх metrics_df) ---
+from liquefaction_ai.evaluation.p3_ranking import (  # noqa: E402,F401
+    metric_direction, compute_physical_admissibility, compute_p3_score,
+    build_pareto_objectives, pareto_rank, publication_ranking_table,
+)

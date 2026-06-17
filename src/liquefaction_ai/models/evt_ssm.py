@@ -48,6 +48,8 @@ class EVTNeuralSSM(nn.Module):
         structured_post_event: bool = True,
         use_crr_damage: bool = True,
         integrator: str = "heun",
+        nliq_from_curve: bool = True,
+        liq_threshold: float = 0.9,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -68,6 +70,12 @@ class EVTNeuralSSM(nn.Module):
         self.structured_post_event = structured_post_event
         self.use_crr_damage = use_crr_damage
         self.integrator = integrator
+        # Практики из DPI-EVT (модель-агностичные): N_liq из кривой + joint-consistency в лоссе
+        self.nliq_from_curve = nliq_from_curve   # перенос из DPI-EVT: помогает N_liq
+        self.liq_threshold = liq_threshold
+        # joint-consistency для plain EVT по умолчанию ВЫКЛ: связь CRR(N_liq)≈CSR конфликтует с
+        # эмпирической CRR, которая здесь ведёт динамику (в DPI-EVT CRR decoupled → там joint полезен)
+        self.use_joint_consistency = False
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
 
@@ -303,7 +311,12 @@ class EVTNeuralSSM(nn.Module):
         g = torch.stack(g_states, dim=1)
         # Проекция на физически допустимую (монотонную неубывающую) траекторию
         r = monotone_clip(r)
-        nliq = self.soft_first_hitting(r, g, cycles)
+        # N_liq из самой кривой PPR (момент пересечения порога) — согласованно с состоянием
+        if self.nliq_from_curve:
+            nliq, cross_pdf, cross_mass = self._nliq_from_curve(r, cycles)
+        else:
+            nliq = self.soft_first_hitting(r, g, cycles)
+            cross_pdf = torch.zeros_like(r); cross_mass = torch.zeros(r.shape[0], device=r.device)
         mcr = torch.as_tensor(self.max_cycle_reference, device=nliq.device, dtype=nliq.dtype)
         nliq_norm = torch.log1p(nliq) / torch.log1p(mcr)
         summary = physics_summary(r, z, g, nliq_norm)
@@ -324,7 +337,28 @@ class EVTNeuralSSM(nn.Module):
             "g": g,
             "c": c,
             "crr": crr,
+            "cross_pdf": cross_pdf,
+            "cross_mass": cross_mass,
         }
+
+    def _nliq_from_curve(self, r: torch.Tensor, cycles: torch.Tensor, beta: float = 25.0):
+        """
+        Дифференцируемый N_liq из момента пересечения порога ru монотонной кривой PPR.
+
+        Поскольку r монотонно не убывает, p=sigmoid(β·(r−thr)) растёт от 0 к 1; масса пересечения по
+        шагам даёт распределение момента разжижения. Возвращает (N_liq, pdf, mass).
+
+        :param r: монотонная траектория PPR, (B, T)
+        :param cycles: сетка циклов, (B, T)
+        :return: (nliq (B,), pdf (B,T), mass (B,))
+        """
+        p = torch.sigmoid(beta * (r - self.liq_threshold))
+        dp = torch.clamp(p[:, 1:] - p[:, :-1], min=0.0)
+        pdf = torch.cat([p[:, :1], dp], dim=1)
+        mass = pdf.sum(dim=1)
+        resid = torch.clamp(1.0 - mass, min=0.0)
+        nliq = (pdf * cycles).sum(dim=1) + resid * cycles[:, -1]
+        return nliq, pdf, mass
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
@@ -356,6 +390,15 @@ class EVTNeuralSSM(nn.Module):
             + torch.relu(outputs["z"] - 1.0)
             + torch.relu(-outputs["z"])
         ).mean()
+        # joint-consistency единого состояния (как в DPI-EVT): CRR(N_liq)≈CSR, Damage(N_liq)≈порог
+        joint = torch.zeros((), device=outputs["traj_mean"].device)
+        if self.use_joint_consistency and outputs.get("cross_mass") is not None and outputs["cross_mass"].sum() > 0:
+            liq = batch["label"]; denom = torch.clamp(liq.sum(), min=1.0)
+            m = torch.clamp(outputs["cross_mass"], min=1e-4)
+            crr_at = (outputs["cross_pdf"] * outputs["crr"]).sum(1) / m
+            z_at = (outputs["cross_pdf"] * outputs["z"]).sum(1) / m
+            csr_app = batch["csr"].amax(dim=1)
+            joint = ((liq * (crr_at - csr_app) ** 2).sum() + (liq * (z_at - 0.90) ** 2).sum()) / denom
         loss = (
             traj_loss
             + 0.80 * risk_loss
@@ -364,6 +407,7 @@ class EVTNeuralSSM(nn.Module):
             + 0.02 * switch_reg
             + 0.01 * state_smoothness
             + 0.03 * boundedness
+            + 0.05 * joint
         )
         loss = loss + observed_aux_loss(outputs, batch, use_states=True)
         outputs["loss"] = loss

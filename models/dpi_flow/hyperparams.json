@@ -11,14 +11,28 @@
     "probabilistic": true,
     "use_analytical_layer": true,
     "hidden_dim": 160,
-    "calibration_steps": 2
+    "calibration_steps": 1
   },
   "search": {
+    "grid": {
+      "hidden_dim": [
+        128,
+        160
+      ],
+      "calibration_steps": [
+        1,
+        2
+      ]
+    },
+    "score_metric": "Traj_RMSE",
     "best": {
       "hidden_dim": 160,
-      "calibration_steps": 2
+      "calibration_steps": 1
     }
   },
   "epochs": 6,
-  "calib_scale": 0.7
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "batch_size": 256,
+  "calib_scale": 0.55
 }
