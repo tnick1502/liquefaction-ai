@@ -9,6 +9,7 @@
 """
 
 from liquefaction_ai.models.ablations import FlowNoODE, NeuralODENoPhysics
+from liquefaction_ai.models.ensemble import EnsembleModel
 from liquefaction_ai.models.baselines import (GRUBaseline, LSTMBaseline, RiskMLP,
                                               TCNBaseline, TransformerBaseline)
 from liquefaction_ai.models.blocks import CausalTemporalBlock, ResidualMLP
@@ -38,6 +39,7 @@ __all__ = [
     "DPIFlow",
     "NeuralODENoPhysics",
     "FlowNoODE",
+    "EnsembleModel",
     "EVTNeuralSSM",
     "RiskHead",
     "SeqLogvarHead",

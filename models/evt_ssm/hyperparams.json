@@ -8,27 +8,13 @@
     "seq_len": 72,
     "prefix_len": 12,
     "max_cycle_reference": 1500.0,
-    "use_trigger_head": true,
-    "structured_post_event": true,
-    "use_crr_damage": true,
-    "integrator": "euler",
-    "hidden_dim": 112
+    "hidden_dim": 128
   },
   "search": {
-    "grid": {
-      "hidden_dim": [
-        112,
-        144
-      ]
-    },
-    "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 112
+      "hidden_dim": 128
     }
   },
   "epochs": 6,
-  "learning_rate": 0.002,
-  "weight_decay": 0.0001,
-  "batch_size": 256,
-  "seed": 42
+  "calib_scale": 0.75
 }

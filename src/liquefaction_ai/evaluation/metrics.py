@@ -261,6 +261,45 @@ def collect_outputs(
     return {key: torch.cat(value, dim=0).numpy() for key, value in collected.items()}
 
 
+def fit_interval_scale(model, val_split: Dict[str, object], config: ExperimentConfig,
+                       device: torch.device, level: float = 0.90) -> float:
+    """
+    Пост-hoc конформная калибровка интервалов: подобрать скаляр s, выравнивающий покрытие к номиналу.
+
+    На валидации ищется множитель ``s`` для стандартного отклонения, при котором эмпирическое
+    покрытие интервала уровня ``level`` совпадает с номиналом. Результат записывается в буфер
+    модели ``calib_log_scale`` (= ln s) и автоматически применяется в ``forward_batch``.
+
+    :param model: модель с буфером ``calib_log_scale`` и траекторной головой
+    :param val_split: валидационная выборка
+    :param config: конфигурация (размер батча)
+    :param device: устройство
+    :param level: целевой уровень покрытия (0.90 по умолчанию)
+    :return: подобранный множитель s (1.0, если модель не поддерживает калибровку)
+    """
+    if not hasattr(model, "calib_log_scale"):
+        return 1.0
+    with torch.no_grad():
+        model.calib_log_scale.zero_()
+    out = collect_outputs(model, val_split, config, device)
+    if "traj_logvar" not in out:
+        return 1.0
+    pred = out["traj_mean"]; std = np.sqrt(np.exp(out["traj_logvar"]))
+    true = val_split["r_obs"].cpu().numpy(); mask = val_split["mask"].cpu().numpy()
+    z = {0.80: 1.2816, 0.90: 1.6449, 0.95: 1.9600}.get(level, 1.6449)
+    denom = max(mask.sum(), 1.0)
+
+    def coverage(s):
+        lo = pred - z * s * std; hi = pred + z * s * std
+        return float(np.sum(((true >= lo) & (true <= hi)) * mask) / denom)
+
+    grid = np.linspace(0.3, 4.0, 75)
+    best = min(grid, key=lambda s: abs(coverage(s) - level))
+    with torch.no_grad():
+        model.calib_log_scale.fill_(float(np.log(best)))
+    return float(best)
+
+
 def resolve_nliq_prediction(outputs: Dict[str, np.ndarray], max_cycle_reference: float) -> np.ndarray:
     """
     Извлечь предсказание числа циклов до разжижения N_liq из выходов модели.

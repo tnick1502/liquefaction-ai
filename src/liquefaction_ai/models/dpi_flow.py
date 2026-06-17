@@ -19,7 +19,8 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import gaussian_nll, masked_mse, observed_aux_loss
+from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll, masked_mse,
+                                             monotone_clip, observed_aux_loss, soft_auc_loss)
 
 __all__ = ["ConditionalAffineFlow", "AnalyticalLiquefactionLayer", "DPIFlow"]
 
@@ -278,6 +279,7 @@ class DPIFlow(nn.Module):
         calibration_lr: float = 0.10,
         use_analytical_layer: bool = True,
         use_flow: bool = True,
+        use_traj_residual: bool = True,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -312,7 +314,20 @@ class DPIFlow(nn.Module):
 
         # Обучаемые головы: калиброванный риск и гетероскедастичная неопределённость
         self.risk_head = RiskHead(hidden_dim)
+        # Дискриминативная голова риска из контекста (как у сильных baseline): задаёт ранжирование,
+        # тогда как физический prior подключается обучаемым гейтом (init 0 → сначала чисто обучаемый риск).
+        self.risk_clf = nn.Sequential(nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(),
+                                      nn.Linear(hidden_dim // 2, 1))
+        self.prior_gate = nn.Parameter(torch.zeros(1))
         self.logvar_head_seq = SeqLogvarHead(hidden_dim, seq_len)
+        # Малая обучаемая монотонная коррекция траектории поверх аналитики (zero-init → старт = no-op)
+        self.use_traj_residual = use_traj_residual
+        self.traj_residual = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+                                           nn.Linear(hidden_dim, seq_len))
+        nn.init.zeros_(self.traj_residual[-1].weight)
+        nn.init.zeros_(self.traj_residual[-1].bias)
+        # Пост-hoc конформная калибровка интервалов: std *= exp(calib_log_scale) (ln s)
+        self.register_buffer("calib_log_scale", torch.zeros(1))
 
         self.direct_decoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
         self.direct_traj_head = nn.Linear(hidden_dim, seq_len)
@@ -395,17 +410,24 @@ class DPIFlow(nn.Module):
 
         if self.use_analytical_layer:
             outputs = self.ode_layer.simulate(theta, batch["cycles"], batch["delta_cycles"], batch["csr"])
+            # Малая обучаемая коррекция поверх аналитики, затем проекция на физически допустимую
+            tm = outputs["traj_mean"]
+            if self.use_traj_residual:
+                tm = tm + 0.10 * torch.tanh(self.traj_residual(encoded))
+            outputs["traj_mean"] = monotone_clip(tm)
             summary = physics_summary(outputs["traj_mean"], outputs["z"], outputs["g"], outputs["nliq_norm"])
-            # Физический prior риска + обучаемая остаточная поправка (калибровка)
+            # Дискриминативный риск (ранжирование) + физический prior через обучаемый гейт + калибровка
             risk_prior = 6.0 * (
                 0.50 * outputs["traj_mean"].amax(dim=1)
                 + 0.25 * outputs["g"].amax(dim=1)
                 + 0.25 * outputs["z"].amax(dim=1)
                 - 0.75
             )
-            risk_logit = risk_prior + self.risk_head(encoded, summary)
-            # Гетероскедастичная неопределённость (зависит от сценария и шага)
-            outputs["traj_logvar"] = self.logvar_head_seq(encoded)
+            risk_logit = (self.risk_clf(encoded).squeeze(-1)
+                          + self.prior_gate * risk_prior
+                          + self.risk_head(encoded, summary))
+            # Гетероскедастичная неопределённость (+ пост-hoc конформный масштаб)
+            outputs["traj_logvar"] = self.logvar_head_seq(encoded) + 2.0 * self.calib_log_scale
             outputs.update(
                 {
                     "risk_logit": risk_logit,
@@ -419,9 +441,9 @@ class DPIFlow(nn.Module):
             return outputs
 
         decoded = self.direct_decoder(context)
-        traj_mean = torch.sigmoid(self.direct_traj_head(decoded))
-        traj_logvar = torch.clamp(self.direct_logvar_head(decoded), min=-6.0, max=2.0)
-        risk_logit = self.direct_risk_head(decoded).squeeze(-1)
+        traj_mean = monotone_clip(torch.sigmoid(self.direct_traj_head(decoded)))
+        traj_logvar = torch.clamp(self.direct_logvar_head(decoded), min=-6.0, max=2.0) + 2.0 * self.calib_log_scale
+        risk_logit = self.direct_risk_head(decoded).squeeze(-1) + self.risk_clf(encoded).squeeze(-1)
         nliq_norm = torch.sigmoid(self.direct_nliq_head(decoded).squeeze(-1))
         mcr = torch.as_tensor(self.max_cycle_reference, device=traj_mean.device, dtype=traj_mean.dtype)
         return {
@@ -458,6 +480,7 @@ class DPIFlow(nn.Module):
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        rank_loss = soft_auc_loss(outputs["risk_logit"], batch["label"])  # прямая оптимизация AUROC
         # Саморегуляризаторы (без участия истинных латентных состояний)
         monotonicity = torch.relu(outputs["crr"][:, 1:] - outputs["crr"][:, :-1]).mean()
         boundedness = (torch.relu(outputs["traj_mean"] - 1.02) + torch.relu(-outputs["traj_mean"])).mean()
@@ -468,7 +491,8 @@ class DPIFlow(nn.Module):
 
         loss = (
             traj_loss
-            + 0.40 * risk_loss
+            + 0.80 * risk_loss
+            + 0.30 * rank_loss
             + 0.25 * nliq_loss
             + 0.03 * monotonicity
             + 0.03 * boundedness

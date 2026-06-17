@@ -19,7 +19,8 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import gaussian_nll, observed_aux_loss
+from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll, monotone_clip,
+                                             observed_aux_loss, soft_auc_loss)
 
 __all__ = ["EVTNeuralSSM"]
 
@@ -86,7 +87,15 @@ class EVTNeuralSSM(nn.Module):
         self.r0_head = nn.Linear(hidden_dim, 1)
         # Обучаемые головы риска и гетероскедастичной неопределённости
         self.risk_head = RiskHead(hidden_dim)
+        # Дискриминативная голова риска из контекста + обучаемый гейт физического prior
+        self.risk_clf = nn.Sequential(nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(),
+                                      nn.Linear(hidden_dim // 2, 1))
+        self.prior_gate = nn.Parameter(torch.zeros(1))
         self.logvar_head_seq = SeqLogvarHead(hidden_dim, seq_len)
+        # Пост-hoc конформная калибровка интервалов: std *= exp(calib_log_scale)
+        # (резидуал траектории здесь НЕ используется: рекуррентный SSM уже интегрирует динамику —
+        #  добавочный резидуал ухудшал RMSE; см. P1-E в recommendations_ru.md)
+        self.register_buffer("calib_log_scale", torch.zeros(1))
 
     def build_context(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -292,14 +301,18 @@ class EVTNeuralSSM(nn.Module):
         r = torch.stack(r_states, dim=1)
         c = torch.stack(c_states, dim=1)
         g = torch.stack(g_states, dim=1)
+        # Проекция на физически допустимую (монотонную неубывающую) траекторию
+        r = monotone_clip(r)
         nliq = self.soft_first_hitting(r, g, cycles)
         mcr = torch.as_tensor(self.max_cycle_reference, device=nliq.device, dtype=nliq.dtype)
         nliq_norm = torch.log1p(nliq) / torch.log1p(mcr)
         summary = physics_summary(r, z, g, nliq_norm)
-        # Физический prior риска + обучаемая остаточная поправка (калибровка)
+        # Дискриминативный риск (ранжирование) + физический prior через обучаемый гейт + калибровка
         risk_prior = 6.0 * (0.50 * r.amax(dim=1) + 0.25 * g.amax(dim=1) + 0.25 * z.amax(dim=1) - 0.75)
-        risk_logit = risk_prior + self.risk_head(encoded, summary)
-        traj_logvar = self.logvar_head_seq(encoded)
+        risk_logit = (self.risk_clf(encoded).squeeze(-1)
+                      + self.prior_gate * risk_prior
+                      + self.risk_head(encoded, summary))
+        traj_logvar = self.logvar_head_seq(encoded) + 2.0 * self.calib_log_scale
         return {
             "traj_mean": r,
             "traj_logvar": traj_logvar,
@@ -330,6 +343,7 @@ class EVTNeuralSSM(nn.Module):
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        rank_loss = soft_auc_loss(outputs["risk_logit"], batch["label"])  # прямая оптимизация AUROC
         nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
         state_smoothness = (
@@ -344,7 +358,8 @@ class EVTNeuralSSM(nn.Module):
         ).mean()
         loss = (
             traj_loss
-            + 0.40 * risk_loss
+            + 0.80 * risk_loss
+            + 0.30 * rank_loss
             + 0.25 * nliq_loss
             + 0.02 * switch_reg
             + 0.01 * state_smoothness

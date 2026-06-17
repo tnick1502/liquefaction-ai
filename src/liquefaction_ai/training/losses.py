@@ -14,7 +14,82 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "clone_state_dict", "observed_aux_loss"]
+__all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "clone_state_dict",
+           "observed_aux_loss", "soft_auc_loss", "monotone_clip", "beta_nll", "censored_nliq_loss"]
+
+
+def soft_auc_loss(logit: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
+    """
+    Гладкая аппроксимация (1 − AUROC): парный logistic-ранжирующий лосс.
+
+    Для каждой пары (положительный, отрицательный) штрафует случаи, когда логит риска
+    положительного класса не выше логита отрицательного. Напрямую оптимизирует ранжирование
+    (AUROC), в отличие от поэлементного BCE. При отсутствии одного из классов в батче — 0.
+
+    :param logit: логиты риска, форма (batch,)
+    :param label: бинарные метки разжижения, форма (batch,)
+    :return: скалярный ранжирующий лосс
+    """
+    pos = logit[label > 0.5]
+    neg = logit[label < 0.5]
+    if pos.numel() == 0 or neg.numel() == 0:
+        return logit.new_zeros(())
+    diff = pos.unsqueeze(1) - neg.unsqueeze(0)
+    return F.softplus(-diff).mean()
+
+
+def beta_nll(mean: torch.Tensor, logvar: torch.Tensor, target: torch.Tensor,
+             mask: torch.Tensor, beta: float = 0.5) -> torch.Tensor:
+    """
+    β-NLL (Seitzer et al., 2022): гауссовская NLL, взвешенная на ``var.detach()**β``.
+
+    При β>0 точки с малой дисперсией меньше доминируют в обновлении дисперсии, что заметно
+    улучшает калибровку неопределённости по сравнению с обычной NLL (β=0). Маскируется по
+    валидной длине наблюдения.
+
+    :param mean: предсказанное среднее, форма (batch, seq_len)
+    :param logvar: предсказанный логарифм дисперсии, форма (batch, seq_len)
+    :param target: измеренные значения, форма (batch, seq_len)
+    :param mask: маска валидной длины, форма (batch, seq_len)
+    :param beta: степень взвешивания (0 = обычная NLL, 0.5 — рекомендуемое)
+    :return: скалярный β-NLL
+    """
+    var = torch.exp(logvar)
+    nll = 0.5 * (logvar + (target - mean) ** 2 / var)
+    weighted = nll * var.detach() ** beta
+    return masked_mean(weighted, mask)
+
+
+def censored_nliq_loss(nliq_pred: torch.Tensor, nliq_target: torch.Tensor,
+                       liq_label: torch.Tensor) -> torch.Tensor:
+    """
+    Цензурированная потеря для N_liq (Tobit-стиль).
+
+    Разжижившиеся образцы (метка 1) — обычная Smooth-L1 к наблюдаемому N_liq. Неразжижившиеся
+    (правое цензурирование при N_max, метка 0) штрафуются только за **занижение** прогноза
+    (предсказание разжижения раньше точки цензурирования), но не за «перелёт».
+
+    :param nliq_pred: предсказанный нормированный N_liq, форма (batch,)
+    :param nliq_target: целевой нормированный N_liq (для цензурированных — точка N_max), (batch,)
+    :param liq_label: бинарная метка разжижения, форма (batch,)
+    :return: скалярная цензурированная потеря
+    """
+    obs = F.smooth_l1_loss(nliq_pred, nliq_target, reduction="none")
+    cens = F.relu(nliq_target - nliq_pred)
+    return (liq_label * obs + (1.0 - liq_label) * cens).mean()
+
+
+def monotone_clip(traj: torch.Tensor, lo: float = 0.0, hi: float = 1.05) -> torch.Tensor:
+    """
+    Спроецировать траекторию PPR(N) на физически допустимую: монотонный неубывающий рост в [lo, hi].
+
+    Реализуется как накопительный максимум по времени с клиппингом — гарантирует отсутствие
+    физических нарушений (немонотонности / выхода за границы) по построению.
+
+    :param traj: траектория, форма (batch, seq_len)
+    :return: монотонно неубывающая ограниченная траектория той же формы
+    """
+    return torch.clamp(torch.cummax(traj, dim=1).values, lo, hi)
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
