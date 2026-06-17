@@ -32,12 +32,12 @@ for path in ORDER:
     t0 = time.time()
     print(f">>> EXEC {path}", flush=True)
     nb = nbformat.read(path, as_version=4)
-    # Нейтрализуем headless-рендеринг plotly (.show() иногда роняет nbclient AssertionError);
-    # рисунки всё равно сохраняются на диск через save_figure. Таблицы/принты остаются в выводе.
+    # Встраиваемый рендер plotly для nbclient: 'notebook_connected' выводит фигуру (HTML+CDN plotly.js)
+    # как display_data → она СОХРАНЯЕТСЯ в .ipynb и рисуется в Jupyter; дефолтный рендер в headless
+    # иногда роняет nbclient. Рисунки также продолжают сохраняться на диск через save_figure.
     setup = nbformat.v4.new_code_cell(
         "import plotly.io as _pio\n"
-        "try:\n    _pio.renderers.default = 'json'\nexcept Exception:\n    pass\n"
-        "import plotly.graph_objects as _go\n_go.Figure.show = lambda self, *a, **k: None\n"
+        "try:\n    _pio.renderers.default = 'notebook_connected'\nexcept Exception:\n    pass\n"
     )
     setup.metadata["_injected"] = True
     nb.cells.insert(0, setup)
