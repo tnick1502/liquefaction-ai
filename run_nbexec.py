@@ -32,11 +32,21 @@ for path in ORDER:
     t0 = time.time()
     print(f">>> EXEC {path}", flush=True)
     nb = nbformat.read(path, as_version=4)
+    # Нейтрализуем headless-рендеринг plotly (.show() иногда роняет nbclient AssertionError);
+    # рисунки всё равно сохраняются на диск через save_figure. Таблицы/принты остаются в выводе.
+    setup = nbformat.v4.new_code_cell(
+        "import plotly.io as _pio\n"
+        "try:\n    _pio.renderers.default = 'json'\nexcept Exception:\n    pass\n"
+        "import plotly.graph_objects as _go\n_go.Figure.show = lambda self, *a, **k: None\n"
+    )
+    setup.metadata["_injected"] = True
+    nb.cells.insert(0, setup)
     nb_dir = os.path.dirname(path)
     client = NotebookClient(nb, timeout=600, kernel_name="python3",
                             resources={"metadata": {"path": nb_dir}})
     try:
         client.execute()
+        nb.cells = [c for c in nb.cells if not c.get("metadata", {}).get("_injected")]  # не сохранять служебную ячейку
         nbformat.write(nb, path)
         done.add(path); open(DONE, "w").write("\n".join(sorted(done)))
         print(f"<<< OK {path} ({time.time()-t0:.1f}s)", flush=True)
