@@ -1,7 +1,7 @@
 {
   "seed": 42,
-  "n_scenarios": 1200,
-  "benchmark_subset": 800,
+  "n_scenarios": 24000,
+  "benchmark_subset": 8000,
   "ablation_subset": 4000,
   "seq_len": 72,
   "prefix_len": 12,

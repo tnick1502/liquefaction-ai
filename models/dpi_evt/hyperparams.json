@@ -13,8 +13,8 @@
     "crr_mode": "decoupled",
     "nliq_from_curve": true,
     "calibration_steps": 0,
-    "use_traj_residual": true
+    "use_traj_residual": false
   },
   "epochs": 6,
-  "calib_scale": 0.55
+  "calib_scale": 0.7
 }

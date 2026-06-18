@@ -4,7 +4,7 @@
   "model_kwargs": {
     "static_dim": 34,
     "prefix_dim": 6,
-    "n_layers": 3
+    "n_layers": 2
   },
   "search": {
     "grid": {
@@ -15,7 +15,7 @@
     },
     "score_metric": "Brier",
     "best": {
-      "n_layers": 3
+      "n_layers": 2
     }
   },
   "epochs": 4,
