@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import dataclass
 
@@ -102,6 +103,10 @@ def set_global_seed(seed: int) -> None:
     :param seed: значение случайного зерна
     :return: None
     """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -110,6 +115,13 @@ def set_global_seed(seed: int) -> None:
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    # Полный детерминизм на CPU: один поток + детерминированные алгоритмы torch.
+    # Это устраняет дрейф метрик между прогонами (особенно у близких по качеству моделей).
+    torch.set_num_threads(1)
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except (AttributeError, RuntimeError):
+        pass
 
 
 DEMO_PALETTE = {

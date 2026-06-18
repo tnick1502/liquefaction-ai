@@ -19,7 +19,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from liquefaction_ai.config import ExperimentConfig
+from liquefaction_ai.config import ExperimentConfig, set_global_seed
 from liquefaction_ai.training.loop import train_model
 
 __all__ = ["iter_param_grid", "grid_search", "write_hyperparams"]
@@ -72,6 +72,7 @@ def grid_search(
 
     rows: List[Dict[str, Any]] = []
     for params in iter_param_grid(grid):
+        set_global_seed(config.seed)   # одинаковая инициализация кандидатов → стабильный отбор
         model = build_fn(params).to(device)
         model, history = train_model(
             model, train_split, val_split, epochs=search_epochs,

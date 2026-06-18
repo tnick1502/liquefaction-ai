@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from liquefaction_ai.config import ExperimentConfig
+from liquefaction_ai.config import ExperimentConfig, set_global_seed
 from liquefaction_ai.data.splits import iterate_minibatches
 from liquefaction_ai.training.losses import clone_state_dict
 
@@ -110,6 +110,10 @@ def train_model(
     :param ema_decay: коэффициент EMA весов (0 — выключено; типично 0.998–0.999)
     :return: кортеж (обученная модель с лучшими весами, история обучения DataFrame)
     """
+    # Единый сид проекта на старте обучения каждой модели — делает обучение
+    # детерминированным и независимым от порядка вызовов (стабильный лидерборд).
+    set_global_seed(config.seed)
+
     optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     lr_sched = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(epochs, 1), eta_min=config.learning_rate * 0.05) \
         if scheduler == "cosine" else None

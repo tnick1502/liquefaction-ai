@@ -154,28 +154,32 @@ class AnalyticalLiquefactionLayer(nn.Module):
         )
         return torch.clamp(crr, min=1e-4)
 
-    def soft_first_hitting(self, r: torch.Tensor, g: torch.Tensor, cycles: torch.Tensor) -> torch.Tensor:
+    def soft_first_hitting(self, r: torch.Tensor, g: torch.Tensor, cycles: torch.Tensor,
+                           threshold: float = 0.90, beta: float = 25.0) -> torch.Tensor:
         """
-        Дифференцируемая оценка числа циклов до разжижения N_liq.
+        Дифференцируемая оценка числа циклов до разжижения N_liq из **кривой PPR**.
 
-        Вероятность события на шаге берётся как максимум из сглаженного достижения
-        порога PPR и триггера g. По выживаемости (cumprod) вычисляется масса первого
-        достижения; ожидание числа циклов с остаточной массой на конце горизонта даёт
-        дифференцируемый аналог момента первого достижения.
+        N_liq — момент пересечения порога ``threshold`` монотонной кривой порового давления
+        PPR(N) (физический критерий разжижения). Масса пересечения берётся как приращения
+        сглаженного индикатора ``sigmoid(beta·(PPR−threshold))`` по монотонной огибающей PPR;
+        если кривая порог не пересекает (нет разжижения, типично для штормовых опытов), масса
+        остаётся на последнем цикле → N_liq = N_max. Триггер ``g`` намеренно **не**
+        используется: он давал ложное раннее срабатывание у неразжижившихся опытов и завышал
+        ошибку N_liq.
 
         :param r: траектория PPR, форма (batch, seq_len)
-        :param g: траектория триггера, форма (batch, seq_len)
+        :param g: траектория триггера (не используется; оставлен для совместимости вызова)
         :param cycles: сетка числа циклов, форма (batch, seq_len)
+        :param threshold: порог PPR для определения разжижения
+        :param beta: крутизна сглаженного пересечения
         :return: оценка N_liq, форма (batch,)
         """
-        event_prob = torch.maximum(torch.sigmoid(12.0 * (r - 0.985)), g)
-        shifted_survival = torch.cumprod(
-            torch.cat([torch.ones_like(event_prob[:, :1]), torch.clamp(1.0 - event_prob[:, :-1], min=1e-4)], dim=1),
-            dim=1,
-        )
-        event_mass = event_prob * shifted_survival
-        residual_mass = torch.clamp(1.0 - event_mass.sum(dim=1), min=0.0, max=1.0)
-        nliq = (event_mass * cycles).sum(dim=1) + residual_mass * cycles[:, -1]
+        r_mono = torch.cummax(r, dim=1).values                        # монотонная огибающая PPR
+        p = torch.sigmoid(beta * (r_mono - threshold))                # монотонно растёт у момента пересечения
+        dp = torch.clamp(p[:, 1:] - p[:, :-1], min=0.0)
+        pdf = torch.cat([p[:, :1], dp], dim=1)                         # масса пересечения по шагам
+        resid = torch.clamp(1.0 - pdf.sum(dim=1), min=0.0)            # не пересёк → цензура на последнем цикле
+        nliq = (pdf * cycles).sum(dim=1) + resid * cycles[:, -1]
         return nliq
 
     def simulate(self, theta: torch.Tensor, cycles: torch.Tensor, delta_cycles: torch.Tensor, csr: torch.Tensor) -> Dict[str, torch.Tensor]:

@@ -20,7 +20,7 @@ import torch.nn as nn
 from scipy.special import erf
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
-from liquefaction_ai.config import ExperimentConfig
+from liquefaction_ai.config import ExperimentConfig, set_global_seed
 from liquefaction_ai.data.meta import localize_meta_frame
 from liquefaction_ai.data.splits import iterate_minibatches
 
@@ -250,14 +250,27 @@ def collect_outputs(
     :param device: устройство инференса
     :return: словарь конкатенированных выходов модели в виде массивов numpy
     """
+    # Единый сид проекта делает вероятностную оценку (MC-сэмплирование θ) детерминированной.
+    # Состояние RNG сохраняется и восстанавливается, чтобы оценка не сбивала обучение
+    # (например, при трекинге метрик по эпохам).
+    import random as _random
+    _torch_state = torch.get_rng_state()
+    _np_state = np.random.get_state()
+    _py_state = _random.getstate()
+    set_global_seed(config.seed)
     model.eval()
     collected: Dict[str, List[torch.Tensor]] = {}
-    with torch.no_grad():
-        for batch in iterate_minibatches(split, config.batch_size, device, shuffle=False):
-            outputs = model.forward_batch(batch)
-            for key, value in outputs.items():
-                if torch.is_tensor(value):
-                    collected.setdefault(key, []).append(value.detach().cpu())
+    try:
+        with torch.no_grad():
+            for batch in iterate_minibatches(split, config.batch_size, device, shuffle=False):
+                outputs = model.forward_batch(batch)
+                for key, value in outputs.items():
+                    if torch.is_tensor(value):
+                        collected.setdefault(key, []).append(value.detach().cpu())
+    finally:
+        torch.set_rng_state(_torch_state)
+        np.random.set_state(_np_state)
+        _random.setstate(_py_state)
     return {key: torch.cat(value, dim=0).numpy() for key, value in collected.items()}
 
 

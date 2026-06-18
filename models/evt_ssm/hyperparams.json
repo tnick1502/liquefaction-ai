@@ -12,7 +12,7 @@
     "structured_post_event": true,
     "use_crr_damage": true,
     "integrator": "euler",
-    "hidden_dim": 128
+    "hidden_dim": 96
   },
   "search": {
     "grid": {
@@ -23,12 +23,12 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 128
+      "hidden_dim": 96
     }
   },
   "epochs": 6,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 0.7
+  "calib_scale": 0.75
 }

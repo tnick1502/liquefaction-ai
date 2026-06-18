@@ -16,5 +16,5 @@
     "use_traj_residual": false
   },
   "epochs": 6,
-  "calib_scale": 0.7
+  "calib_scale": 0.65
 }

@@ -107,6 +107,9 @@ def materialize_dataset(source: str, repo_root: Path, config: ExperimentConfig) 
                 f"ноутбуком 1_1_3 (real_objects)."
             )
 
+    # Проштамповать в config.json артефакта-источника его настоящее имя источника
+    _stamp_dataset_source(src, source)
+
     canonical = repo_root / CANONICAL_DIR
     if canonical.resolve() != src.resolve():
         # Пофайловое перезаписывание (не rmtree+copytree): надёжнее, когда каталог-приёмник
@@ -115,7 +118,25 @@ def materialize_dataset(source: str, repo_root: Path, config: ExperimentConfig) 
         for item in src.iterdir():
             if item.is_file():
                 shutil.copy2(item, canonical / item.name)
+    # Канонический каталог тоже помечаем активным источником
+    _stamp_dataset_source(canonical, source)
     return canonical
+
+
+def _stamp_dataset_source(artifact_dir: Path, source: str) -> None:
+    """Проставить ``dataset_source`` в ``config.json`` артефакта (метаданные источника)."""
+    import json
+
+    cfg_path = Path(artifact_dir) / "config.json"
+    if not cfg_path.exists():
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if cfg.get("dataset_source") != source:
+            cfg["dataset_source"] = source
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except (ValueError, OSError):
+        pass
 
 
 def load_active_population(repo_root: Path):

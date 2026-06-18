@@ -20,5 +20,5 @@
   "max_cycle_reference": 1500.0,
   "risk_threshold": 0.5,
   "measured_crr_fraction": 0.25,
-  "dataset_source": "synthetic"
+  "dataset_source": "real_objects"
 }
