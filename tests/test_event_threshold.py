@@ -19,6 +19,12 @@ def test_canonical_threshold_is_single_source():
     assert get_default_config().liq_threshold == LIQ_THRESHOLD
 
 
+def test_censoring_horizons_are_explicit():
+    cfg = get_default_config()
+    assert cfg.max_cycle_reference == 3000.0
+    assert cfg.min_nonliq_complete_cycles == 500.0
+
+
 def test_observed_trigger_uses_canonical_threshold():
     default = inspect.signature(derive_observed_targets).parameters["liq_threshold"].default
     assert default == LIQ_THRESHOLD, "g_obs строится по другому порогу, чем событие"
@@ -32,6 +38,10 @@ def test_all_models_default_to_canonical_threshold():
     for cls in (AnalyticalLiquefactionLayer, DPIFlow, DPIEvtNet, EVTNeuralSSM):
         default = inspect.signature(cls.__init__).parameters["liq_threshold"].default
         assert default == LIQ_THRESHOLD, f"{cls.__name__}: порог пересечения ≠ канону"
+
+    hit_default = inspect.signature(AnalyticalLiquefactionLayer.soft_first_hitting).parameters["threshold"].default
+    assert hit_default == LIQ_THRESHOLD
+    assert "0.985" not in inspect.getsource(EVTNeuralSSM.soft_first_hitting)
 
 
 def test_synthetic_event_definition_uses_canonical_threshold():

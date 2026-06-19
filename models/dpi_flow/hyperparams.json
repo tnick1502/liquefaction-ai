@@ -6,7 +6,7 @@
     "prefix_dim": 6,
     "seq_len": 72,
     "prefix_len": 12,
-    "max_cycle_reference": 1500.0,
+    "max_cycle_reference": 3000.0,
     "theta_dim": 31,
     "probabilistic": true,
     "use_analytical_layer": true,
@@ -35,5 +35,5 @@
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 0.6000000000000001
+  "calib_scale": 0.55
 }

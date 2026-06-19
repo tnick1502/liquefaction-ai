@@ -96,8 +96,9 @@ METRICS: Dict[str, "MetricInfo"] = {
         "–", lower_is_better=True),
     "N_liq_MAE": MetricInfo(
         "N_liq_MAE", "MAE of N_liq",
-        "Mean absolute error of the predicted number of cycles to liquefaction N_liq. Directly "
-        "reflects timing accuracy of the liquefaction event.",
+        "Censored mean absolute error of the predicted number of cycles to liquefaction N_liq. "
+        "Liquefied samples use absolute error; non-liquefied stabilized samples penalise only "
+        "too-early predictions; unfinished non-liquefied samples are excluded.",
         "cycles", lower_is_better=True, fmt=".1f"),
     "AUROC": MetricInfo(
         "AUROC", "AUROC",
@@ -131,16 +132,17 @@ METRICS: Dict[str, "MetricInfo"] = {
         "–", lower_is_better=True),
     "N_liq_RMSE": MetricInfo(
         "N_liq_RMSE", "RMSE of N_liq",
-        "Root-mean-square error of predicted cycles to liquefaction N_liq; penalises large timing errors.",
+        "Censored root-mean-square error of predicted cycles to liquefaction N_liq; uses the same "
+        "right-censoring protocol as N_liq_MAE.",
         "cycles", lower_is_better=True, fmt=".1f"),
     "N_liq_logMAE": MetricInfo(
         "N_liq_logMAE", "log-MAE of N_liq",
-        "Mean absolute error of N_liq in log1p scale. Cycles span orders of magnitude and scale "
-        "non-linearly, so log-error reflects relative timing accuracy more fairly than raw cycles.",
+        "Censored mean absolute error of N_liq in log1p scale. Cycles span orders of magnitude "
+        "and scale non-linearly, so log-error reflects relative timing accuracy more fairly than raw cycles.",
         "log-cycles", lower_is_better=True, fmt=".3f"),
     "N_liq_logRMSE": MetricInfo(
         "N_liq_logRMSE", "log-RMSE of N_liq",
-        "Root-mean-square error of N_liq in log1p scale; relative timing error robust to the wide dynamic range of cycles.",
+        "Censored root-mean-square error of N_liq in log1p scale; relative timing error robust to the wide dynamic range of cycles.",
         "log-cycles", lower_is_better=True, fmt=".3f"),
     "Physics_Violation_Rate": MetricInfo(
         "Physics_Violation_Rate", "Monotonicity-assumption violation rate",
@@ -449,14 +451,14 @@ def compute_metrics(
     nliq_true = split["n_liq_true"].cpu().numpy()
 
     # Единый цензур-протокол N_liq (как при обучении): образцы без наблюдаемого терминала N_liq
-    # (3-й режим — рост без разжижения и без стабилизации, маска n_liq_observed==0) исключаются
+    # (3-й режим — нет разжижения и нет стабилизации, маска n_liq_observed==0) исключаются
     # из ВСЕХ ошибок N_liq — агрегатных, пообъектных и групповых (OOD), иначе метрика штрафовала бы
     # за «ошибку» по точке, которой нет. Для исключения используется маска obs.
     if "n_liq_observed" in split:
         obs = split["n_liq_observed"].cpu().numpy() > 0.5
     else:
         obs = np.ones_like(nliq_true, dtype=bool)
-    obs = obs if obs.any() else np.ones_like(nliq_true, dtype=bool)
+    obs_any = bool(obs.any())
 
     sample_df = localize_meta_frame(meta_df.copy()).reset_index(drop=True)
     sample_df["risk_prob_pred"] = y_prob
@@ -464,19 +466,34 @@ def compute_metrics(
     sample_df["nliq_pred"] = nliq_pred
 
     nliq_err = nliq_pred - nliq_true
-    log_err = np.log1p(np.maximum(nliq_pred, 0.0)) - np.log1p(np.maximum(nliq_true, 0.0))
+    log_pred = np.log1p(np.maximum(nliq_pred, 0.0))
+    log_true = np.log1p(np.maximum(nliq_true, 0.0))
+    log_err = log_pred - log_true
+    liq = y_true > 0.5
+    # Censored timing error: exact liquefaction is absolute error; stabilized non-liquefaction
+    # is right-censored, so only too-early predictions are errors; unfinished non-liq is masked out.
+    nliq_cens_err = np.where(liq, np.abs(nliq_err), np.maximum(nliq_true - nliq_pred, 0.0))
+    log_cens_err = np.where(liq, np.abs(log_err), np.maximum(log_true - log_pred, 0.0))
     # Пообъектные ошибки: NaN для неучтённых образцов → groupby.mean() их автоматически пропустит,
     # поэтому групповые (OOD) средние считаются по той же маске, что и агрегат.
-    sample_df["nliq_abs_err"] = np.where(obs, np.abs(nliq_err), np.nan)
-    sample_df["nliq_log_err"] = np.where(obs, np.abs(log_err), np.nan)
+    sample_df["nliq_abs_err"] = np.where(obs, nliq_cens_err, np.nan)
+    sample_df["nliq_log_err"] = np.where(obs, log_cens_err, np.nan)
     sample_df["n_liq_observed"] = obs.astype(float)
+
+    if obs_any:
+        nliq_mae = float(np.mean(nliq_cens_err[obs]))
+        nliq_rmse = float(np.sqrt(np.mean(nliq_cens_err[obs] ** 2)))
+        nliq_logmae = float(np.mean(log_cens_err[obs]))
+        nliq_logrmse = float(np.sqrt(np.mean(log_cens_err[obs] ** 2)))
+    else:
+        nliq_mae = nliq_rmse = nliq_logmae = nliq_logrmse = float("nan")
 
     metrics: Dict[str, object] = {
         "model": model_name,
-        "N_liq_MAE": float(np.mean(np.abs(nliq_err[obs]))),
-        "N_liq_RMSE": float(np.sqrt(np.mean(nliq_err[obs] ** 2))),
-        "N_liq_logMAE": float(np.mean(np.abs(log_err[obs]))),
-        "N_liq_logRMSE": float(np.sqrt(np.mean(log_err[obs] ** 2))),
+        "N_liq_MAE": nliq_mae,
+        "N_liq_RMSE": nliq_rmse,
+        "N_liq_logMAE": nliq_logmae,
+        "N_liq_logRMSE": nliq_logrmse,
         "N_liq_n_observed": int(obs.sum()),
     }
 

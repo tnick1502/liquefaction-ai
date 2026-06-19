@@ -123,7 +123,7 @@ class CatBoostBaseline:
         self.clf = CatBoostClassifier(loss_function="Logloss", **common)
         self.clf.fit(Xtr, ytr_risk, eval_set=(Xv, yv_risk))
         # Тот же цензур-протокол, что у остальных моделей: образцы без наблюдаемого терминала
-        # N_liq (3-й режим — рост без разжижения и без стабилизации) исключаются из регрессии,
+        # N_liq (3-й режим — нет разжижения и нет стабилизации) исключаются из регрессии,
         # чтобы сравнение с физическими моделями оставалось честным. CatBoost RMSE не выражает
         # одностороннюю (Tobit) цензуру стабилизации, поэтому применяем только маску наблюдаемости.
         otr = train_split.get("n_liq_observed"); ov = val_split.get("n_liq_observed")

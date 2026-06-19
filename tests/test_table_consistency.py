@@ -6,6 +6,7 @@
 маски цензуры N_liq между обучением и метриками.
 """
 import pandas as pd
+import math
 import pytest
 import torch
 
@@ -61,26 +62,45 @@ def test_physics_models_zero_monotonicity_violation():
 
 @_skip
 def test_nliq_metric_is_censored():
-    # Метрики N_liq считаются по тому же цензур-протоколу, что и обучение: число учтённых
-    # объектов не превышает размер теста (3-й режим исключён).
+    # Метрики N_liq считаются по тому же цензур-протоколу, что и обучение: разжижение
+    # оценивается точной ошибкой, стабилизированный non-liq — односторонней ошибкой,
+    # а 3-й режим исключается.
     lb = pd.read_csv(TABLES / "full_leaderboard.csv")
     assert "N_liq_n_observed" in lb.columns, "метрика N_liq не помечена цензур-маской"
     assert (lb["N_liq_n_observed"] > 0).all()
 
     split = {
-        "meta": pd.DataFrame({"soil_type": ["sand", "sand", "sand"]}),
-        "label": torch.tensor([1.0, 1.0, 1.0]),
-        "n_liq_true": torch.tensor([10.0, 20.0, 30.0]),
-        "n_liq_observed": torch.tensor([1.0, 0.0, 1.0]),
+        "meta": pd.DataFrame({"soil_type": ["sand", "sand", "sand", "sand"]}),
+        "label": torch.tensor([1.0, 0.0, 0.0, 1.0]),
+        "n_liq_true": torch.tensor([10.0, 100.0, 100.0, 30.0]),
+        "n_liq_observed": torch.tensor([1.0, 1.0, 1.0, 0.0]),
     }
     outputs = {
-        "risk_prob": pd.Series([0.9, 0.9, 0.9]).to_numpy(),
-        "nliq": pd.Series([10.0, 999.0, 40.0]).to_numpy(),
+        "risk_prob": pd.Series([0.9, 0.1, 0.1, 0.9]).to_numpy(),
+        "nliq": pd.Series([12.0, 150.0, 90.0, 999.0]).to_numpy(),
     }
     metrics, samples = compute_metrics("mask-check", outputs, split, get_default_config())
-    assert metrics["N_liq_n_observed"] == 2
-    assert abs(metrics["N_liq_MAE"] - 5.0) < 1e-6
-    assert samples["n_liq_observed"].tolist() == [1.0, 0.0, 1.0]
+    assert metrics["N_liq_n_observed"] == 3
+    assert abs(metrics["N_liq_MAE"] - 4.0) < 1e-6  # (|12-10| + max(100-150,0) + max(100-90,0))/3
+    assert samples["nliq_abs_err"].tolist()[:3] == [2.0, 0.0, 10.0]
+    assert samples["n_liq_observed"].tolist() == [1.0, 1.0, 1.0, 0.0]
+
+
+def test_all_unfinished_nliq_slice_reports_nan_not_fallback_error():
+    split = {
+        "meta": pd.DataFrame({"soil_type": ["sand", "sand"]}),
+        "label": torch.tensor([0.0, 0.0]),
+        "n_liq_true": torch.tensor([3000.0, 3000.0]),
+        "n_liq_observed": torch.tensor([0.0, 0.0]),
+    }
+    outputs = {
+        "risk_prob": pd.Series([0.1, 0.2]).to_numpy(),
+        "nliq": pd.Series([10.0, 20.0]).to_numpy(),
+    }
+    metrics, samples = compute_metrics("all-unfinished", outputs, split, get_default_config())
+    assert metrics["N_liq_n_observed"] == 0
+    assert math.isnan(metrics["N_liq_MAE"])
+    assert samples["nliq_abs_err"].isna().all()
 
 
 @_skip

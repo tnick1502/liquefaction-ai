@@ -17,10 +17,11 @@
   "export_figures": false,
   "figure_dir": "reports/liquefaction_demo_figures",
   "max_csr_clip": 0.65,
-  "max_cycle_reference": 1500.0,
+  "max_cycle_reference": 3000.0,
   "risk_threshold": 0.5,
   "measured_crr_fraction": 0.25,
   "dataset_source": "real_objects",
   "liq_threshold": 0.95,
+  "min_nonliq_complete_cycles": 500.0,
   "group_split_by_object": true
 }

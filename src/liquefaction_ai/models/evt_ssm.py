@@ -208,7 +208,7 @@ class EVTNeuralSSM(nn.Module):
         :param cycles: сетка числа циклов, форма (batch, seq_len)
         :return: оценка N_liq, форма (batch,)
         """
-        event_prob = torch.maximum(torch.sigmoid(12.0 * (r - 0.985)), g)
+        event_prob = torch.maximum(torch.sigmoid(12.0 * (r - self.liq_threshold)), g)
         shifted_survival = torch.cumprod(
             torch.cat([torch.ones_like(event_prob[:, :1]), torch.clamp(1.0 - event_prob[:, :-1], min=1e-4)], dim=1),
             dim=1,

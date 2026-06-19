@@ -35,8 +35,10 @@ def _terminal_observability(
     r_obs: np.ndarray,
     valid_mask: np.ndarray,
     liq_label: np.ndarray,
+    cycles: np.ndarray | None = None,
     tail_frac: float = 0.20,
     rise_eps: float = 0.02,
+    min_complete_cycles: float = 500.0,
 ) -> np.ndarray:
     """
     Определить, наблюдаема ли терминальная точка N_liq у каждого опыта (три режима).
@@ -45,31 +47,45 @@ def _terminal_observability(
     цензурирован, 0 — оценить нельзя):
 
     * **разжижение** (``liq_label==1``) → 1: N_liq наблюдён точно;
-    * **стабилизация** (``liq_label==0`` и хвост измеренной PPR плоский, прирост < ``rise_eps``)
-      → 1: N_liq право-цензурирован на N_max — корректная цензура (модель и так не выдаёт >N_max);
-    * **ни то ни другое** (``liq_label==0``, но PPR на хвосте ещё растёт — сейсмика/обрыв опыта)
-      → 0: кривая не разжижилась и не стабилизировалась, конечную точку оценить нельзя —
-      такие образцы исключаются из супервизии N_liq (обучаемся только динамике кривой).
+    * **нет разжижения + стабилизация** (длина опыта ≥ ``min_complete_cycles`` и хвост PPR
+      плоский, прирост < ``rise_eps``)
+      → 1: N_liq право-цензурирован на практическом горизонте оценки;
+    * **нет разжижения + нет стабилизации** (длина опыта < ``min_complete_cycles`` или PPR на
+      хвосте ещё растёт)
+      → 0: конечную точку оценить нельзя; такие образцы исключаются из супервизии N_liq
+      (обучаемся только динамике кривой).
 
     :param r_obs: измеренная траектория PPR, форма (n, seq_len)
     :param valid_mask: маска валидной длины измерений, форма (n, seq_len)
     :param liq_label: бинарная метка разжижения, форма (n,)
+    :param cycles: сетка циклов, форма (n, seq_len); если задана, неразжижившийся опыт короче
+        ``min_complete_cycles`` считается незавершённым независимо от хвоста PPR
     :param tail_frac: доля хвоста валидной части для оценки прироста PPR
     :param rise_eps: порог прироста PPR на хвосте, ниже которого кривая считается стабильной
+    :param min_complete_cycles: минимальная длительность завершённого неразжижившегося опыта
     :return: маска ``n_liq_observed`` формы (n,), значения {0., 1.}
     """
     n = r_obs.shape[0]
     observed = np.ones(n, dtype=np.float32)
     for i in range(n):
         if liq_label[i] >= 0.5:
-            continue                                  # режим 2 — наблюдаем точно
+            continue                                  # разжижение — наблюдаем точно
         idx = np.where(valid_mask[i] > 0)[0]
+        if idx.size == 0:
+            observed[i] = 0.0
+            continue
+        if cycles is not None:
+            last_cycle = float(cycles[i, idx[-1]])
+            if last_cycle < min_complete_cycles:       # короткий non-liq опыт — терминал неизвестен
+                observed[i] = 0.0
+                continue
         if idx.size < 5:
-            continue                                  # слишком короткий опыт — не исключаем
+            observed[i] = 0.0                          # хвост нельзя надёжно оценить
+            continue
         k = max(3, int(tail_frac * idx.size))
         tail = idx[-k:]
         rise = float(r_obs[i, tail[-1]] - r_obs[i, tail[0]])
-        if rise >= rise_eps:                          # режим 3 — растёт, не дошла, не стабильна
+        if rise >= rise_eps:                          # нет разжижения и нет стабилизации
             observed[i] = 0.0
     return observed
 
@@ -297,16 +313,22 @@ def prepare_benchmark_dataset(
     static_scaled = static_scaler.transform(static_raw).astype(np.float32)
     prefix_scaled = prefix_scaler.transform(prefix_raw).astype(np.float32)
     seq_scaled = ((seq_raw - seq_mean[None, None, :]) / seq_std[None, None, :]).astype(np.float32)
-    n_liq_norm = (np.log1p(n_liq_true) / np.log1p(config.max_cycle_reference)).astype(np.float32)
+    # N_liq обучается и оценивается на практическом горизонте max_cycle_reference:
+    # после него разжижение считается инженерно ненаступившим, поэтому правую цензуру
+    # и редкие поздние события капируем на этот горизонт.
+    n_liq_target = np.minimum(n_liq_true, config.max_cycle_reference).astype(np.float32)
+    n_liq_norm = (np.log1p(n_liq_target) / np.log1p(config.max_cycle_reference)).astype(np.float32)
 
     # --- Маска наблюдаемости терминальной точки N_liq (три режима опыта) ---
-    # Режим 2 (разжижение, label=1): N_liq наблюдён точно → маска 1.
-    # Режим 1 (стабилизация, label=0, хвост PPR плоский): N_liq право-цензурирован на N_max,
-    #          архитектура и так не может предсказать >N_max → маска 1 (корректная цензура).
-    # Режим 3 (label=0, но хвост PPR ещё растёт — напр. сейсмо): кривая не разжижилась и не
-    #          стабилизировалась; конечную точку оценить НЕЛЬЗЯ → маска 0 (N_liq-loss отключаем,
-    #          обучаемся только динамике кривой). См. n_liq_observed.
-    n_liq_observed = _terminal_observability(r_obs, valid_mask, liq_label)
+    # Режим 1 (разжижение, label=1): N_liq наблюдён точно → маска 1.
+    # Режим 2 (нет разжижения, длинный опыт, хвост PPR плоский): право-цензура на N_max/horizon
+    #          → маска 1 (корректная цензура).
+    # Режим 3 (нет разжижения, опыт короче min_nonliq_complete_cycles или PPR ещё растёт):
+    #          конечную точку оценить нельзя → маска 0 (N_liq-loss отключаем, динамику PPR учим).
+    n_liq_observed = _terminal_observability(
+        r_obs, valid_mask, liq_label, cycles=cycles,
+        min_complete_cycles=getattr(config, "min_nonliq_complete_cycles", 500.0),
+    )
 
     benchmark_arrays = {
         "static": static_scaled,
@@ -323,7 +345,8 @@ def prepare_benchmark_dataset(
         "prefix_mask": prefix_mask.astype(np.float32),
         "prefix_obs": prefix_obs.astype(np.float32),
         "label": liq_label.astype(np.float32),
-        "n_liq_true": n_liq_true.astype(np.float32),
+        "n_liq_true": n_liq_target.astype(np.float32),
+        "n_liq_raw": n_liq_true.astype(np.float32),
         "n_liq_norm": n_liq_norm.astype(np.float32),
         "n_liq_observed": n_liq_observed.astype(np.float32),
     }

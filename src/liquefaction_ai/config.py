@@ -59,7 +59,9 @@ class ExperimentConfig:
     :param export_figures: сохранять ли рисунки на диск
     :param figure_dir: каталог для экспорта рисунков
     :param max_csr_clip: верхняя отсечка значений CSR(N) в генераторе
-    :param max_cycle_reference: опорное максимальное число циклов для логарифмической нормировки N_liq
+    :param max_cycle_reference: практический горизонт N_liq для логарифмической нормировки и
+        цензурированных метрик; после этого горизонта разжижение считается практически
+        ненаступившим в инженерном смысле
     :param risk_threshold: порог классификации риска разжижения по умолчанию
     :param measured_crr_fraction: доля грунтов с «измеренной» кривой CRR(N) (имитация серии из
         6 образцов); такие кривые используются как опциональная наблюдаемая супервизия границы CRR
@@ -67,6 +69,9 @@ class ExperimentConfig:
         ``real_objects`` (см. :mod:`liquefaction_ai.data.dataset_source`)
     :param liq_threshold: канонический порог события разжижения по ru=PPR (см. :data:`LIQ_THRESHOLD`);
         единый для метки, N_liq, наблюдаемого триггера g_obs и пересечения в моделях
+    :param min_nonliq_complete_cycles: минимальная длительность неразжижившегося опыта, после
+        которой плоский хвост PPR можно считать наблюдаемой стабилизацией; если циклов меньше,
+        терминал N_liq считается неоценимым даже при визуально плоском хвосте
     """
 
     seed: int = 42
@@ -87,11 +92,12 @@ class ExperimentConfig:
     export_figures: bool = False
     figure_dir: str = "reports/liquefaction_demo_figures"
     max_csr_clip: float = 0.65
-    max_cycle_reference: float = 1_500.0
+    max_cycle_reference: float = 3_000.0
     risk_threshold: float = 0.5
     measured_crr_fraction: float = 0.25
     dataset_source: str = "synthetic"
     liq_threshold: float = LIQ_THRESHOLD   # канонический порог события разжижения ru=PPR (см. LIQ_THRESHOLD)
+    min_nonliq_complete_cycles: float = 500.0
     group_split_by_object: bool = True     # Основной протокол: leakage-free разбиение по объекту/площадке
     #                                        (ни один объект не попадает одновременно в train/val/test)
 

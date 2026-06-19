@@ -158,14 +158,14 @@ class AnalyticalLiquefactionLayer(nn.Module):
         return torch.clamp(crr, min=1e-4)
 
     def soft_first_hitting(self, r: torch.Tensor, g: torch.Tensor, cycles: torch.Tensor,
-                           threshold: float = 0.90, beta: float = 25.0) -> torch.Tensor:
+                           threshold: float = 0.95, beta: float = 25.0) -> torch.Tensor:
         """
         Дифференцируемая оценка числа циклов до разжижения N_liq из **кривой PPR**.
 
         N_liq — момент пересечения порога ``threshold`` монотонной кривой порового давления
         PPR(N) (физический критерий разжижения). Масса пересечения берётся как приращения
         сглаженного индикатора ``sigmoid(beta·(PPR−threshold))`` по монотонной огибающей PPR;
-        если кривая порог не пересекает (нет разжижения, типично для штормовых опытов), масса
+        если кривая порог не пересекает (нет разжижения в окне опыта), масса
         остаётся на последнем цикле → N_liq = N_max. Триггер ``g`` намеренно **не**
         используется: он давал ложное раннее срабатывание у неразжижившихся опытов и завышал
         ошибку N_liq.

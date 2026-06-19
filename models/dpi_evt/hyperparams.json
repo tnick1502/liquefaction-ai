@@ -7,7 +7,7 @@
     "seq_dim": 5,
     "seq_len": 72,
     "prefix_len": 12,
-    "max_cycle_reference": 1500.0,
+    "max_cycle_reference": 3000.0,
     "probabilistic": true,
     "use_flow": true,
     "crr_mode": "decoupled",
