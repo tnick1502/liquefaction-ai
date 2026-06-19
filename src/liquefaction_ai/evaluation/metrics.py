@@ -143,9 +143,12 @@ METRICS: Dict[str, "MetricInfo"] = {
         "Root-mean-square error of N_liq in log1p scale; relative timing error robust to the wide dynamic range of cycles.",
         "log-cycles", lower_is_better=True, fmt=".3f"),
     "Physics_Violation_Rate": MetricInfo(
-        "Physics_Violation_Rate", "Physics violation rate",
-        "Fraction of predictions whose PPR(N) curve is physically impossible: non-monotone (ru must "
-        "not decrease) or outside [0, 1.05]. Lower is better; structurally-constrained models should be near 0.",
+        "Physics_Violation_Rate", "Monotonicity-assumption violation rate",
+        "Fraction of predicted PPR(N) curves that break the undrained monotonic-accumulation modelling "
+        "assumption: ru either decreases or leaves [0, 1.05]. This is the assumption adopted here (and "
+        "enforced structurally) for undrained cyclic loading, NOT a universal physical law — under drained "
+        "or strongly variable loading with pore-pressure dissipation ru can legitimately decrease. Lower is "
+        "better under this assumption; structurally-constrained models are near 0 by construction.",
         "–", lower_is_better=True, target=0.0, fmt=".3f"),
     "Coverage_80": MetricInfo(
         "Coverage_80", "80% interval coverage",
@@ -173,7 +176,7 @@ METRICS: Dict[str, "MetricInfo"] = {
     "CRR_RMSE": MetricInfo(
         "CRR_RMSE", "CRR-curve RMSE",
         "RMSE between the predicted cyclic-resistance curve CRR(N) and the measured liquefaction-potential "
-        "curve, where available. Only the physics-structured models (DPI-Flow, EVT-NeuralSSM) output a CRR "
+        "curve, where available. Only the physics-structured models (DPI-Flow, EVT-NeuralSSM, DPI-EVT) output a CRR "
         "boundary at all — a capability black-box baselines lack.",
         "–", lower_is_better=True, fmt=".4f"),
 }
@@ -445,23 +448,37 @@ def compute_metrics(
     nliq_pred = resolve_nliq_prediction(outputs, config.max_cycle_reference)
     nliq_true = split["n_liq_true"].cpu().numpy()
 
+    # Единый цензур-протокол N_liq (как при обучении): образцы без наблюдаемого терминала N_liq
+    # (3-й режим — рост без разжижения и без стабилизации, маска n_liq_observed==0) исключаются
+    # из ВСЕХ ошибок N_liq — агрегатных, пообъектных и групповых (OOD), иначе метрика штрафовала бы
+    # за «ошибку» по точке, которой нет. Для исключения используется маска obs.
+    if "n_liq_observed" in split:
+        obs = split["n_liq_observed"].cpu().numpy() > 0.5
+    else:
+        obs = np.ones_like(nliq_true, dtype=bool)
+    obs = obs if obs.any() else np.ones_like(nliq_true, dtype=bool)
+
     sample_df = localize_meta_frame(meta_df.copy()).reset_index(drop=True)
     sample_df["risk_prob_pred"] = y_prob
     sample_df["liq_label"] = y_true
     sample_df["nliq_pred"] = nliq_pred
-    sample_df["nliq_abs_err"] = np.abs(nliq_pred - nliq_true)
 
-    # Ошибки N_liq: абсолютные и в логарифмической шкале (циклы масштабируются нелинейно)
     nliq_err = nliq_pred - nliq_true
     log_err = np.log1p(np.maximum(nliq_pred, 0.0)) - np.log1p(np.maximum(nliq_true, 0.0))
+    # Пообъектные ошибки: NaN для неучтённых образцов → groupby.mean() их автоматически пропустит,
+    # поэтому групповые (OOD) средние считаются по той же маске, что и агрегат.
+    sample_df["nliq_abs_err"] = np.where(obs, np.abs(nliq_err), np.nan)
+    sample_df["nliq_log_err"] = np.where(obs, np.abs(log_err), np.nan)
+    sample_df["n_liq_observed"] = obs.astype(float)
+
     metrics: Dict[str, object] = {
         "model": model_name,
-        "N_liq_MAE": float(np.mean(np.abs(nliq_err))),
-        "N_liq_RMSE": float(np.sqrt(np.mean(nliq_err ** 2))),
-        "N_liq_logMAE": float(np.mean(np.abs(log_err))),
-        "N_liq_logRMSE": float(np.sqrt(np.mean(log_err ** 2))),
+        "N_liq_MAE": float(np.mean(np.abs(nliq_err[obs]))),
+        "N_liq_RMSE": float(np.sqrt(np.mean(nliq_err[obs] ** 2))),
+        "N_liq_logMAE": float(np.mean(np.abs(log_err[obs]))),
+        "N_liq_logRMSE": float(np.sqrt(np.mean(log_err[obs] ** 2))),
+        "N_liq_n_observed": int(obs.sum()),
     }
-    sample_df["nliq_log_err"] = np.abs(log_err)
 
     auroc, auprc, brier = safe_binary_metrics(y_true, y_prob)
     metrics["AUROC"] = auroc
@@ -543,8 +560,10 @@ def compute_metrics(
         sample_df["physics_violation"] = np.nan
 
     # Восстановление границы CRR(N): уникальная способность физически-структурированных моделей
-    # (DPI-Flow / EVT-NeuralSSM). Сравнение с измеренной кривой потенциала разжижения, где она есть.
+    # (DPI-Flow / EVT-NeuralSSM / DPI-EVT). Сравнение с измеренной кривой потенциала разжижения, где она есть.
     crr_rmse = float("nan")
+    n_crr_test = 0
+    n_crr_objects = 0
     if "crr" in outputs and "crr_obs" in split and "crr_obs_mask" in split:
         crr_pred = outputs["crr"]
         crr_true = split["crr_obs"].cpu().numpy()
@@ -552,9 +571,16 @@ def compute_metrics(
         tmask = split["mask"].cpu().numpy()
         per = np.sqrt(np.sum(((crr_pred - crr_true) ** 2) * tmask, axis=1) / np.maximum(tmask.sum(axis=1), 1.0))
         sel = crr_m > 0
+        n_crr_test = int(sel.sum())
+        # Сколько разных объектов/площадок стоят за измеренной CRR — важно для честной интерпретации:
+        # CRR-метрика опирается на малую выборку из немногих объектов (раскрываем это в таблицах).
+        if "object" in sample_df.columns and n_crr_test > 0:
+            n_crr_objects = int(pd.Series(sample_df["object"].to_numpy()[sel]).nunique())
         if sel.any():
             crr_rmse = float(per[sel].mean())
     metrics["CRR_RMSE"] = crr_rmse
+    metrics["N_CRR_test"] = n_crr_test            # число тест-образцов с измеренной CRR (мощность выборки)
+    metrics["N_CRR_objects"] = n_crr_objects      # число объектов/площадок за этими образцами
     metrics["Produces_CRR"] = "crr" in outputs
 
     return metrics, sample_df
@@ -581,6 +607,7 @@ def grouped_metrics(sample_df: pd.DataFrame, group_col: str) -> pd.DataFrame:
             samples=("liq_label", "size"),
             liquefaction_rate=("liq_label", "mean"),
             mean_risk_pred=("risk_prob_pred", "mean"),
+            n_nliq_observed=("n_liq_observed", "sum"),
             mean_nliq_abs_err=("nliq_abs_err", "mean"),
             mean_nliq_log_err=("nliq_log_err", "mean"),
             mean_traj_rmse=("traj_rmse", "mean"),

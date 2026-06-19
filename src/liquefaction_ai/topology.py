@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 __all__ = [
+    "tda_available",
     "collect_latent",
     "compute_persistence",
     "persistence_summary",
@@ -35,6 +36,32 @@ __all__ = [
     "sliding_window_persistence",
     "topological_early_warning",
 ]
+
+
+def _probe(module: str) -> bool:
+    """Тихо проверить, импортируется ли опциональная TDA-библиотека."""
+    import importlib.util
+
+    return importlib.util.find_spec(module) is not None
+
+
+# Доступность опциональных TDA-зависимостей определяется один раз при импорте модуля.
+HAS_RIPSER = _probe("ripser")
+HAS_KMAPPER = _probe("kmapper")
+HAS_UMAP = _probe("umap")
+_INSTALL_HINT = "pip install ripser kmapper umap-learn kaleido"
+
+
+def tda_available() -> Dict[str, bool]:
+    """
+    Сообщить о наличии опциональных TDA-библиотек (graceful degradation).
+
+    Ноутбуки серии 4 должны проверять этот флаг и корректно пропускать недоступные блоки
+    (persistent homology → ripser, граф Mapper → kmapper), а не падать с ImportError.
+
+    :return: словарь ``{"ripser": bool, "kmapper": bool, "umap": bool}``
+    """
+    return {"ripser": HAS_RIPSER, "kmapper": HAS_KMAPPER, "umap": HAS_UMAP}
 
 
 # ============================ Латент DPI-Flow ============================
@@ -81,7 +108,13 @@ def compute_persistence(points: np.ndarray, maxdim: int = 1,
     :param seed: зерно прореживания
     :param metric: метрика расстояния
     :return: список диаграмм ``[H0, H1, …]``; каждая — массив (k, 2) пар (рождение, смерть)
+    :raises ImportError: если не установлен ``ripser`` (см. :func:`tda_available`)
     """
+    if not HAS_RIPSER:
+        raise ImportError(
+            "Устойчивая гомология требует пакет 'ripser', который не установлен. "
+            f"Установите TDA-зависимости: {_INSTALL_HINT}. "
+            "Либо проверьте tda_available() и пропустите этот блок.")
     from ripser import ripser
 
     X = np.asarray(points, dtype=np.float64)
@@ -173,7 +206,13 @@ def mapper_graph(X: np.ndarray, n_cubes: int = 12, perc_overlap: float = 0.45,
     :param min_samples: минимум точек в кластере DBSCAN
     :param seed: зерно проекции
     :return: словарь ``{"nodes", "edges", "node_xy", "node_members", "lens", "method"}``
+    :raises ImportError: если не установлен ``kmapper`` (см. :func:`tda_available`)
     """
+    if not HAS_KMAPPER:
+        raise ImportError(
+            "Граф Mapper требует пакет 'kmapper', который не установлен. "
+            f"Установите TDA-зависимости: {_INSTALL_HINT}. "
+            "Либо проверьте tda_available() и пропустите этот блок.")
     import kmapper as km
     from sklearn.cluster import DBSCAN
     from sklearn.preprocessing import StandardScaler

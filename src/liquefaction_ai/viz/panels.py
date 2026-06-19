@@ -106,7 +106,7 @@ def data_overview_panel(
     rng = np.random.default_rng(0)
     idx = rng.choice(len(meta), size=min(14, len(meta)), replace=False)
     csr = meta["CSR_base"].to_numpy()
-    norm = (csr - csr.min()) / (csr.ptp() + 1e-9)
+    norm = (csr - csr.min()) / (np.ptp(csr) + 1e-9)
     for i in idx:
         m = valid_mask[i] > 0
         ax.plot(cycles[i][m], r_obs[i][m], color=SEQUENTIAL(float(norm[i])), linewidth=1.4, alpha=0.85)

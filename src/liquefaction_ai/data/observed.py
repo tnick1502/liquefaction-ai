@@ -23,13 +23,15 @@ from typing import Dict
 
 import numpy as np
 
+from liquefaction_ai.config import LIQ_THRESHOLD
+
 __all__ = ["derive_observed_targets"]
 
 
 def derive_observed_targets(
     r_obs: np.ndarray,
     valid_mask: np.ndarray,
-    liq_threshold: float = 0.9,
+    liq_threshold: float = LIQ_THRESHOLD,
     kappa: float = 12.0,
 ) -> Dict[str, np.ndarray]:
     """

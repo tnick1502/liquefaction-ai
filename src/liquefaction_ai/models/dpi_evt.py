@@ -27,7 +27,8 @@ import torch.nn.functional as F
 from liquefaction_ai.models.dpi_flow import ConditionalAffineFlow
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
 from liquefaction_ai.models.heads import physics_summary
-from liquefaction_ai.training.losses import gaussian_nll, masked_mse, monotone_clip, soft_auc_loss
+from liquefaction_ai.training.losses import (gaussian_nll, masked_censored_nliq_loss, masked_mse,
+                                             monotone_clip, soft_auc_loss)
 
 __all__ = ["DPIEvtNet"]
 
@@ -39,7 +40,7 @@ class DPIEvtNet(EVTNeuralSSM):
                  max_cycle_reference: float, hidden_dim: int = 144, probabilistic: bool = True,
                  use_flow: bool = True, crr_from_damage: bool = True, crr_mode: str = None,
                  nliq_from_curve: bool = True, calibration_steps: int = 0, calibration_lr: float = 0.05,
-                 use_traj_residual: bool = False, liq_threshold: float = 0.9, **kwargs):
+                 use_traj_residual: bool = False, liq_threshold: float = 0.95, **kwargs):
         """
         :param crr_mode: "damage" | "empirical" | "hybrid" | "decoupled" (см. модульную документацию)
         :param nliq_from_curve: брать N_liq из момента пересечения порога кривой PPR (а не из first-hitting)
@@ -237,7 +238,8 @@ class DPIEvtNet(EVTNeuralSSM):
         traj_loss = gaussian_nll(out["traj_mean"], out["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(out["risk_logit"], batch["label"])
         rank_loss = soft_auc_loss(out["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(out["nliq_norm"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(out["nliq_norm"], batch["n_liq_norm"],
+                                              batch["label"], batch.get("n_liq_observed"))
         switch_reg = torch.abs(out["g"][:, 1:] - out["g"][:, :-1]).mean()
         state_smooth = (torch.abs(out["traj_mean"][:, 2:] - 2 * out["traj_mean"][:, 1:-1] + out["traj_mean"][:, :-2]).mean()
                         + torch.abs(out["z"][:, 2:] - 2 * out["z"][:, 1:-1] + out["z"][:, :-2]).mean())

@@ -26,7 +26,25 @@ def run_nb(path, stop=None, skip_save=False):
             return False
     return True
 
+def _usage() -> str:
+    import glob
+    nbs = sorted(glob.glob(os.path.join(REPO, "notebooks", "**", "*.ipynb"), recursive=True))
+    rel = [os.path.relpath(p, REPO) for p in nbs]
+    return ("Использование: python run_verify.py <путь_к_ноутбуку.ipynb>\n"
+            "Например: python run_verify.py notebooks/3_evaluations/3_1_core_metrics.ipynb\n"
+            "Доступные ноутбуки:\n  " + "\n  ".join(rel))
+
+
+if len(sys.argv) < 2:
+    print(_usage())
+    sys.exit(2)
+
 target = sys.argv[1]
+if not os.path.isfile(target):
+    print(f"Файл не найден: {target}\n")
+    print(_usage())
+    sys.exit(2)
+
 ok = run_nb(target, skip_save=True)
 print(("OK  " if ok else "FAIL") + " " + target)
 sys.exit(0 if ok else 1)

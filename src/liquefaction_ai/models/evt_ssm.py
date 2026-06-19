@@ -19,7 +19,8 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll, monotone_clip,
+from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll,
+                                             masked_censored_nliq_loss, monotone_clip,
                                              observed_aux_loss, soft_auc_loss)
 
 __all__ = ["EVTNeuralSSM"]
@@ -49,7 +50,7 @@ class EVTNeuralSSM(nn.Module):
         use_crr_damage: bool = True,
         integrator: str = "heun",
         nliq_from_curve: bool = True,
-        liq_threshold: float = 0.9,
+        liq_threshold: float = 0.95,   # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
     ):
         """
         :param static_dim: размерность статических признаков
@@ -102,7 +103,7 @@ class EVTNeuralSSM(nn.Module):
         self.logvar_head_seq = SeqLogvarHead(hidden_dim, seq_len)
         # Пост-hoc конформная калибровка интервалов: std *= exp(calib_log_scale)
         # (резидуал траектории здесь НЕ используется: рекуррентный SSM уже интегрирует динамику —
-        #  добавочный резидуал ухудшал RMSE; см. P1-E в recommendations_ru.md)
+        #  добавочный резидуал ухудшал RMSE в локальных абляциях)
         self.register_buffer("calib_log_scale", torch.zeros(1))
 
     def build_context(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -378,7 +379,8 @@ class EVTNeuralSSM(nn.Module):
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
         rank_loss = soft_auc_loss(outputs["risk_logit"], batch["label"])  # прямая оптимизация AUROC
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
+                                              batch["label"], batch.get("n_liq_observed"))
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
         state_smoothness = (
             torch.abs(outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]).mean()

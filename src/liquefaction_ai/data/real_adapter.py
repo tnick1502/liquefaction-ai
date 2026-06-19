@@ -160,7 +160,7 @@ def compute_crr_features(soil_df: pd.DataFrame) -> Dict[str, np.ndarray]:
             "crr_ref": crr["crr_ref"].astype(np.float32)}
 
 
-def enrich_crr_breakdown(soil_df: pd.DataFrame) -> pd.DataFrame:
+def enrich_crr_breakdown(soil_df: pd.DataFrame, load_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
     Добавить к таблице свойств полное разложение CRR из физической модели.
 
@@ -168,10 +168,23 @@ def enrich_crr_breakdown(soil_df: pd.DataFrame) -> pd.DataFrame:
     ``crr_state_proxy``, ``response_type`` и факторы ``crr_f_*``. Это делает ноутбук анализа
     параметров CRR (серия 1.3) работоспособным и на реальных данных.
 
+    Частота нагружения берётся из ``load_df["frequency"]`` (реально измерена и варьируется
+    0.1…5 Гц) и подаётся в digitrock-формулу частотного фактора — иначе частота, входящая в
+    модель как признак, была бы проигнорирована в самой физике CRR. Множитель режима нагружения
+    оставлен референсным (=1): digitrock не задаёт статического фактора CRR по типу режима, а сам
+    режим (storm/seismic) уже входит в модель как категориальный признак и через динамическую
+    голову CRR. При отсутствии ``load_df`` используется референсная частота 1 Гц (синтетический
+    путь, где частота применяется в порождающем ODE).
+
     :param soil_df: таблица свойств грунта
+    :param load_df: опциональная таблица нагружения (для реальной частоты ``frequency``)
     :return: та же таблица с добавленными CRR-колонками
     """
     n = len(soil_df)
+    if load_df is not None and "frequency" in load_df.columns:
+        frequency = np.asarray(load_df["frequency"], dtype=np.float64)
+    else:
+        frequency = np.ones(n)
     crr = compute_crr_components(
         Dr=_col(soil_df, "D_r", 0.5), Ip=_col(soil_df, "I_p", 0.0), Il=_col(soil_df, "Il", 0.0),
         Ir=_col(soil_df, "Ir", 0.0), fines_content=_col(soil_df, "fines_content", 10.0),
@@ -182,7 +195,7 @@ def enrich_crr_breakdown(soil_df: pd.DataFrame) -> pd.DataFrame:
         cementation_index=_col(soil_df, "cementation_index", 0.0), aging_years=_col(soil_df, "aging_years", 1.0),
         saturation=_col(soil_df, "saturation", 1.0), B=_col(soil_df, "B_value", 0.95),
         damping_percent=_col(soil_df, "damping_ratio", _col(soil_df, "xi", 0.03) * 100.0),
-        frequency=np.ones(n), loading_mode_factor=np.ones(n),
+        frequency=frequency, loading_mode_factor=np.ones(n),
     )
     soil_df["crr_alpha"] = crr["alpha"].astype(np.float32)
     soil_df["crr_betta"] = crr["betta"].astype(np.float32)
@@ -268,7 +281,7 @@ def build_population_from_experiments(
 
     # Полное разложение CRR из физической модели (входные признаки + диагностика)
     if "crr_alpha" not in soil_df.columns or "crr_betta" not in soil_df.columns:
-        soil_df = enrich_crr_breakdown(soil_df)
+        soil_df = enrich_crr_breakdown(soil_df, load_df)
     if "Cu" not in soil_df.columns:
         soil_df["Cu"] = 5.0
     if "Vs1" not in soil_df.columns:

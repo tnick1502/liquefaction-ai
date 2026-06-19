@@ -20,7 +20,15 @@ __all__ = [
     "get_default_config",
     "set_global_seed",
     "DEMO_PALETTE",
+    "LIQ_THRESHOLD",
 ]
+
+# Единый канонический порог события разжижения по поровому давлению ru = PPR.
+# Один и тот же порог описывает ВСЕ компоненты события: бинарную метку разжижения, число
+# циклов N_liq, наблюдаемый триггер g_obs (auxiliary supervision) и момент пересечения в
+# моделях. Значение ru ≥ 0.95 соответствует определению разжижения в исходных данных
+# (ведомости digitrock, загрузчик 1_1_3). Менять порог нужно ТОЛЬКО здесь.
+LIQ_THRESHOLD: float = 0.95
 
 
 @dataclass
@@ -57,6 +65,8 @@ class ExperimentConfig:
         6 образцов); такие кривые используются как опциональная наблюдаемая супервизия границы CRR
     :param dataset_source: активный источник данных пайплайна — ``synthetic`` или
         ``real_objects`` (см. :mod:`liquefaction_ai.data.dataset_source`)
+    :param liq_threshold: канонический порог события разжижения по ru=PPR (см. :data:`LIQ_THRESHOLD`);
+        единый для метки, N_liq, наблюдаемого триггера g_obs и пересечения в моделях
     """
 
     seed: int = 42
@@ -81,6 +91,9 @@ class ExperimentConfig:
     risk_threshold: float = 0.5
     measured_crr_fraction: float = 0.25
     dataset_source: str = "synthetic"
+    liq_threshold: float = LIQ_THRESHOLD   # канонический порог события разжижения ru=PPR (см. LIQ_THRESHOLD)
+    group_split_by_object: bool = True     # Основной протокол: leakage-free разбиение по объекту/площадке
+    #                                        (ни один объект не попадает одновременно в train/val/test)
 
 
 def get_default_config() -> ExperimentConfig:

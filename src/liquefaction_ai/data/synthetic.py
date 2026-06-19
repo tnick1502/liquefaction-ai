@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit
 
-from liquefaction_ai.config import ExperimentConfig
+from liquefaction_ai.config import ExperimentConfig, LIQ_THRESHOLD
 from liquefaction_ai.constants import LOAD_NAMES, SOIL_NAMES
 from liquefaction_ai.data.grainsize import TYPE_GROUND_PROBS
 from liquefaction_ai.data.observed import derive_observed_targets
@@ -471,7 +471,11 @@ def build_observations(
     prefix_mask = ((np.arange(seq_len)[None, :] < prefix_len) & (valid_mask > 0)).astype(np.float32)
     prefix_obs = (r_obs * prefix_mask).astype(np.float32)
 
-    liq_mask = (r_true >= 0.985) | (g_true >= 0.95)
+    # Событие разжижения определяется по НАБЛЮДАЕМОМУ поровому давлению ru=PPR, пересекающему
+    # канонический порог LIQ_THRESHOLD (тот же, что у наблюдаемого триггера g_obs, у моделей и в
+    # реальных данных). Латентный триггер g_true намеренно не участвует в определении события —
+    # иначе метка, N_liq и наблюдаемая супервизия описывали бы разные события.
+    liq_mask = r_true >= LIQ_THRESHOLD
     hit_any = liq_mask.any(axis=1)
     first_idx = liq_mask.argmax(axis=1)
     n_liq = np.where(hit_any, cycles[np.arange(n), first_idx], load_df["N_max"].to_numpy()).astype(np.float32)

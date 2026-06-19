@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import CausalTemporalBlock, ResidualMLP
-from liquefaction_ai.training.losses import gaussian_nll, masked_mean
+from liquefaction_ai.training.losses import gaussian_nll, masked_censored_nliq_loss, masked_mean
 
 __all__ = ["RiskMLP", "GRUBaseline", "TCNBaseline", "LSTMBaseline", "TransformerBaseline"]
 
@@ -75,7 +75,7 @@ class RiskMLP(nn.Module):
         """
         outputs = self.forward_batch(batch)
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         loss = risk_loss + 0.45 * nliq_loss
         outputs["loss"] = loss
         return outputs
@@ -140,7 +140,7 @@ class GRUBaseline(nn.Module):
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )
@@ -206,7 +206,7 @@ class LSTMBaseline(nn.Module):
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )
@@ -285,7 +285,7 @@ class TransformerBaseline(nn.Module):
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )
@@ -358,7 +358,7 @@ class TCNBaseline(nn.Module):
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )

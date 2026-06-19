@@ -12,9 +12,10 @@
     "use_flow": true,
     "crr_mode": "decoupled",
     "nliq_from_curve": true,
+    "liq_threshold": 0.95,
     "calibration_steps": 0,
     "use_traj_residual": false
   },
   "epochs": 6,
-  "calib_scale": 0.65
+  "calib_scale": 0.6000000000000001
 }

@@ -15,7 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 __all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "clone_state_dict",
-           "observed_aux_loss", "soft_auc_loss", "monotone_clip", "beta_nll", "censored_nliq_loss"]
+           "observed_aux_loss", "soft_auc_loss", "monotone_clip", "beta_nll", "censored_nliq_loss",
+           "masked_censored_nliq_loss"]
 
 
 def soft_auc_loss(logit: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
@@ -79,12 +80,47 @@ def censored_nliq_loss(nliq_pred: torch.Tensor, nliq_target: torch.Tensor,
     return (liq_label * obs + (1.0 - liq_label) * cens).mean()
 
 
+def masked_censored_nliq_loss(nliq_pred: torch.Tensor, nliq_target: torch.Tensor,
+                              liq_label: torch.Tensor,
+                              observed: torch.Tensor = None) -> torch.Tensor:
+    """
+    Цензурированная потеря N_liq с маской наблюдаемости терминала (три режима опыта).
+
+    Объединяет корректную обработку всех трёх типов опыта:
+
+    * **разжижение** (``liq_label==1``): обычная Smooth-L1 к наблюдаемому N_liq;
+    * **стабилизация** (``liq_label==0``, ``observed==1``): право-цензурирование при N_max —
+      штраф только за **занижение** прогноза (предсказание разжижения раньше точки цензуры),
+      «перелёт» не штрафуется (Tobit);
+    * **ни то ни другое** (``observed==0`` — рост без разжижения и без стабилизации, напр.
+      сейсмика): терминал оценить нельзя → образец **исключается** из потери N_liq
+      (вес 0), обучение идёт только по динамике кривой PPR.
+
+    :param nliq_pred: предсказанный нормированный N_liq, форма (batch,)
+    :param nliq_target: целевой нормированный N_liq (для цензурированных — точка N_max), (batch,)
+    :param liq_label: бинарная метка разжижения, форма (batch,)
+    :param observed: маска наблюдаемости терминала ``n_liq_observed`` ∈ {0,1}, форма (batch,);
+        ``None`` — все образцы наблюдаемы (обратная совместимость)
+    :return: скалярная потеря (взвешенное среднее по наблюдаемым образцам)
+    """
+    obs_term = F.smooth_l1_loss(nliq_pred, nliq_target, reduction="none")
+    cens = F.relu(nliq_target - nliq_pred)
+    per_sample = liq_label * obs_term + (1.0 - liq_label) * cens
+    if observed is None:
+        return per_sample.mean()
+    weight = observed.to(per_sample.dtype)
+    return (per_sample * weight).sum() / weight.sum().clamp(min=1.0)
+
+
 def monotone_clip(traj: torch.Tensor, lo: float = 0.0, hi: float = 1.05) -> torch.Tensor:
     """
-    Спроецировать траекторию PPR(N) на физически допустимую: монотонный неубывающий рост в [lo, hi].
+    Спроецировать траекторию PPR(N) на монотонно неубывающую в [lo, hi].
 
-    Реализуется как накопительный максимум по времени с клиппингом — гарантирует отсутствие
-    физических нарушений (немонотонности / выхода за границы) по построению.
+    Реализуется как накопительный максимум по времени с клиппингом. Это **модельное допущение**
+    недренированного монотонного накопления порового давления при циклическом нагружении
+    (ru не убывает), а не универсальный физический закон: при дренированном/сильно переменном
+    воздействии с диссипацией ru может и снижаться. В рамках принятого здесь недренированного
+    допущения проекция гарантирует неубывание и ограниченность по построению.
 
     :param traj: траектория, форма (batch, seq_len)
     :return: монотонно неубывающая ограниченная траектория той же формы

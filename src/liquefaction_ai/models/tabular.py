@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from liquefaction_ai.training.losses import masked_censored_nliq_loss
 
 __all__ = ["FTTransformer", "CatBoostBaseline"]
 
@@ -71,7 +72,7 @@ class FTTransformer(nn.Module):
         """BCE-риск + Smooth-L1 по нормированному N_liq."""
         outputs = self.forward_batch(batch)
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_pred"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         outputs["loss"] = risk_loss + 0.45 * nliq_loss
         return outputs
 
@@ -121,8 +122,15 @@ class CatBoostBaseline:
                       random_seed=42, verbose=0, allow_writing_files=False)
         self.clf = CatBoostClassifier(loss_function="Logloss", **common)
         self.clf.fit(Xtr, ytr_risk, eval_set=(Xv, yv_risk))
+        # Тот же цензур-протокол, что у остальных моделей: образцы без наблюдаемого терминала
+        # N_liq (3-й режим — рост без разжижения и без стабилизации) исключаются из регрессии,
+        # чтобы сравнение с физическими моделями оставалось честным. CatBoost RMSE не выражает
+        # одностороннюю (Tobit) цензуру стабилизации, поэтому применяем только маску наблюдаемости.
+        otr = train_split.get("n_liq_observed"); ov = val_split.get("n_liq_observed")
+        mtr = (otr.detach().cpu().numpy() > 0.5) if otr is not None else np.ones(len(ytr_nliq), bool)
+        mv = (ov.detach().cpu().numpy() > 0.5) if ov is not None else np.ones(len(yv_nliq), bool)
         self.reg = CatBoostRegressor(loss_function="RMSE", **common)
-        self.reg.fit(Xtr, ytr_nliq, eval_set=(Xv, yv_nliq))
+        self.reg.fit(Xtr[mtr], ytr_nliq[mtr], eval_set=(Xv[mv], yv_nliq[mv]))
         return self
 
     def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:

@@ -31,6 +31,49 @@ __all__ = [
 ]
 
 
+def _terminal_observability(
+    r_obs: np.ndarray,
+    valid_mask: np.ndarray,
+    liq_label: np.ndarray,
+    tail_frac: float = 0.20,
+    rise_eps: float = 0.02,
+) -> np.ndarray:
+    """
+    Определить, наблюдаема ли терминальная точка N_liq у каждого опыта (три режима).
+
+    Возвращает бинарную маску ``n_liq_observed`` (1 — терминал наблюдаем/корректно
+    цензурирован, 0 — оценить нельзя):
+
+    * **разжижение** (``liq_label==1``) → 1: N_liq наблюдён точно;
+    * **стабилизация** (``liq_label==0`` и хвост измеренной PPR плоский, прирост < ``rise_eps``)
+      → 1: N_liq право-цензурирован на N_max — корректная цензура (модель и так не выдаёт >N_max);
+    * **ни то ни другое** (``liq_label==0``, но PPR на хвосте ещё растёт — сейсмика/обрыв опыта)
+      → 0: кривая не разжижилась и не стабилизировалась, конечную точку оценить нельзя —
+      такие образцы исключаются из супервизии N_liq (обучаемся только динамике кривой).
+
+    :param r_obs: измеренная траектория PPR, форма (n, seq_len)
+    :param valid_mask: маска валидной длины измерений, форма (n, seq_len)
+    :param liq_label: бинарная метка разжижения, форма (n,)
+    :param tail_frac: доля хвоста валидной части для оценки прироста PPR
+    :param rise_eps: порог прироста PPR на хвосте, ниже которого кривая считается стабильной
+    :return: маска ``n_liq_observed`` формы (n,), значения {0., 1.}
+    """
+    n = r_obs.shape[0]
+    observed = np.ones(n, dtype=np.float32)
+    for i in range(n):
+        if liq_label[i] >= 0.5:
+            continue                                  # режим 2 — наблюдаем точно
+        idx = np.where(valid_mask[i] > 0)[0]
+        if idx.size < 5:
+            continue                                  # слишком короткий опыт — не исключаем
+        k = max(3, int(tail_frac * idx.size))
+        tail = idx[-k:]
+        rise = float(r_obs[i, tail[-1]] - r_obs[i, tail[0]])
+        if rise >= rise_eps:                          # режим 3 — растёт, не дошла, не стабильна
+            observed[i] = 0.0
+    return observed
+
+
 def safe_strata(meta: pd.DataFrame, fine_columns: List[str]) -> np.ndarray:
     """
     Построить безопасные метки страт для стратифицированного разбиения.
@@ -103,6 +146,69 @@ def make_benchmark_splits(meta: pd.DataFrame, subset_size: int, seed: int, confi
     benchmark_idx = stratified_subset_indices(meta, subset_size, seed)
     benchmark_meta = meta.iloc[benchmark_idx].reset_index(drop=True)
     benchmark_rel = np.arange(len(benchmark_idx))
+
+    # Leakage-free разбиение по объекту/площадке: ни один объект не попадает одновременно в
+    # train/val/test (важно для геотехники — образцы одной площадки коррелированы). При наличии
+    # measured-CRR объектов test/val получают хотя бы один CRR-объект и один обычный объект, чтобы
+    # основной grouped leaderboard не терял CRR_RMSE и бинарные риск-метрики.
+    if getattr(config, "group_split_by_object", False) and "object" in benchmark_meta.columns:
+        objects = benchmark_meta["object"].to_numpy()
+        obj_stats = (
+            benchmark_meta.groupby("object")
+            .agg(
+                n=("object", "size"),
+                liq_rate=("liq_label", "mean"),
+                has_crr=("has_measured_crr", "max") if "has_measured_crr" in benchmark_meta.columns else ("liq_label", "min"),
+            )
+            .reset_index()
+        )
+        uniq = np.array(sorted(obj_stats["object"].tolist()))
+        rng = np.random.default_rng(seed)
+        perm = list(uniq[rng.permutation(len(uniq))])
+        n_obj = len(perm)
+        test_fraction = max(0.0, 1.0 - config.benchmark_train_fraction - config.benchmark_val_fraction)
+        n_te = max(1, int(round(test_fraction * n_obj)))
+        if n_obj >= 6:
+            n_te = max(2, n_te)
+        n_va = max(1, int(round(config.benchmark_val_fraction * n_obj)))
+        n_va = min(n_va, max(1, n_obj - n_te - 1))
+        n_tr = max(1, n_obj - n_va - n_te)
+
+        stats = obj_stats.set_index("object")
+
+        def take_balanced(pool: List[str], k: int) -> List[str]:
+            """Выбрать k объектов, сохранив CRR/non-CRR покрытие, если это возможно."""
+            chosen: List[str] = []
+            crr = [o for o in pool if bool(stats.loc[o, "has_crr"])]
+            non = [o for o in pool if not bool(stats.loc[o, "has_crr"])]
+            if k >= 2 and crr and non:
+                chosen.extend([crr[0], non[0]])
+            elif crr:
+                chosen.append(crr[0])
+            elif non:
+                chosen.append(non[0])
+            for o in pool:
+                if len(chosen) >= k:
+                    break
+                if o not in chosen:
+                    chosen.append(o)
+            return chosen[:k]
+
+        te_obj = set(take_balanced(perm, n_te))
+        remaining = [o for o in perm if o not in te_obj]
+        va_obj = set(take_balanced(remaining, n_va))
+        tr_obj = set(o for o in remaining if o not in va_obj)
+        if len(tr_obj) < n_tr:
+            deficit = n_tr - len(tr_obj)
+            move = list(va_obj)[:deficit]
+            tr_obj.update(move)
+            va_obj.difference_update(move)
+        train_rel = benchmark_rel[np.isin(objects, list(tr_obj))]
+        val_rel = np.sort(benchmark_rel[np.isin(objects, list(va_obj))])
+        test_rel = np.sort(benchmark_rel[np.isin(objects, list(te_obj))])
+        return {"benchmark_idx": benchmark_idx, "train_rel": np.sort(train_rel),
+                "val_rel": val_rel, "test_rel": test_rel}
+
     strata = safe_strata(benchmark_meta, ["soil_type", "load_mode", "liq_label"])
 
     train_rel, temp_rel = train_test_split(
@@ -152,7 +258,16 @@ def prepare_benchmark_dataset(
     :return: словарь с выборками ``train``/``val``/``test``, метаданными,
              обученными скейлерами и именами признаков
     """
-    benchmark_idx = population_dict["benchmark"]["benchmark_idx"]
+    # По умолчанию используем готовое (запечённое в артефакт) разбиение. Если запрошено
+    # leakage-free разбиение по объекту — пересобираем его на лету (это меняет train/val/test,
+    # обеспечивая, что ни один объект не попадает одновременно в train и test).
+    if getattr(config, "group_split_by_object", False):
+        bsplit = make_benchmark_splits(population_dict["meta"],
+                                       min(config.benchmark_subset, len(population_dict["meta"])),
+                                       config.seed, config)
+    else:
+        bsplit = population_dict["benchmark"]
+    benchmark_idx = bsplit["benchmark_idx"]
     bench_meta = population_dict["meta"].iloc[benchmark_idx].reset_index(drop=True)
 
     # Наблюдаемые (доступные в реальном опыте) массивы — обязательные
@@ -169,9 +284,9 @@ def prepare_benchmark_dataset(
     liq_label = population_dict["liq_label"][benchmark_idx]
     n_liq_true = population_dict["n_liq_true"][benchmark_idx]
 
-    train_rel = population_dict["benchmark"]["train_rel"]
-    val_rel = population_dict["benchmark"]["val_rel"]
-    test_rel = population_dict["benchmark"]["test_rel"]
+    train_rel = bsplit["train_rel"]
+    val_rel = bsplit["val_rel"]
+    test_rel = bsplit["test_rel"]
 
     static_scaler = StandardScaler().fit(static_raw[train_rel])
     prefix_scaler = StandardScaler().fit(prefix_raw[train_rel])
@@ -183,6 +298,15 @@ def prepare_benchmark_dataset(
     prefix_scaled = prefix_scaler.transform(prefix_raw).astype(np.float32)
     seq_scaled = ((seq_raw - seq_mean[None, None, :]) / seq_std[None, None, :]).astype(np.float32)
     n_liq_norm = (np.log1p(n_liq_true) / np.log1p(config.max_cycle_reference)).astype(np.float32)
+
+    # --- Маска наблюдаемости терминальной точки N_liq (три режима опыта) ---
+    # Режим 2 (разжижение, label=1): N_liq наблюдён точно → маска 1.
+    # Режим 1 (стабилизация, label=0, хвост PPR плоский): N_liq право-цензурирован на N_max,
+    #          архитектура и так не может предсказать >N_max → маска 1 (корректная цензура).
+    # Режим 3 (label=0, но хвост PPR ещё растёт — напр. сейсмо): кривая не разжижилась и не
+    #          стабилизировалась; конечную точку оценить НЕЛЬЗЯ → маска 0 (N_liq-loss отключаем,
+    #          обучаемся только динамике кривой). См. n_liq_observed.
+    n_liq_observed = _terminal_observability(r_obs, valid_mask, liq_label)
 
     benchmark_arrays = {
         "static": static_scaled,
@@ -201,6 +325,7 @@ def prepare_benchmark_dataset(
         "label": liq_label.astype(np.float32),
         "n_liq_true": n_liq_true.astype(np.float32),
         "n_liq_norm": n_liq_norm.astype(np.float32),
+        "n_liq_observed": n_liq_observed.astype(np.float32),
     }
 
     # Наблюдаемые вспомогательные цели (выводятся из измеренной PPR — доступны и на реальных

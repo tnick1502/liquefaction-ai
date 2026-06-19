@@ -10,6 +10,7 @@
     "theta_dim": 31,
     "probabilistic": true,
     "use_analytical_layer": true,
+    "liq_threshold": 0.95,
     "hidden_dim": 160,
     "calibration_steps": 2
   },

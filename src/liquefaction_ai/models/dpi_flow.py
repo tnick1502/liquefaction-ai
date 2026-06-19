@@ -20,7 +20,8 @@ import torch.nn.functional as F
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll, masked_mse,
-                                             monotone_clip, observed_aux_loss, soft_auc_loss)
+                                             masked_censored_nliq_loss, monotone_clip,
+                                             observed_aux_loss, soft_auc_loss)
 
 __all__ = ["ConditionalAffineFlow", "AnalyticalLiquefactionLayer", "DPIFlow"]
 
@@ -69,14 +70,16 @@ class AnalyticalLiquefactionLayer(nn.Module):
     синтетического генератора, но в виде вычислительного графа PyTorch.
     """
 
-    def __init__(self, seq_len: int, max_cycle_reference: float):
+    def __init__(self, seq_len: int, max_cycle_reference: float, liq_threshold: float = 0.95):
         """
         :param seq_len: длина временной последовательности
         :param max_cycle_reference: опорное N для логарифмической нормировки N_liq
+        :param liq_threshold: порог пересечения PPR для N_liq (= определению разжижения в данных)
         """
         super().__init__()
         self.seq_len = seq_len
         self.max_cycle_reference = max_cycle_reference
+        self.liq_threshold = liq_threshold
 
     def unpack_theta(self, theta: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -241,7 +244,7 @@ class AnalyticalLiquefactionLayer(nn.Module):
         z = torch.stack(z_states, dim=1)
         r = torch.stack(r_states, dim=1)
         g = torch.stack(g_states, dim=1)
-        nliq = self.soft_first_hitting(r, g, cycles)
+        nliq = self.soft_first_hitting(r, g, cycles, threshold=self.liq_threshold)
         logvar = 2.0 * torch.log(params["noise"].unsqueeze(1).expand_as(r))
         return {
             "traj_mean": r,
@@ -284,6 +287,7 @@ class DPIFlow(nn.Module):
         use_analytical_layer: bool = True,
         use_flow: bool = True,
         use_traj_residual: bool = True,
+        liq_threshold: float = 0.95,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -308,13 +312,15 @@ class DPIFlow(nn.Module):
         self.use_flow = use_flow
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
+        self.liq_threshold = liq_threshold   # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
 
         context_dim = static_dim + prefix_dim + 2 * self.prefix_len
         self.context_encoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
         self.mu_head = nn.Linear(hidden_dim, theta_dim)
         self.logvar_head = nn.Linear(hidden_dim, theta_dim)
         self.flow = ConditionalAffineFlow(theta_dim, hidden_dim)
-        self.ode_layer = AnalyticalLiquefactionLayer(seq_len=seq_len, max_cycle_reference=max_cycle_reference)
+        self.ode_layer = AnalyticalLiquefactionLayer(seq_len=seq_len, max_cycle_reference=max_cycle_reference,
+                                                     liq_threshold=liq_threshold)
 
         # Обучаемые головы: калиброванный риск и гетероскедастичная неопределённость
         self.risk_head = RiskHead(hidden_dim)
@@ -482,7 +488,8 @@ class DPIFlow(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        nliq_loss = F.smooth_l1_loss(outputs["nliq_norm"], batch["n_liq_norm"])
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
+                                              batch["label"], batch.get("n_liq_observed"))
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
         rank_loss = soft_auc_loss(outputs["risk_logit"], batch["label"])  # прямая оптимизация AUROC
         # Саморегуляризаторы (без участия истинных латентных состояний)

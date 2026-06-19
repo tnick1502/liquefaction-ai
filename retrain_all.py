@@ -9,7 +9,7 @@ from liquefaction_ai.training import grid_search, write_hyperparams, read_hyperp
 from liquefaction_ai.evaluation import subsample_split
 from liquefaction_ai.models import (RiskMLP, GRUBaseline, TCNBaseline, LSTMBaseline, TransformerBaseline,
                                     FTTransformer, CatBoostBaseline, PINNBaseline, DeepStateBaseline,
-                                    RealNVPFlow, NeuralSplineFlow, DPIFlow, EVTNeuralSSM)
+                                    RealNVPFlow, NeuralSplineFlow, DPIFlow, EVTNeuralSSM, DPIEvtNet)
 
 dev = torch.device("cpu"); MD = Path("models")
 pop, cfg = load_population_artifact(Path("data/demo_run"))
@@ -29,8 +29,9 @@ SPECS = [
  ("deepstate","DeepState",DeepStateBaseline,dict(static_dim=sd,seq_dim=qd),{"hidden_dim":[64,96]},"Traj_RMSE",be),
  ("realnvp","RealNVP",RealNVPFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len),{"n_layers":[4,6]},"Traj_RMSE",be),
  ("nsf","Neural Spline Flow",NeuralSplineFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len),{"n_layers":[4,5]},"Traj_RMSE",be),
- ("dpi_flow","DPI-Flow",DPIFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,theta_dim=31,probabilistic=True,use_analytical_layer=True),{"hidden_dim":[128,160],"calibration_steps":[1,2]},"Traj_RMSE",pe),
- ("evt_ssm","EVT-NeuralSSM",EVTNeuralSSM,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference),{"hidden_dim":[96,128]},"Traj_RMSE",pe),
+ ("dpi_flow","DPI-Flow",DPIFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,theta_dim=31,probabilistic=True,use_analytical_layer=True,liq_threshold=cfg.liq_threshold),{"hidden_dim":[128,160],"calibration_steps":[1,2]},"Traj_RMSE",pe),
+ ("evt_ssm","EVT-NeuralSSM",EVTNeuralSSM,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,use_trigger_head=True,structured_post_event=True,use_crr_damage=True,integrator="euler",liq_threshold=cfg.liq_threshold),{"hidden_dim":[96,128]},"Traj_RMSE",pe),
+ ("dpi_evt","DPI-EVT",DPIEvtNet,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,probabilistic=True,use_flow=True,crr_mode="decoupled",nliq_from_curve=True,liq_threshold=cfg.liq_threshold,calibration_steps=0,use_traj_residual=False),{},"Traj_RMSE",pe),
 ]
 DONE = "/tmp/retrain_done.txt"
 done = set(open(DONE).read().split("\n")) if os.path.exists(DONE) else set()
@@ -43,8 +44,11 @@ for name, disp, cls, fixed, grid, score, epochs in SPECS:
     if name in done: continue
     if time.time()-START > BUDGET: break
     t0=time.time()
-    res, best = grid_search(lambda p, cls=cls, fixed=fixed: cls(**fixed, **p), grid, gst, gsv, cfg, dev,
-                            search_epochs=1, score_metric=score)
+    if grid:
+        res, best = grid_search(lambda p, cls=cls, fixed=fixed: cls(**fixed, **p), grid, gst, gsv, cfg, dev,
+                                search_epochs=1, score_metric=score)
+    else:
+        best = {}
     write_hyperparams(MD, name, {"model_type": cls.__name__, "display_name": disp,
                                  "model_kwargs": {**fixed, **best}, "search": {"best": best}})
     hp = read_hyperparams(MD, name); m = cls(**hp["model_kwargs"]).to(dev)

@@ -2,7 +2,6 @@ import os, sys, json, time, warnings, traceback
 warnings.filterwarnings("ignore")
 REPO = os.path.dirname(os.path.abspath(__file__)); os.chdir(REPO)
 sys.path.insert(0, os.path.join(REPO, "src"))
-os.environ.setdefault("LIQ_REAL_ROOT", "/sessions/determined-cool-fermat/mnt/Облако разжижения")
 os.environ.setdefault("LIQ_DATASET", "real_objects")
 os.environ.setdefault("LIQ_QUICK", "1")          # быстрая синтетика (на real не влияет)
 os.environ.setdefault("LIQ_REAL_MAXOBJ", "0")
@@ -18,9 +17,13 @@ ORDER = [
     "notebooks/2_model_training/2_1_baseline_models.ipynb",
     "notebooks/2_model_training/2_2_dpi_flow.ipynb",
     "notebooks/2_model_training/2_3_evt_neural_ssm.ipynb",
+    "notebooks/2_model_training/2_4_dpi_evt.ipynb",
     "notebooks/3_evaluations/3_1_core_metrics.ipynb",
     "notebooks/3_evaluations/3_2_ablations_ood.ipynb",
     "notebooks/3_evaluations/3_3_case_studies.ipynb",
+    "notebooks/4_topology/4_1_dpi_flow_latent_topology.ipynb",
+    "notebooks/4_topology/4_2_topological_early_warning.ipynb",
+    "notebooks/4_topology/4_3_evt_neural_ssm_topological_regularization.ipynb",
 ]
 DONE = "/tmp/nb_done.txt"
 done = set(open(DONE).read().split("\n")) if os.path.exists(DONE) else set()
