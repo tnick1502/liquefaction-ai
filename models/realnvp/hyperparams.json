@@ -7,9 +7,13 @@
     "seq_len": 72,
     "n_layers": 6
   },
-  "epochs": 4,
-  "learning_rate": 0.002,
-  "weight_decay": 0.0001,
-  "batch_size": 256,
-  "seed": 42
+  "search": {
+    "best": {
+      "n_layers": 6
+    }
+  },
+  "epochs": 50,
+  "publication_retrain": true,
+  "early_stopping_patience": 12,
+  "early_stopping_min_delta": 0.0001
 }

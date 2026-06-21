@@ -115,12 +115,14 @@ def flow_fixed():
     return dict(static_dim=static_dim, prefix_dim=prefix_dim, seq_len=config.seq_len,
                 prefix_len=config.prefix_len, max_cycle_reference=config.max_cycle_reference,
                 theta_dim=31, probabilistic=True, use_analytical_layer=True,
-                liq_threshold=config.liq_threshold)
+                liq_threshold=config.liq_threshold,
+                use_observed_aux_loss=config.use_observed_aux_loss)
 def evt_fixed():
     return dict(static_dim=static_dim, prefix_dim=prefix_dim, seq_dim=seq_dim, seq_len=config.seq_len,
                 prefix_len=config.prefix_len, max_cycle_reference=config.max_cycle_reference,
                 use_trigger_head=True, structured_post_event=True, use_crr_damage=True,
-                integrator="euler", liq_threshold=config.liq_threshold)
+                integrator="euler", liq_threshold=config.liq_threshold,
+                use_observed_aux_loss=config.use_observed_aux_loss)
 
 def grid_unit(name, builder_cls, fixed, grid, mtype, disp):
     res, best = grid_search(lambda p: builder_cls(**fixed, **p), grid, gs_train, gs_val,
@@ -166,7 +168,8 @@ def train_dpi_evt(name):
               seq_len=config.seq_len, prefix_len=config.prefix_len,
               max_cycle_reference=config.max_cycle_reference, probabilistic=True, use_flow=True,
               crr_mode="decoupled", nliq_from_curve=True, liq_threshold=config.liq_threshold,
-              calibration_steps=0, use_traj_residual=False)
+              calibration_steps=0, use_traj_residual=False,
+              use_observed_aux_loss=config.use_observed_aux_loss)
     set_global_seed(config.seed)
     model = DPIEvtNet(**mk).to(device)
     model, history = train_model(model, train, val, epochs=config.physics_epochs, model_name="DPI-EVT",

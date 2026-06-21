@@ -50,8 +50,8 @@ class ExperimentConfig:
     :param benchmark_train_fraction: доля обучающей выборки внутри benchmark
     :param benchmark_val_fraction: доля валидационной выборки внутри benchmark
     :param batch_size: размер мини-батча при обучении
-    :param baseline_epochs: число эпох для базовых моделей (MLP/GRU/TCN)
-    :param physics_epochs: число эпох для физически-структурированных моделей (DPI-Flow/EVT-NeuralSSM)
+    :param baseline_epochs: число эпох для быстрых demo-прогонов базовых моделей (MLP/GRU/TCN)
+    :param physics_epochs: число эпох для быстрых demo-прогонов физически-структурированных моделей
     :param ablation_epochs: число эпох в абляционных и OOD-экспериментах
     :param learning_rate: скорость обучения оптимизатора AdamW
     :param weight_decay: коэффициент L2-регуляризации оптимизатора AdamW
@@ -72,6 +72,17 @@ class ExperimentConfig:
     :param min_nonliq_complete_cycles: минимальная длительность неразжижившегося опыта, после
         которой плоский хвост PPR можно считать наблюдаемой стабилизацией; если циклов меньше,
         терминал N_liq считается неоценимым даже при визуально плоском хвосте
+    :param publication_baseline_epochs: рекомендуемый минимум эпох для отчётных, не-demo прогонов
+        базовых моделей; нужен, чтобы README/таблицы не выдавали быстрый sanity-check за финальное
+        сравнение архитектур
+    :param publication_physics_epochs: рекомендуемый минимум эпох для отчётных прогонов
+        физически-структурированных моделей
+    :param early_stopping_patience: число эпох без улучшения validation loss, после которого
+        обучение останавливается досрочно; None/0 отключает остановку
+    :param early_stopping_min_delta: минимальное улучшение validation loss, считающееся прогрессом
+    :param use_observed_aux_loss: включать auxiliary supervision, выводимую из полной наблюдаемой
+        PPR-кривой (g_obs/risk_proxy/CRR_obs), при обучении. Для стресс-теста
+        no-derived-threshold-auxiliary установите False.
     """
 
     seed: int = 42
@@ -85,6 +96,10 @@ class ExperimentConfig:
     batch_size: int = 256
     baseline_epochs: int = 4
     physics_epochs: int = 6
+    publication_baseline_epochs: int = 50
+    publication_physics_epochs: int = 80
+    early_stopping_patience: int = 12
+    early_stopping_min_delta: float = 1e-4
     ablation_epochs: int = 2
     learning_rate: float = 2e-3
     weight_decay: float = 1e-4
@@ -98,6 +113,7 @@ class ExperimentConfig:
     dataset_source: str = "synthetic"
     liq_threshold: float = LIQ_THRESHOLD   # канонический порог события разжижения ru=PPR (см. LIQ_THRESHOLD)
     min_nonliq_complete_cycles: float = 500.0
+    use_observed_aux_loss: bool = True
     group_split_by_object: bool = True     # Основной протокол: leakage-free разбиение по объекту/площадке
     #                                        (ни один объект не попадает одновременно в train/val/test)
 

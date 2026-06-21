@@ -288,6 +288,7 @@ class DPIFlow(nn.Module):
         use_flow: bool = True,
         use_traj_residual: bool = True,
         liq_threshold: float = 0.95,
+        use_observed_aux_loss: bool = True,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -313,6 +314,7 @@ class DPIFlow(nn.Module):
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
         self.liq_threshold = liq_threshold   # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
+        self.use_observed_aux_loss = use_observed_aux_loss
 
         context_dim = static_dim + prefix_dim + 2 * self.prefix_len
         self.context_encoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
@@ -510,6 +512,7 @@ class DPIFlow(nn.Module):
             + 0.01 * smoothness
             + 0.02 * kl_loss
         )
-        loss = loss + observed_aux_loss(outputs, batch, use_states=self.use_analytical_layer)
+        if self.use_observed_aux_loss:
+            loss = loss + observed_aux_loss(outputs, batch, use_states=self.use_analytical_layer)
         outputs["loss"] = loss
         return outputs

@@ -12,7 +12,7 @@ import torch
 
 from conftest import TABLES
 from liquefaction_ai.config import get_default_config
-from liquefaction_ai.evaluation.metrics import compute_metrics
+from liquefaction_ai.evaluation.metrics import compute_metrics, stress_split
 
 _skip = pytest.mark.skipif(not (TABLES / "full_leaderboard.csv").exists(),
                            reason="нет results/tables/full_leaderboard.csv")
@@ -101,6 +101,48 @@ def test_all_unfinished_nliq_slice_reports_nan_not_fallback_error():
     assert metrics["N_liq_n_observed"] == 0
     assert math.isnan(metrics["N_liq_MAE"])
     assert samples["nliq_abs_err"].isna().all()
+
+
+def test_post_prefix_trajectory_metric_excludes_conditioning_prefix():
+    split = {
+        "meta": pd.DataFrame({"soil_type": ["sand"]}),
+        "label": torch.tensor([1.0]),
+        "n_liq_true": torch.tensor([30.0]),
+        "n_liq_observed": torch.tensor([1.0]),
+        "r_obs": torch.tensor([[0.0, 0.1, 0.9, 1.0]]),
+        "mask": torch.tensor([[1.0, 1.0, 1.0, 1.0]]),
+        "prefix_mask": torch.tensor([[1.0, 1.0, 0.0, 0.0]]),
+    }
+    outputs = {
+        "risk_prob": pd.Series([0.9]).to_numpy(),
+        "nliq": pd.Series([30.0]).to_numpy(),
+        # Huge prefix error, perfect continuation. Full RMSE should see it; continuation should not.
+        "traj_mean": pd.DataFrame([[1.0, 1.1, 0.9, 1.0]]).to_numpy(),
+    }
+    metrics, samples = compute_metrics("prefix-check", outputs, split, get_default_config())
+    assert metrics["Traj_RMSE"] > 0.7
+    assert abs(metrics["Traj_RMSE_continuation"]) < 1e-7
+    assert abs(samples["traj_rmse_continuation"].iloc[0]) < 1e-7
+
+
+def test_stress_split_can_remove_prefix_and_derived_auxiliary_targets():
+    split = {
+        "prefix_summary": torch.ones(2, 3),
+        "prefix_summary_raw": torch.ones(2, 3),
+        "prefix_obs": torch.ones(2, 4),
+        "prefix_mask": torch.ones(2, 4),
+        "seq_in": torch.ones(2, 4, 5),
+        "seq_in_raw": torch.ones(2, 4, 5),
+        "g_obs": torch.ones(2, 4),
+        "risk_proxy": torch.ones(2),
+        "label": torch.zeros(2),
+    }
+    stressed = stress_split(split, no_prefix=True, drop_derived_aux=True)
+    for key in ("prefix_summary", "prefix_summary_raw", "prefix_obs", "prefix_mask"):
+        assert torch.count_nonzero(stressed[key]) == 0
+    assert torch.count_nonzero(stressed["seq_in"][..., -2:]) == 0
+    assert "g_obs" not in stressed and "risk_proxy" not in stressed
+    assert torch.count_nonzero(split["prefix_obs"]) > 0  # original is not mutated
 
 
 @_skip

@@ -16,7 +16,10 @@ pop, cfg = load_population_artifact(Path("data/demo_run"))
 b = prepare_benchmark_dataset(pop, cfg, dev)
 sd = b["train"]["static"].shape[1]; pdim = b["train"]["prefix_summary"].shape[1]; qd = b["train"]["seq_in"].shape[-1]
 gst = subsample_split(b["train"], 2000, cfg.seed); gsv = subsample_split(b["val"], 600, cfg.seed + 1)
-be, pe = cfg.baseline_epochs, cfg.physics_epochs
+PUBLICATION = os.environ.get("LIQ_PUBLICATION_RETRAIN", "1") != "0"
+be = cfg.publication_baseline_epochs if PUBLICATION else cfg.baseline_epochs
+pe = cfg.publication_physics_epochs if PUBLICATION else cfg.physics_epochs
+search_epochs = int(os.environ.get("LIQ_SEARCH_EPOCHS", "3" if PUBLICATION else "1"))
 
 SPECS = [
  ("mlp_risk","RiskMLP",RiskMLP,dict(static_dim=sd,prefix_dim=pdim),{"hidden_dim":[64,128]},"Brier",be),
@@ -29,24 +32,28 @@ SPECS = [
  ("deepstate","DeepState",DeepStateBaseline,dict(static_dim=sd,seq_dim=qd),{"hidden_dim":[64,96]},"Traj_RMSE",be),
  ("realnvp","RealNVP",RealNVPFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len),{"n_layers":[4,6]},"Traj_RMSE",be),
  ("nsf","Neural Spline Flow",NeuralSplineFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len),{"n_layers":[4,5]},"Traj_RMSE",be),
- ("dpi_flow","DPI-Flow",DPIFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,theta_dim=31,probabilistic=True,use_analytical_layer=True,liq_threshold=cfg.liq_threshold),{"hidden_dim":[128,160],"calibration_steps":[1,2]},"Traj_RMSE",pe),
- ("evt_ssm","EVT-NeuralSSM",EVTNeuralSSM,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,use_trigger_head=True,structured_post_event=True,use_crr_damage=True,integrator="euler",liq_threshold=cfg.liq_threshold),{"hidden_dim":[96,128]},"Traj_RMSE",pe),
- ("dpi_evt","DPI-EVT",DPIEvtNet,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,probabilistic=True,use_flow=True,crr_mode="decoupled",nliq_from_curve=True,liq_threshold=cfg.liq_threshold,calibration_steps=0,use_traj_residual=False),{},"Traj_RMSE",pe),
+ ("dpi_flow","DPI-Flow",DPIFlow,dict(static_dim=sd,prefix_dim=pdim,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,theta_dim=31,probabilistic=True,use_analytical_layer=True,liq_threshold=cfg.liq_threshold,use_observed_aux_loss=cfg.use_observed_aux_loss),{"hidden_dim":[128,160],"calibration_steps":[1,2]},"Traj_RMSE",pe),
+ ("evt_ssm","EVT-NeuralSSM",EVTNeuralSSM,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,use_trigger_head=True,structured_post_event=True,use_crr_damage=True,integrator="euler",liq_threshold=cfg.liq_threshold,use_observed_aux_loss=cfg.use_observed_aux_loss),{"hidden_dim":[96,128]},"Traj_RMSE",pe),
+ ("dpi_evt","DPI-EVT",DPIEvtNet,dict(static_dim=sd,prefix_dim=pdim,seq_dim=qd,seq_len=cfg.seq_len,prefix_len=cfg.prefix_len,max_cycle_reference=cfg.max_cycle_reference,probabilistic=True,use_flow=True,crr_mode="decoupled",nliq_from_curve=True,liq_threshold=cfg.liq_threshold,calibration_steps=0,use_traj_residual=False,use_observed_aux_loss=cfg.use_observed_aux_loss),{},"Traj_RMSE",pe),
 ]
-DONE = "/tmp/retrain_done.txt"
+DONE = os.environ.get("LIQ_RETRAIN_DONE", str(MD / (".publication_retrain_done" if PUBLICATION else ".demo_retrain_done")))
+if os.environ.get("LIQ_RETRAIN_RESET", "0") == "1" and os.path.exists(DONE):
+    os.remove(DONE)
 done = set(open(DONE).read().split("\n")) if os.path.exists(DONE) else set()
 
 def mark(n):
     done.add(n); open(DONE,"w").write("\n".join(sorted(done)))
 
-START=time.time(); BUDGET=33.0
+START=time.time(); BUDGET=float(os.environ.get("LIQ_RETRAIN_BUDGET", "inf"))
+print(f"RETRAIN mode={'publication' if PUBLICATION else 'demo'} baseline_epochs={be} physics_epochs={pe} "
+      f"search_epochs={search_epochs} patience={cfg.early_stopping_patience}", flush=True)
 for name, disp, cls, fixed, grid, score, epochs in SPECS:
     if name in done: continue
     if time.time()-START > BUDGET: break
     t0=time.time()
     if grid:
         res, best = grid_search(lambda p, cls=cls, fixed=fixed: cls(**fixed, **p), grid, gst, gsv, cfg, dev,
-                                search_epochs=1, score_metric=score)
+                                search_epochs=search_epochs, score_metric=score)
     else:
         best = {}
     write_hyperparams(MD, name, {"model_type": cls.__name__, "display_name": disp,
@@ -54,7 +61,9 @@ for name, disp, cls, fixed, grid, score, epochs in SPECS:
     hp = read_hyperparams(MD, name); m = cls(**hp["model_kwargs"]).to(dev)
     m, hist = train_model(m, b["train"], b["val"], epochs=epochs, model_name=disp, config=cfg,
                           device=dev, track_metrics=True, scheduler="cosine")
-    save_trained_model(m, MD, name, {**hp, "epochs": epochs}, hist)
+    save_trained_model(m, MD, name, {**hp, "epochs": epochs, "publication_retrain": PUBLICATION,
+                                     "early_stopping_patience": cfg.early_stopping_patience,
+                                     "early_stopping_min_delta": cfg.early_stopping_min_delta}, hist)
     mark(name); print(f"OK {name} ({time.time()-t0:.0f}s) best={best}", flush=True)
 
 if "catboost" not in done and all(s[0] in done for s in SPECS):

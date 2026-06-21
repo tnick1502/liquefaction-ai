@@ -35,6 +35,7 @@ __all__ = [
     "grouped_metrics",
     "subsample_split",
     "filter_split",
+    "stress_split",
     "run_quick_experiment",
     "is_holdout_region",
     "MODEL_DISPLAY_NAMES",
@@ -84,7 +85,9 @@ METRICS: Dict[str, "MetricInfo"] = {
     "Traj_RMSE": MetricInfo(
         "Traj_RMSE", "Trajectory RMSE",
         "Root-mean-square error of the predicted pore-pressure-ratio trajectory PPR(N) over the "
-        "observed horizon. Primary measure of how accurately the model reproduces the PPR curve.",
+        "whole observed horizon, including the conditioning prefix when prefix observations are "
+        "available. This is a reconstruction/continuation metric; use Traj_RMSE_continuation for "
+        "the strictly post-prefix forecast portion.",
         "–", lower_is_better=True),
     "Traj_MAE": MetricInfo(
         "Traj_MAE", "Trajectory MAE",
@@ -148,9 +151,9 @@ METRICS: Dict[str, "MetricInfo"] = {
         "Physics_Violation_Rate", "Monotonicity-assumption violation rate",
         "Fraction of predicted PPR(N) curves that break the undrained monotonic-accumulation modelling "
         "assumption: ru either decreases or leaves [0, 1.05]. This is the assumption adopted here (and "
-        "enforced structurally) for undrained cyclic loading, NOT a universal physical law — under drained "
-        "or strongly variable loading with pore-pressure dissipation ru can legitimately decrease. Lower is "
-        "better under this assumption; structurally-constrained models are near 0 by construction.",
+        "enforced structurally for the proposed models through monotone projection) for undrained cyclic "
+        "loading, NOT a universal physical law. A zero value for structurally-constrained models is a "
+        "feasibility guarantee, not independent empirical evidence of better physics.",
         "–", lower_is_better=True, target=0.0, fmt=".3f"),
     "Coverage_80": MetricInfo(
         "Coverage_80", "80% interval coverage",
@@ -519,6 +522,26 @@ def compute_metrics(
         sample_mask_count = np.maximum(mask.sum(axis=1), 1.0)
         sample_df["traj_rmse"] = np.sqrt(np.sum(((pred - true) ** 2) * mask, axis=1) / sample_mask_count)
 
+        # Prefix-conditioned task: models observe the early PPR prefix as context. Report the full
+        # reconstruction/continuation error above, but make the strictly post-prefix forecast error
+        # explicit so it cannot be mistaken for a pure-from-zero trajectory forecast.
+        if "prefix_mask" in split:
+            prefix_mask = split["prefix_mask"].cpu().numpy()
+            continuation_mask = mask * (1.0 - np.minimum(prefix_mask, 1.0))
+        else:
+            continuation_mask = mask
+        cont_denom = np.maximum(continuation_mask.sum(), 1.0)
+        cont_mse = float(np.sum(((pred - true) ** 2) * continuation_mask) / cont_denom)
+        cont_mae = float(np.sum(np.abs(pred - true) * continuation_mask) / cont_denom)
+        cont_rmse = float(np.sqrt(cont_mse))
+        metrics["Traj_MSE_continuation"] = cont_mse
+        metrics["Traj_MAE_continuation"] = cont_mae
+        metrics["Traj_RMSE_continuation"] = cont_rmse
+        sample_cont_count = np.maximum(continuation_mask.sum(axis=1), 1.0)
+        sample_df["traj_rmse_continuation"] = np.sqrt(
+            np.sum(((pred - true) ** 2) * continuation_mask, axis=1) / sample_cont_count
+        )
+
         # --- Траекторная ошибка по трём СОСТОЯНИЯМ ОПЫТА (а не по типу воздействия) ---
         # Состояния: разжижение (liq_label==1); нет разжижения + стабилизация (obs==1);
         # нет разжижения + нет стабилизации (obs==0). Balanced = макро-среднее по
@@ -540,6 +563,23 @@ def compute_metrics(
                 _present.append(_v)
         metrics["Traj_RMSE_balanced"] = float(np.mean(_present)) if _present else float("nan")
         metrics["Traj_RMSE_worst"] = float(np.max(_present)) if _present else float("nan")
+
+        _se_cont = ((pred - true) ** 2) * continuation_mask
+        _present_cont = []
+        for _nm, _m in _states.items():
+            if int(_m.sum()) > 0 and float(continuation_mask[_m].sum()) > 0:
+                _v = float(np.sqrt(_se_cont[_m].sum() / np.maximum(continuation_mask[_m].sum(), 1.0)))
+            else:
+                _v = float("nan")
+            metrics[f"Traj_RMSE_continuation_{_nm}"] = _v
+            if _v == _v:
+                _present_cont.append(_v)
+        metrics["Traj_RMSE_continuation_balanced"] = (
+            float(np.mean(_present_cont)) if _present_cont else float("nan")
+        )
+        metrics["Traj_RMSE_continuation_worst"] = (
+            float(np.max(_present_cont)) if _present_cont else float("nan")
+        )
 
         # Физические нарушения: доля предсказаний с «невозможной» кривой PPR(N) — заметно
         # убывающей (ru должна монотонно расти) или выходящей за физические границы [0, 1.05].
@@ -587,6 +627,9 @@ def compute_metrics(
         metrics["Traj_MSE"] = float("nan")
         metrics["Traj_MAE"] = float("nan")
         metrics["Traj_RMSE"] = float("nan")
+        metrics["Traj_MSE_continuation"] = float("nan")
+        metrics["Traj_MAE_continuation"] = float("nan")
+        metrics["Traj_RMSE_continuation"] = float("nan")
         metrics["Physics_Violation_Rate"] = float("nan")
         for level in (80, 90, 95):
             metrics[f"Coverage_{level}"] = float("nan")
@@ -595,6 +638,7 @@ def compute_metrics(
         metrics["Traj_NLL"] = float("nan")
         metrics["Traj_CRPS"] = float("nan")
         sample_df["traj_rmse"] = np.nan
+        sample_df["traj_rmse_continuation"] = np.nan
         sample_df["interval_width"] = np.nan
         sample_df["physics_violation"] = np.nan
 
@@ -710,6 +754,49 @@ def filter_split(split: Dict[str, object], mask: np.ndarray) -> Dict[str, object
     return filtered
 
 
+def stress_split(
+    split: Dict[str, object],
+    *,
+    no_prefix: bool = False,
+    drop_derived_aux: bool = False,
+) -> Dict[str, object]:
+    """
+    Сформировать копию выборки для стресс-протоколов без переупаковки артефакта.
+
+    ``no_prefix=True`` зануляет наблюдаемый префикс PPR и его summary-признаки. Это проверяет,
+    насколько результат зависит от постановки "forecast from observed prefix" и не должен
+    смешиваться с основной prefix-conditioned таблицей.
+
+    ``drop_derived_aux=True`` удаляет ``g_obs`` и ``risk_proxy`` — auxiliary targets, выводимые из
+    полной PPR-кривой. Используйте это при переобучении с ``config.use_observed_aux_loss=False``
+    для стресс-теста "no-derived-threshold auxiliaries". На test-time модели не читают эти поля,
+    но явное удаление защищает от случайного использования в новых экспериментах.
+
+    :param split: выборка из :func:`prepare_benchmark_dataset`
+    :param no_prefix: убрать prefix-conditioning признаки
+    :param drop_derived_aux: удалить производные auxiliary цели
+    :return: копия split с теми же meta/indices и изменёнными тензорными полями
+    """
+    out: Dict[str, object] = {}
+    for key, value in split.items():
+        out[key] = value.clone() if torch.is_tensor(value) else value
+    if no_prefix:
+        for key in ("prefix_summary", "prefix_summary_raw", "prefix_obs", "prefix_mask"):
+            if key in out and torch.is_tensor(out[key]):
+                out[key] = torch.zeros_like(out[key])
+        # В текущем артефакте последние два sequence-канала — prefix_obs/prefix_mask. Зануляем их
+        # как дополнительную защиту для моделей, читающих весь seq_in.
+        for key in ("seq_in", "seq_in_raw"):
+            if key in out and torch.is_tensor(out[key]) and out[key].ndim == 3 and out[key].shape[-1] >= 2:
+                value = out[key].clone()
+                value[..., -2:] = 0.0
+                out[key] = value
+    if drop_derived_aux:
+        for key in ("g_obs", "risk_proxy"):
+            out.pop(key, None)
+    return out
+
+
 def run_quick_experiment(
     model_name: str,
     model: nn.Module,
@@ -794,6 +881,9 @@ METRIC_COLUMN_TRANSLATIONS = {
     "Traj_MSE": "MSE траектории",
     "Traj_MAE": "MAE траектории",
     "Traj_RMSE": "RMSE траектории",
+    "Traj_MSE_continuation": "MSE прогноза после префикса",
+    "Traj_MAE_continuation": "MAE прогноза после префикса",
+    "Traj_RMSE_continuation": "RMSE прогноза после префикса",
     "Coverage_90": "покрытие_90",
     "Interval_Width_90": "ширина_интервала_90",
     "samples": "число_образцов",
@@ -847,6 +937,9 @@ METRIC_COLUMN_EN = {
     "Traj_MSE": "Trajectory MSE",
     "Traj_MAE": "Trajectory MAE",
     "Traj_RMSE": "Trajectory RMSE",
+    "Traj_MSE_continuation": "Post-prefix MSE",
+    "Traj_MAE_continuation": "Post-prefix MAE",
+    "Traj_RMSE_continuation": "Post-prefix RMSE",
     "Physics_Violation_Rate": "Physics violations",
     "Calibration_Error": "Calibration error",
     "Traj_NLL": "Trajectory NLL",
@@ -872,6 +965,11 @@ METRIC_COLUMN_EN = {
     "Traj_RMSE_nostab": "Trajectory RMSE (no-liq, not stabilized)",
     "Traj_RMSE_balanced": "Trajectory RMSE (balanced over states)",
     "Traj_RMSE_worst": "Trajectory RMSE (worst state)",
+    "Traj_RMSE_continuation_liq": "Post-prefix RMSE (liquefied)",
+    "Traj_RMSE_continuation_stab": "Post-prefix RMSE (no-liq, stabilized)",
+    "Traj_RMSE_continuation_nostab": "Post-prefix RMSE (no-liq, not stabilized)",
+    "Traj_RMSE_continuation_balanced": "Post-prefix RMSE (balanced over states)",
+    "Traj_RMSE_continuation_worst": "Post-prefix RMSE (worst state)",
 }
 """Соответствия технических имён колонок метрик их англоязычным публикационным подписям."""
 
@@ -893,6 +991,20 @@ def _register_state_traj_metrics() -> None:
         "Traj_RMSE_worst": ("Trajectory RMSE (worst state)",
             "Worst (maximum) per-state PPR(N) RMSE across the three experiment states. Used by the "
             "P³ competence gate to exclude models that collapse on an entire regime."),
+        "Traj_RMSE_continuation": ("Post-prefix trajectory RMSE",
+            "RMSE of PPR(N) only after the observed conditioning prefix. This is the primary "
+            "trajectory metric for claims about forecasting/continuation rather than reconstruction."),
+        "Traj_RMSE_continuation_liq": ("Post-prefix RMSE (liquefied)",
+            "Post-prefix PPR(N) RMSE restricted to liquefied experiments."),
+        "Traj_RMSE_continuation_stab": ("Post-prefix RMSE (no-liq, stabilized)",
+            "Post-prefix PPR(N) RMSE on stabilized non-liquefying experiments."),
+        "Traj_RMSE_continuation_nostab": ("Post-prefix RMSE (no-liq, not stabilized)",
+            "Post-prefix PPR(N) RMSE on non-liquefying experiments that did not stabilize."),
+        "Traj_RMSE_continuation_balanced": ("Post-prefix RMSE (balanced)",
+            "Macro-average of post-prefix per-state RMSE. Used as the preferred P³ trajectory "
+            "component when available because the task is prefix-conditioned forecasting."),
+        "Traj_RMSE_continuation_worst": ("Post-prefix RMSE (worst state)",
+            "Worst post-prefix per-state RMSE; used by the P³ competence gate when available."),
     }
     for key, (name, desc) in _defs.items():
         METRICS[key] = MetricInfo(key, name, desc, "–", lower_is_better=True, fmt=".3f")

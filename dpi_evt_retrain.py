@@ -31,7 +31,8 @@ MK = dict(static_dim=static_dim, prefix_dim=prefix_dim, seq_dim=seq_dim,
           seq_len=config.seq_len, prefix_len=config.prefix_len,
           max_cycle_reference=config.max_cycle_reference, probabilistic=True, use_flow=True,
           crr_mode="decoupled", nliq_from_curve=True, liq_threshold=config.liq_threshold,
-          calibration_steps=0, use_traj_residual=False)
+          calibration_steps=0, use_traj_residual=False,
+          use_observed_aux_loss=config.use_observed_aux_loss)
 
 def load_state():
     return json.loads(STATE.read_text()) if STATE.exists() else {"done": [], "seed_val": {}}

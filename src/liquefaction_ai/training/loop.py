@@ -85,6 +85,8 @@ def train_model(
     verbose: bool = True,
     scheduler: str = "none",
     ema_decay: float = 0.0,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float | None = None,
 ) -> Tuple[nn.Module, pd.DataFrame]:
     """
     Обучить модель и вернуть лучшее по валидации состояние и историю обучения.
@@ -108,6 +110,9 @@ def train_model(
     :param verbose: печатать ли прогресс по эпохам
     :param scheduler: ``"none"`` или ``"cosine"`` (косинусный LR с коротким прогревом)
     :param ema_decay: коэффициент EMA весов (0 — выключено; типично 0.998–0.999)
+    :param early_stopping_patience: число эпох без улучшения validation loss до остановки;
+        ``None`` берёт значение из config, 0 отключает
+    :param early_stopping_min_delta: минимальное улучшение validation loss; ``None`` берёт config
     :return: кортеж (обученная модель с лучшими весами, история обучения DataFrame)
     """
     # Единый сид проекта на старте обучения каждой модели — делает обучение
@@ -122,6 +127,12 @@ def train_model(
 
     best_state = clone_state_dict(model)
     best_val = float("inf")
+    best_epoch = 0
+    patience = config.early_stopping_patience if early_stopping_patience is None else early_stopping_patience
+    min_delta = config.early_stopping_min_delta if early_stopping_min_delta is None else early_stopping_min_delta
+    patience = int(patience or 0)
+    min_delta = float(min_delta or 0.0)
+    stale_epochs = 0
     history: List[Dict[str, float]] = []
     warmup_epochs = 1
 
@@ -161,9 +172,18 @@ def train_model(
         if track_metrics:
             record.update(evaluate_epoch_metrics(model, val_split, config, device))
         history.append(record)
-        if val_loss < best_val:
+        improved = val_loss < (best_val - min_delta)
+        record["best_val_loss"] = min(best_val, val_loss)
+        record["epochs_without_improvement"] = stale_epochs
+        if improved:
             best_val = val_loss
+            best_epoch = epoch
             best_state = clone_state_dict(model)
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        record["best_epoch"] = best_epoch
+        record["epochs_without_improvement"] = stale_epochs
         if use_ema:
             model.load_state_dict(backup)
 
@@ -173,7 +193,17 @@ def train_model(
                 extra = f" | val_AUROC={record.get('val_auroc', float('nan')):.3f}"
                 if "val_traj_rmse" in record:
                     extra += f" | val_RMSE={record['val_traj_rmse']:.4f}"
-            print(f"[{model_name}] эпоха {epoch:02d} | обучение={train_loss:.4f} | валидация={val_loss:.4f}{extra}", flush=True)
+            stop_note = f" | stale={stale_epochs}/{patience}" if patience > 0 else ""
+            print(f"[{model_name}] эпоха {epoch:02d} | обучение={train_loss:.4f} | валидация={val_loss:.4f}{extra}{stop_note}", flush=True)
+
+        if patience > 0 and stale_epochs >= patience:
+            if verbose:
+                print(
+                    f"[{model_name}] ранняя остановка на эпохе {epoch:02d}; "
+                    f"лучший val_loss={best_val:.4f} на эпохе {best_epoch:02d}",
+                    flush=True,
+                )
+            break
 
     model.load_state_dict(best_state)
     return model, pd.DataFrame(history)

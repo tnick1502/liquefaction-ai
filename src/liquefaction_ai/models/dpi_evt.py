@@ -40,7 +40,8 @@ class DPIEvtNet(EVTNeuralSSM):
                  max_cycle_reference: float, hidden_dim: int = 144, probabilistic: bool = True,
                  use_flow: bool = True, crr_from_damage: bool = True, crr_mode: str = None,
                  nliq_from_curve: bool = True, calibration_steps: int = 0, calibration_lr: float = 0.05,
-                 use_traj_residual: bool = False, liq_threshold: float = 0.95, **kwargs):
+                 use_traj_residual: bool = False, liq_threshold: float = 0.95,
+                 use_observed_aux_loss: bool = True, **kwargs):
         """
         :param crr_mode: "damage" | "empirical" | "hybrid" | "decoupled" (см. модульную документацию)
         :param nliq_from_curve: брать N_liq из момента пересечения порога кривой PPR (а не из first-hitting)
@@ -59,6 +60,7 @@ class DPIEvtNet(EVTNeuralSSM):
         self.calibration_lr = calibration_lr
         self.use_traj_residual = use_traj_residual
         self.liq_threshold = liq_threshold
+        self.use_observed_aux_loss = use_observed_aux_loss
         self.logvar_head = nn.Linear(hidden_dim, 33)
         self.flow = ConditionalAffineFlow(33, hidden_dim)
         self.crr_ref_head = nn.Linear(hidden_dim, 3)              # [CRR_ref, λ_crr, m_crr]
@@ -271,6 +273,7 @@ class DPIEvtNet(EVTNeuralSSM):
                 + 0.02 * switch_reg + 0.01 * state_smooth + 0.02 * kl_loss
                 + 0.01 * out["crr_consistency"].mean() + 0.05 * joint
                 + 0.20 * overshoot + 0.05 * trigger_noliq)
-        loss = loss + observed_aux_loss(out, batch, use_states=True)
+        if self.use_observed_aux_loss:
+            loss = loss + observed_aux_loss(out, batch, use_states=True)
         out["loss"] = loss
         return out

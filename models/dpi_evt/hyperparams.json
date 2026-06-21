@@ -14,37 +14,14 @@
     "nliq_from_curve": true,
     "liq_threshold": 0.95,
     "calibration_steps": 0,
-    "use_traj_residual": false
+    "use_traj_residual": false,
+    "use_observed_aux_loss": true
   },
-  "epochs": 14,
-  "calib_scale": 1.4500000000000002,
-  "best_seed": 1,
-  "seed_val": {
-    "0": {
-      "worst": 0.15339550375938416,
-      "balanced": 0.11197318136692047,
-      "global": 0.1349243183389655
-    },
-    "1": {
-      "worst": 0.12974418699741364,
-      "balanced": 0.09424382199843724,
-      "global": 0.11490776360474261
-    },
-    "2": {
-      "worst": 0.16724441945552826,
-      "balanced": 0.11225580424070358,
-      "global": 0.14395052642903228
-    },
-    "3": {
-      "worst": 0.15159092843532562,
-      "balanced": 0.12833333015441895,
-      "global": 0.13989940180621643
-    },
-    "4": {
-      "worst": 0.4249570667743683,
-      "balanced": 0.27078528702259064,
-      "global": 0.24002092074068784
-    }
+  "search": {
+    "best": {}
   },
-  "selection": "val Traj_RMSE_worst"
+  "epochs": 80,
+  "publication_retrain": true,
+  "early_stopping_patience": 12,
+  "early_stopping_min_delta": 0.0001
 }

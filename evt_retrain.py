@@ -37,7 +37,8 @@ state = load_state(); done = set(state["done"])
 fixed = dict(static_dim=static_dim, prefix_dim=prefix_dim, seq_dim=seq_dim, seq_len=config.seq_len,
              prefix_len=config.prefix_len, max_cycle_reference=config.max_cycle_reference,
              use_trigger_head=True, structured_post_event=True, use_crr_damage=True,
-             integrator="euler", liq_threshold=config.liq_threshold)
+             integrator="euler", liq_threshold=config.liq_threshold,
+             use_observed_aux_loss=config.use_observed_aux_loss)
 
 def do_grid():
     res, best = grid_search(lambda p: EVTNeuralSSM(**fixed, **p), {"hidden_dim": [96, 128]},

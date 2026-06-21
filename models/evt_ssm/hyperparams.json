@@ -13,52 +13,16 @@
     "use_crr_damage": true,
     "integrator": "euler",
     "liq_threshold": 0.95,
-    "hidden_dim": 128
+    "use_observed_aux_loss": true,
+    "hidden_dim": 96
   },
   "search": {
-    "grid": {
-      "hidden_dim": [
-        96,
-        128
-      ]
-    },
-    "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 128
+      "hidden_dim": 96
     }
   },
-  "epochs": 14,
-  "learning_rate": 0.002,
-  "weight_decay": 0.0001,
-  "batch_size": 256,
-  "calib_scale": 0.8500000000000001,
-  "best_seed": 3,
-  "seed_val": {
-    "0": {
-      "worst": 0.424964964389801,
-      "balanced": 0.2772766351699829,
-      "global": 0.24330086287844446
-    },
-    "1": {
-      "worst": 0.4250120222568512,
-      "balanced": 0.27787095308303833,
-      "global": 0.24514031016193233
-    },
-    "2": {
-      "worst": 0.42500683665275574,
-      "balanced": 0.2782508283853531,
-      "global": 0.24672571660425838
-    },
-    "3": {
-      "worst": 0.1706244796514511,
-      "balanced": 0.13406029591957727,
-      "global": 0.15302735178350393
-    },
-    "4": {
-      "worst": 0.1846996694803238,
-      "balanced": 0.13212894648313522,
-      "global": 0.1613357306620348
-    }
-  },
-  "selection": "val Traj_RMSE_worst"
+  "epochs": 80,
+  "publication_retrain": true,
+  "early_stopping_patience": 12,
+  "early_stopping_min_delta": 0.0001
 }

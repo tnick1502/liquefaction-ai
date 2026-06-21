@@ -51,6 +51,7 @@ class EVTNeuralSSM(nn.Module):
         integrator: str = "heun",
         nliq_from_curve: bool = True,
         liq_threshold: float = 0.95,   # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
+        use_observed_aux_loss: bool = True,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -74,6 +75,7 @@ class EVTNeuralSSM(nn.Module):
         # Практики из DPI-EVT (модель-агностичные): N_liq из кривой + joint-consistency в лоссе
         self.nliq_from_curve = nliq_from_curve   # перенос из DPI-EVT: помогает N_liq
         self.liq_threshold = liq_threshold
+        self.use_observed_aux_loss = use_observed_aux_loss
         # joint-consistency для plain EVT по умолчанию ВЫКЛ: связь CRR(N_liq)≈CSR конфликтует с
         # эмпирической CRR, которая здесь ведёт динамику (в DPI-EVT CRR decoupled → там joint полезен)
         self.use_joint_consistency = False
@@ -428,6 +430,7 @@ class EVTNeuralSSM(nn.Module):
             + 0.20 * overshoot
             + 0.05 * trigger_noliq
         )
-        loss = loss + observed_aux_loss(outputs, batch, use_states=True)
+        if self.use_observed_aux_loss:
+            loss = loss + observed_aux_loss(outputs, batch, use_states=True)
         outputs["loss"] = loss
         return outputs
