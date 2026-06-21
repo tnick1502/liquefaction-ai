@@ -7,18 +7,6 @@
     "seq_len": 72,
     "n_layers": 6
   },
-  "search": {
-    "grid": {
-      "n_layers": [
-        4,
-        6
-      ]
-    },
-    "score_metric": "Traj_RMSE",
-    "best": {
-      "n_layers": 6
-    }
-  },
   "epochs": 4,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,

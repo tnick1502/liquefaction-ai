@@ -1,0 +1,36 @@
+{
+ "done": [
+  "base:deepstate",
+  "base:ft_transformer",
+  "base:gru",
+  "base:lstm",
+  "base:mlp_risk",
+  "base:nsf",
+  "base:pinn",
+  "base:realnvp",
+  "base:tcn",
+  "base:transformer",
+  "catboost",
+  "dpi_evt",
+  "evt:finalize",
+  "evt:grid",
+  "evt:seed0",
+  "evt:seed1",
+  "evt:seed2",
+  "flow:finalize",
+  "flow:grid",
+  "flow:seed0",
+  "flow:seed1",
+  "flow:seed2"
+ ],
+ "flow_seed_val": {
+  "0": 0.1552881917601384,
+  "1": 0.1563111304864142,
+  "2": 0.17051006328762022
+ },
+ "evt_seed_val": {
+  "0": 0.24325385982601258,
+  "1": 0.24501524093234872,
+  "2": 0.24679283724455767
+ }
+}

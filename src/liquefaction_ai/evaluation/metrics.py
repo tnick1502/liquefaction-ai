@@ -519,6 +519,28 @@ def compute_metrics(
         sample_mask_count = np.maximum(mask.sum(axis=1), 1.0)
         sample_df["traj_rmse"] = np.sqrt(np.sum(((pred - true) ** 2) * mask, axis=1) / sample_mask_count)
 
+        # --- Траекторная ошибка по трём СОСТОЯНИЯМ ОПЫТА (а не по типу воздействия) ---
+        # Состояния: разжижение (liq_label==1); нет разжижения + стабилизация (obs==1);
+        # нет разжижения + нет стабилизации (obs==0). Balanced = макро-среднее по
+        # присутствующим состояниям (нечувствительно к дисбалансу классов и не даёт модели
+        # «спрятать» провал режима за счёт лёгкого большинства); worst = худшее состояние
+        # (используется gate-ом компетентности в P³, чтобы коллапс целого режима не проходил).
+        _se = ((pred - true) ** 2) * mask
+        _states = {"liq": y_true > 0.5,
+                   "stab": (y_true < 0.5) & obs,
+                   "nostab": (y_true < 0.5) & (~obs)}
+        _present = []
+        for _nm, _m in _states.items():
+            if int(_m.sum()) > 0:
+                _v = float(np.sqrt(_se[_m].sum() / np.maximum(mask[_m].sum(), 1.0)))
+            else:
+                _v = float("nan")
+            metrics[f"Traj_RMSE_{_nm}"] = _v
+            if _v == _v:
+                _present.append(_v)
+        metrics["Traj_RMSE_balanced"] = float(np.mean(_present)) if _present else float("nan")
+        metrics["Traj_RMSE_worst"] = float(np.max(_present)) if _present else float("nan")
+
         # Физические нарушения: доля предсказаний с «невозможной» кривой PPR(N) — заметно
         # убывающей (ru должна монотонно расти) или выходящей за физические границы [0, 1.05].
         diffs = pred[:, 1:] - pred[:, :-1]
@@ -845,8 +867,38 @@ METRIC_COLUMN_EN = {
     "mean_traj_rmse": "Mean trajectory RMSE",
     "mean_interval_width": "Mean interval width",
     "physics_violation_rate": "Physics violations",
+    "Traj_RMSE_liq": "Trajectory RMSE (liquefied)",
+    "Traj_RMSE_stab": "Trajectory RMSE (no-liq, stabilized)",
+    "Traj_RMSE_nostab": "Trajectory RMSE (no-liq, not stabilized)",
+    "Traj_RMSE_balanced": "Trajectory RMSE (balanced over states)",
+    "Traj_RMSE_worst": "Trajectory RMSE (worst state)",
 }
 """Соответствия технических имён колонок метрик их англоязычным публикационным подписям."""
+
+
+def _register_state_traj_metrics() -> None:
+    """Зарегистрировать в каталоге траекторные метрики по трём состояниям опыта."""
+    _defs = {
+        "Traj_RMSE_liq": ("Trajectory RMSE (liquefied)",
+            "PPR(N) RMSE restricted to liquefied experiments (liq_label=1)."),
+        "Traj_RMSE_stab": ("Trajectory RMSE (no-liq, stabilized)",
+            "PPR(N) RMSE on non-liquefying experiments whose pore pressure stabilized "
+            "(observable censored terminal)."),
+        "Traj_RMSE_nostab": ("Trajectory RMSE (no-liq, not stabilized)",
+            "PPR(N) RMSE on non-liquefying experiments that neither liquefied nor stabilized."),
+        "Traj_RMSE_balanced": ("Trajectory RMSE (balanced)",
+            "Macro-average of per-experiment-state PPR(N) RMSE over the three observed states. "
+            "Insensitive to class imbalance: a model cannot hide a collapsed regime behind an easy "
+            "majority. Used as the trajectory component of the core P³ score."),
+        "Traj_RMSE_worst": ("Trajectory RMSE (worst state)",
+            "Worst (maximum) per-state PPR(N) RMSE across the three experiment states. Used by the "
+            "P³ competence gate to exclude models that collapse on an entire regime."),
+    }
+    for key, (name, desc) in _defs.items():
+        METRICS[key] = MetricInfo(key, name, desc, "–", lower_is_better=True, fmt=".3f")
+
+
+_register_state_traj_metrics()
 
 
 def english_metric_table(df: pd.DataFrame) -> pd.DataFrame:

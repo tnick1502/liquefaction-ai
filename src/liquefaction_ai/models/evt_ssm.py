@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll,
-                                             masked_censored_nliq_loss, monotone_clip,
+                                             masked_censored_nliq_loss, masked_mean, monotone_clip,
                                              observed_aux_loss, soft_auc_loss)
 
 __all__ = ["EVTNeuralSSM"]
@@ -401,6 +401,21 @@ class EVTNeuralSSM(nn.Module):
             z_at = (outputs["cross_pdf"] * outputs["z"]).sum(1) / m
             csr_app = batch["csr"].amax(dim=1)
             joint = ((liq * (crr_at - csr_app) ** 2).sum() + (liq * (z_at - 0.90) ** 2).sum()) / denom
+        # --- подавление ложного роста PPR и ложного срабатывания триггера на НЕразжижающихся опытах ---
+        # Архитектурная слабость event-switched SSM: пост-событийная динамика может «выстреливать» на
+        # нестационарной нагрузке, которая на деле не приводит к разжижению, и гнать ru вверх на плоских
+        # кривых (коллапс режима «нет разжижения»). Штрафуем (одностороннее) превышение измеренной кривой
+        # и среднюю активацию триггера на образцах с label==0 — обе цели наблюдаемы (без латентной истины).
+        # overshoot: одностороннее превышение ИЗМЕРЕННОЙ кривой — безопасно для всех неразжижившихся,
+        # включая незавершённые (правоцензурированные) опыты, т.к. штрафуется только за пределами факта.
+        noliq = (1.0 - batch["label"]).unsqueeze(1)                      # (B,1)
+        overshoot = masked_mean(torch.relu(outputs["traj_mean"] - batch["r_obs"]) * noliq, batch["mask"])
+        # подавление триггера — ТОЛЬКО на уверенно неразжижающихся (стабилизация, n_liq_observed==1).
+        # Для незавершённых опытов (нет разжижения И нет стабилизации) исход цензурирован — такие
+        # образцы могли бы разжижиться при продолжении, поэтому триггер на них НЕ штрафуем.
+        observed = batch.get("n_liq_observed")
+        stab = noliq if observed is None else (noliq * observed.unsqueeze(1))
+        trigger_noliq = masked_mean(outputs["g"] * stab, batch["mask"])
         loss = (
             traj_loss
             + 0.80 * risk_loss
@@ -410,6 +425,8 @@ class EVTNeuralSSM(nn.Module):
             + 0.01 * state_smoothness
             + 0.03 * boundedness
             + 0.05 * joint
+            + 0.20 * overshoot
+            + 0.05 * trigger_noliq
         )
         loss = loss + observed_aux_loss(outputs, batch, use_states=True)
         outputs["loss"] = loss

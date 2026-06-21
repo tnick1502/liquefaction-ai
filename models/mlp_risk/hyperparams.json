@@ -6,18 +6,6 @@
     "prefix_dim": 6,
     "hidden_dim": 128
   },
-  "search": {
-    "grid": {
-      "hidden_dim": [
-        64,
-        128
-      ]
-    },
-    "score_metric": "Brier",
-    "best": {
-      "hidden_dim": 128
-    }
-  },
   "epochs": 4,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,

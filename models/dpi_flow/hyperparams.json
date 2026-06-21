@@ -35,5 +35,11 @@
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 0.55
+  "calib_scale": 0.8,
+  "best_seed": 0,
+  "seed_val_rmse": {
+    "0": 0.1552881917601384,
+    "1": 0.1563111304864142,
+    "2": 0.17051006328762022
+  }
 }

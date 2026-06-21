@@ -27,8 +27,8 @@ import torch.nn.functional as F
 from liquefaction_ai.models.dpi_flow import ConditionalAffineFlow
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
 from liquefaction_ai.models.heads import physics_summary
-from liquefaction_ai.training.losses import (gaussian_nll, masked_censored_nliq_loss, masked_mse,
-                                             monotone_clip, soft_auc_loss)
+from liquefaction_ai.training.losses import (gaussian_nll, masked_censored_nliq_loss, masked_mean,
+                                             masked_mse, monotone_clip, soft_auc_loss)
 
 __all__ = ["DPIEvtNet"]
 
@@ -257,9 +257,20 @@ class DPIEvtNet(EVTNeuralSSM):
             dmg_cons_liq = (liq * (z_at - 0.90) ** 2).sum() / denom        # Damage(N_liq) ≈ порог
             joint = crr_cons_liq + dmg_cons_liq
 
+        # --- подавление ложного роста PPR и ложного триггера на НЕразжижающихся опытах ---
+        # overshoot: одностороннее превышение измеренной кривой (безопасно и для незавершённых,
+        # правоцензурированных опытов). Подавление триггера g — только на уверенно неразжижающихся
+        # (стабилизация, n_liq_observed==1): незавершённые опыты могли бы разжижиться, их не штрафуем.
+        noliq = (1.0 - batch["label"]).unsqueeze(1)
+        overshoot = masked_mean(torch.relu(out["traj_mean"] - batch["r_obs"]) * noliq, batch["mask"])
+        observed = batch.get("n_liq_observed")
+        stab = noliq if observed is None else (noliq * observed.unsqueeze(1))
+        trigger_noliq = masked_mean(out["g"] * stab, batch["mask"]) if "g" in out else torch.zeros((), device=out["traj_mean"].device)
+
         loss = (traj_loss + 0.80 * risk_loss + 0.30 * rank_loss + 0.25 * nliq_loss
                 + 0.02 * switch_reg + 0.01 * state_smooth + 0.02 * kl_loss
-                + 0.01 * out["crr_consistency"].mean() + 0.05 * joint)
+                + 0.01 * out["crr_consistency"].mean() + 0.05 * joint
+                + 0.20 * overshoot + 0.05 * trigger_noliq)
         loss = loss + observed_aux_loss(out, batch, use_states=True)
         out["loss"] = loss
         return out

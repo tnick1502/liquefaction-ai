@@ -6,18 +6,6 @@
     "seq_dim": 5,
     "hidden_dim": 96
   },
-  "search": {
-    "grid": {
-      "hidden_dim": [
-        64,
-        96
-      ]
-    },
-    "score_metric": "Traj_RMSE",
-    "best": {
-      "hidden_dim": 96
-    }
-  },
   "epochs": 6,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,

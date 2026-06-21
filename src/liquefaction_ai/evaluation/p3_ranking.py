@@ -35,8 +35,12 @@ __all__ = [
 ]
 
 # Веса непересекающихся критериев P³ по режимам (направление берётся из metric_direction).
+# Траекторный компонент core берётся как BALANCED по трём состояниям опыта (разжижение /
+# нет+стабилизация / нет+нет стабилизации), а не как глобальный pooled-RMSE: иначе модель может
+# «спрятать» провал целого режима за счёт лёгкого большинства. Запасной вариант (нет колонки) —
+# глобальный Traj_RMSE (см. _resolve_weights).
 _P3_WEIGHTS: Dict[str, Dict[str, float]] = {
-    "core": {"N_liq_logMAE": 0.35, "Traj_RMSE": 0.30, "Brier": 0.25, "AUPRC": 0.10},
+    "core": {"N_liq_logMAE": 0.45, "Traj_RMSE_balanced": 0.30, "Brier": 0.20, "AUPRC": 0.05},
     "probabilistic": {"N_liq_logMAE": 0.25, "Traj_CRPS": 0.25, "Brier": 0.20,
                       "Calibration_Error": 0.20, "AUPRC": 0.10},
     "physics": {"N_liq_logMAE": 0.25, "__TRAJ__": 0.25, "CRR_RMSE": 0.20, "Brier": 0.15,
@@ -44,7 +48,7 @@ _P3_WEIGHTS: Dict[str, Dict[str, float]] = {
 }
 # Объективы Pareto (все приводятся к «меньше — лучше»; AUPRC → 1 − AUPRC).
 _P3_PARETO: Dict[str, List[str]] = {
-    "core": ["N_liq_logMAE", "Traj_RMSE", "Brier", "one_minus_AUPRC", "Physics_Violation_Rate"],
+    "core": ["N_liq_logMAE", "Traj_RMSE_balanced", "Brier", "one_minus_AUPRC", "Physics_Violation_Rate"],
     "probabilistic": ["N_liq_logMAE", "Traj_CRPS", "Brier", "Calibration_Error",
                       "one_minus_AUPRC", "Physics_Violation_Rate"],
     "physics": ["N_liq_logMAE", "__TRAJ__", "CRR_RMSE", "Brier", "Calibration_Error",
@@ -57,10 +61,22 @@ _SCORE_COLS = {
 }
 # Epsilon-доминирование: микроразличия не делают модель Pareto-оптимальной.
 _DEFAULT_EPS: Dict[str, float] = {
-    "N_liq_logMAE": 0.02, "Traj_RMSE": 0.002, "Brier": 0.001, "one_minus_AUPRC": 0.001,
-    "Physics_Violation_Rate": 0.005, "Calibration_Error": 0.005, "Traj_CRPS": 0.002, "CRR_RMSE": 0.002,
+    "N_liq_logMAE": 0.02, "Traj_RMSE": 0.002, "Traj_RMSE_balanced": 0.002, "Brier": 0.001,
+    "one_minus_AUPRC": 0.001, "Physics_Violation_Rate": 0.005, "Calibration_Error": 0.005,
+    "Traj_CRPS": 0.002, "CRR_RMSE": 0.002,
 }
 _OBJ_PREFIX = "_pobj__"
+
+# Gate компетентности: чтобы попасть в admissible-ранжирование, модель должна быть в пределах
+# фактора от лучшего значения по КАЖДОЙ ключевой инженерной оси. Это ловит две патологии,
+# которые score сам по себе пропускает: (1) коллапс на целом режиме опыта (через worst-state
+# траекторию) и (2) катастрофу по числу циклов до разжижения N_liq, замаскированную сильными
+# вспомогательными метриками (как у чисто-траекторного Transformer). Порог = factor·best.
+_COMPETENCE_AXES: Dict[str, Dict[str, float]] = {
+    "core": {"Traj_RMSE_worst": 3.0, "N_liq_logMAE": 3.0},
+    "probabilistic": {"Traj_RMSE_worst": 3.0, "N_liq_logMAE": 3.0},
+    "physics": {"Traj_RMSE_worst": 3.0, "N_liq_logMAE": 3.0, "CRR_RMSE": 3.0},
+}
 
 
 def metric_direction(metric_key: str) -> str:
@@ -116,9 +132,57 @@ def _physics_traj_col(df: pd.DataFrame) -> str:
 
 
 def _resolve_weights(df: pd.DataFrame, mode: str) -> Dict[str, float]:
-    """Подставить реальную траекторную метрику вместо плейсхолдера __TRAJ__ (physics)."""
+    """Подставить реальную траекторную метрику вместо плейсхолдеров (__TRAJ__ / balanced fallback)."""
     traj = _physics_traj_col(df)
-    return {(traj if k == "__TRAJ__" else k): v for k, v in _P3_WEIGHTS[mode].items()}
+    out: Dict[str, float] = {}
+    for k, v in _P3_WEIGHTS[mode].items():
+        key = traj if k == "__TRAJ__" else k
+        # обратная совместимость: если balanced-колонки нет в таблице — берём глобальный Traj_RMSE
+        if key == "Traj_RMSE_balanced" and ("Traj_RMSE_balanced" not in df.columns
+                                            or not df["Traj_RMSE_balanced"].notna().any()):
+            key = "Traj_RMSE"
+        out[key] = v
+    return out
+
+
+def compute_competence(df: pd.DataFrame, mode: str = "core") -> pd.DataFrame:
+    """
+    Отметить «некомпетентные» модели — катастрофичные хотя бы по одной ключевой оси.
+
+    Для каждой оси из :data:`_COMPETENCE_AXES` порог = ``factor · best`` (best — лучшее значение
+    среди моделей с непустой метрикой; все оси «меньше — лучше»). Модель, превысившая порог хотя
+    бы по одной оси, помечается ``competence_failed=True`` и исключается из admissible-ранжирования
+    (но остаётся в таблице для диагностики). Оси с отсутствующей колонкой/значением пропускаются —
+    модель не штрафуется за неумение, которое к ней неприменимо.
+
+    Добавляет колонки ``competence_failed`` (bool) и ``competence_reason`` (str).
+
+    :param df: таблица метрик (после compute_metrics)
+    :param mode: режим P³ (определяет набор осей)
+    :return: копия df с колонками компетентности
+    """
+    out = df.copy()
+    axes = _COMPETENCE_AXES.get(mode, _COMPETENCE_AXES["core"])
+    failed = pd.Series(False, index=out.index)
+    reasons = ["" for _ in range(len(out))]
+    for axis, factor in axes.items():
+        if axis not in out.columns:
+            continue
+        vals = pd.to_numeric(out[axis], errors="coerce")
+        elig = vals.notna()
+        if not elig.any():
+            continue
+        best = float(vals[elig].min())
+        thresh = factor * best
+        bad = elig & (vals > thresh)
+        for pos, is_bad in enumerate(bad.to_numpy()):
+            if is_bad:
+                reasons[pos] = (reasons[pos] + "; " if reasons[pos] else "") + \
+                    f"{axis}={float(vals.iloc[pos]):.3f}>{factor:g}×best({best:.3f})"
+        failed = failed | bad
+    out["competence_failed"] = failed.to_numpy()
+    out["competence_reason"] = reasons
+    return out
 
 
 def compute_p3_score(df: pd.DataFrame, reference_model: str, mode: str = "core",
@@ -294,14 +358,20 @@ def publication_ranking_table(df: pd.DataFrame, reference_model: str, mode: str 
     admissible-фронт и admissible-score; raw-версии диагностические.
     """
     scored = compute_p3_score(df, reference_model, mode)
+    scored = compute_competence(scored, mode)          # gate компетентности (worst-режим + N_liq)
     raw_col, adm_col = _SCORE_COLS[mode]
+
+    # admissible-score обнуляется и для некомпетентных моделей (не только физически ненадёжных)
+    scored.loc[scored["competence_failed"].astype(bool), adm_col] = 0.0
 
     # raw Pareto (диагностический, без исключения ненадёжных)
     raw_obj = build_pareto_objectives(scored, mode, admissible_only=False)
     ranked = pareto_rank(raw_obj, raw_obj.attrs["pareto_objectives"])
 
-    # admissible Pareto: исключить физически ненадёжные
+    # admissible Pareto: исключить физически ненадёжные И некомпетентные
     adm = build_pareto_objectives(ranked, mode, admissible_only=True)
+    adm["excluded_from_admissible_ranking"] = (adm["excluded_from_admissible_ranking"].astype(bool)
+                                               | adm["competence_failed"].astype(bool))
     obj_cols = adm.attrs["pareto_objectives"]
     keep = ~adm["excluded_from_admissible_ranking"].astype(bool)
     adm["pareto_front_admissible"] = np.nan
@@ -317,17 +387,21 @@ def publication_ranking_table(df: pd.DataFrame, reference_model: str, mode: str 
 
     cols_by_mode = {
         "core": ["model", "pareto_front_raw", "pareto_front_admissible", raw_col, adm_col,
-                 "physically_unreliable", "excluded_from_admissible_ranking", "physical_penalty",
-                 "Physics_Violation_Rate", "N_liq_logMAE", "Traj_RMSE", "Brier", "AUPRC",
+                 "physically_unreliable", "competence_failed", "competence_reason",
+                 "excluded_from_admissible_ranking", "physical_penalty",
+                 "Physics_Violation_Rate", "N_liq_logMAE", "Traj_RMSE_balanced", "Traj_RMSE_worst",
+                 "Traj_RMSE_liq", "Traj_RMSE_stab", "Traj_RMSE_nostab", "Traj_RMSE", "Brier", "AUPRC",
                  "N_liq_MAE", "N_liq_RMSE", "AUROC", "ECE", "Traj_MAE", "Traj_MSE", "Produces_CRR"],
         "probabilistic": ["model", "pareto_front_raw", "pareto_front_admissible", raw_col, adm_col,
-                          "physically_unreliable", "excluded_from_admissible_ranking", "physical_penalty",
-                          "Physics_Violation_Rate", "N_liq_logMAE", "Traj_CRPS", "Brier",
+                          "physically_unreliable", "competence_failed", "competence_reason",
+                          "excluded_from_admissible_ranking", "physical_penalty",
+                          "Physics_Violation_Rate", "N_liq_logMAE", "Traj_CRPS", "Traj_RMSE_worst", "Brier",
                           "Calibration_Error", "AUPRC", "Coverage_80", "Coverage_90", "Coverage_95",
                           "Interval_Width_90", "Traj_NLL", "ECE"],
         "physics": ["model", "pareto_front_raw", "pareto_front_admissible", raw_col, adm_col,
-                    "physically_unreliable", "excluded_from_admissible_ranking", "physical_penalty",
-                    "Physics_Violation_Rate", "N_liq_logMAE", "Traj_CRPS", "CRR_RMSE", "Brier",
+                    "physically_unreliable", "competence_failed", "competence_reason",
+                    "excluded_from_admissible_ranking", "physical_penalty",
+                    "Physics_Violation_Rate", "N_liq_logMAE", "Traj_CRPS", "Traj_RMSE_worst", "CRR_RMSE", "Brier",
                     "Calibration_Error", "Produces_CRR"],
     }
     cols = [c for c in cols_by_mode[mode] if c in adm.columns]
@@ -390,6 +464,12 @@ METRICS["excluded_from_admissible_ranking"] = MetricInfo(
     "Boolean flag indicating that the model is shown for diagnostics but excluded from admissible "
     "Pareto ranking.",
     "–", lower_is_better=True)
+METRICS["competence_failed"] = MetricInfo(
+    "competence_failed", "Competence gate failed",
+    "Boolean flag: the model is catastrophic on at least one key engineering axis (worst-state "
+    "trajectory RMSE or N_liq log-MAE more than a factor worse than the best model), so it is "
+    "excluded from admissible ranking even if it is physically consistent.",
+    "–", lower_is_better=True)
 
 METRIC_COLUMN_EN.update({
     "P3_Core_Raw_Score": "P³ Core raw", "P3_Core_Admissible_Score": "P³ Core admissible",
@@ -398,4 +478,5 @@ METRIC_COLUMN_EN.update({
     "pareto_front_raw": "Pareto front (raw)", "pareto_front_admissible": "Pareto front (adm.)",
     "physically_unreliable": "Physically unreliable", "physical_penalty": "Physical penalty",
     "excluded_from_admissible_ranking": "Excluded (adm.)",
+    "competence_failed": "Competence gate failed", "competence_reason": "Competence gate reason",
 })
