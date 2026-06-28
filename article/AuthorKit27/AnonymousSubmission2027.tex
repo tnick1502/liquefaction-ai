@@ -1,8 +1,5 @@
 \documentclass[letterpaper]{article} % DO NOT CHANGE THIS
 \usepackage[submission]{aaai2027}  % DO NOT CHANGE THIS
-% The serif, sans-serif, and monospaced fonts are loaded automatically by
-% aaai2027.sty (newtxtext, helvet, courier). DO NOT add \usepackage{times},
-% \usepackage{helvet}, \usepackage{courier}, or any other font package.
 \usepackage[hyphens]{url}  % DO NOT CHANGE THIS
 \usepackage{graphicx} % DO NOT CHANGE THIS
 \urlstyle{rm} % DO NOT CHANGE THIS
@@ -10,837 +7,365 @@
 \usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
 \usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
 \frenchspacing  % DO NOT CHANGE THIS
-%
-% These are recommended to typeset algorithms but not required. See the subsubsection on algorithms. Remove them if you don't have algorithms in your paper.
 \usepackage{algorithm}
 \usepackage{algorithmic}
-
-%
-% These are recommended to typeset listings but not required. See the subsubsection on listing. Remove this block if you don't have listings in your paper.
 \usepackage{newfloat}
 \usepackage{listings}
 \DeclareCaptionStyle{ruled}{labelfont=normalfont,labelsep=colon,strut=off} % DO NOT CHANGE THIS
 \lstset{%
-	basicstyle={\footnotesize\ttfamily},% footnotesize acceptable for monospace
-	numbers=left,numberstyle=\footnotesize,xleftmargin=2em,% show line numbers, remove this entire line if you don't want the numbers.
+	basicstyle={\footnotesize\ttfamily},
+	numbers=left,numberstyle=\footnotesize,xleftmargin=2em,
 	aboveskip=0pt,belowskip=0pt,%
 	showstringspaces=false,tabsize=2,breaklines=true}
 \floatstyle{ruled}
 \newfloat{listing}{tb}{lst}{}
 \floatname{listing}{Listing}
-
-%
-% Recommended for better-looking tables
 \usepackage{booktabs}
-
-%
-% Keep the \pdfinfo as shown here. There's no need
-% for you to add the /Title and /Author tags.
+\usepackage{amsmath}
+\usepackage{amssymb}
 \pdfinfo{
 /TemplateVersion (2027.1)
 }
+\setcounter{secnumdepth}{0}
 
-% DISALLOWED PACKAGES
-% \usepackage{authblk} -- This package is specifically forbidden
-% \usepackage{balance} -- This package is specifically forbidden
-% \usepackage{CJK} -- This package is specifically forbidden
-% \usepackage{float} -- This package is specifically forbidden
-% \usepackage{flushend} -- This package is specifically forbidden
-% \usepackage{fullpage} -- This package is specifically forbidden
-% \usepackage{geometry} -- This package is specifically forbidden
-% \usepackage{hyperref} -- This package is specifically forbidden
-% \usepackage{navigator} -- This package is specifically forbidden
-% (or any other package that embeds links such as navigator or hyperref)
-% \usepackage{indentfirst} -- This package is specifically forbidden
-% \usepackage{layout} -- This package is specifically forbidden
-% \usepackage{multicol} -- This package is specifically forbidden
-% \usepackage{nameref} -- This package is specifically forbidden
-% \usepackage{savetrees} -- This package is specifically forbidden
-% \usepackage{setspace} -- This package is specifically forbidden
-% \usepackage{stfloats} -- This package is specifically forbidden
-% \usepackage{tabu} -- This package is specifically forbidden
-% \usepackage{titlesec} -- This package is specifically forbidden
-% \usepackage{tocbibind} -- This package is specifically forbidden
-% \usepackage{ulem} -- This package is specifically forbidden
-% \usepackage{wrapfig} -- This package is specifically forbidden
-% DISALLOWED COMMANDS
-% \nocopyright -- Your paper will not be published if you use this command
-% \addtolength -- This command may not be used
-% \balance -- This command may not be used
-% \baselinestretch -- Your paper will not be published if you use this command
-% \clearpage -- No page breaks of any kind may be used for the final version of your paper
-% \columnsep -- This command may not be used
-% \newpage -- No page breaks of any kind may be used for the final version of your paper
-% \pagebreak -- No page breaks of any kind may be used for the final version of your paper
-% \pagestyle -- This command may not be used
-% \tiny -- This is not an acceptable font size.
-% \vspace{- -- No negative value may be used in proximity of a caption, figure, table, section, subsection, subsubsection, or reference
-% \vskip{- -- No negative value may be used to alter spacing above or below a caption, figure, table, section, subsection, subsubsection, or reference
-
-\setcounter{secnumdepth}{0} %May be changed to 1 or 2 if section numbers are desired.
-
-% The file aaai2027.sty is the style file for AAAI Press
-% proceedings, working notes, and technical reports.
-%
-
-% Title
-
-% Your title must be in mixed case, not sentence case.
-% That means all verbs (including short verbs like be, is, using,and go),
-% nouns, adverbs, adjectives should be capitalized, including both words in hyphenated terms, while
-% articles, conjunctions, and prepositions are lower case unless they
-% directly follow a colon or long dash
-\title{AAAI Press Anonymous Submission\\Instructions for Authors Using \LaTeX{}}
-\author{
-    %Authors
-    % All authors must be in the same font size and format.
-    Written by AAAI Press Staff\textsuperscript{\rm 1}\thanks{With help from the AAAI Publications Committee.}\\
-    AAAI Style Contributions by Peter Patel Schneider,
-    Sunil Issar,\\
-    J. Scott Penberthy,
-    George Ferguson,
-    Hans Guesgen,
-    Francisco Cruz\equalcontrib\corresponding,
-    Marc Pujol-Gonzalez\equalcontrib\corresponding
-}
-\affiliations{
-    %Afiliations
-    \textsuperscript{\rm 1}Association for the Advancement of Artificial Intelligence\\
-    % If you have multiple authors and multiple affiliations
-    % use superscripts in text and roman font to identify them.
-    % For example,
-
-    % Sunil Issar\textsuperscript{\rm 2},
-    % J. Scott Penberthy\textsuperscript{\rm 3},
-    % George Ferguson\textsuperscript{\rm 4}\corresponding,
-    % Hans Guesgen\textsuperscript{\rm 5}
-    % Note that the comma should be placed after the superscript
-
-    1101 Pennsylvania Ave, NW Suite 300\\
-    Washington, DC 20004 USA\\
-    % email address must be in roman text type, not monospace or sans serif
-    proceedings-questions@aaai.org
-%
-% See more examples next
-}
-
-%Example, Single Author, ->> remove \iffalse,\fi and place them surrounding AAAI title to use it
-\iffalse
-\title{My Publication Title --- Single Author}
-\author {
-    Author Name
-}
-\affiliations{
-    Affiliation\\
-    Affiliation Line 2\\
-    name@example.com
-}
-\fi
-
-\iffalse
-%Example, Multiple Authors, ->> remove \iffalse,\fi and place them surrounding AAAI title to use it
-\title{My Publication Title --- Multiple Authors}
-\author {
-    % Authors
-    First Author Name\textsuperscript{\rm 1,\rm 2}\equalcontrib,
-    Second Author Name\textsuperscript{\rm 2}\equalcontrib,
-    Third Author Name\textsuperscript{\rm 1}\corresponding
-}
-\affiliations {
-    % Affiliations
-    \textsuperscript{\rm 1}Affiliation 1\\
-    \textsuperscript{\rm 2}Affiliation 2\\
-    firstAuthor@affiliation1.com, secondAuthor@affilation2.com, thirdAuthor@affiliation1.com
-}
-\fi
-
+\title{Physics-Constrained Conditional Flows for\\Liquefaction Onset Forecasting}
+\author{Anonymous Submission}
+\affiliations{Paper under double-blind review}
 
 \begin{document}
-
 \maketitle
 
 \begin{abstract}
-AAAI creates proceedings, working notes, and technical reports directly from electronic source furnished by the authors. To ensure that all papers in the publication have a uniform appearance, authors must adhere to the following instructions.
+Soil liquefaction is a high-consequence failure mode, yet each cyclic laboratory test that characterizes
+it can take days to weeks and specialized equipment to run, so the data are intrinsically scarce.
+Engineering practice compresses a cyclic process into a single triggering boundary, rather than
+forecasting the pore-pressure response and the time to onset from a partial early observation.
+We cast laboratory liquefaction assessment as \emph{prefix-conditioned probabilistic event-time
+forecasting}: from static soil/loading descriptors and an early excess pore-pressure (PPR) prefix,
+predict the PPR continuation, liquefaction risk, and the (possibly right-censored) cycle count to onset.
+We introduce \textbf{DPI-Flow}, a physics-structured architecture that amortizes inference of physically
+constrained parameters through a \emph{conditional affine flow} and rolls them through a
+\emph{differentiable analytical CRR/damage/PPR layer}, guaranteeing feasible monotone accumulation;
+a censoring-aware objective trains jointly on liquefied, stabilized, and unfinished tests, and a
+Monte-Carlo predictive propagates uncertainty through the flow. On \textbf{1{,}093 real cyclic tests
+across 20 sites}, under \emph{object-held-out} repeated cross-validation with object-cluster bootstrap
+confidence intervals, DPI-Flow provides the best \emph{physically admissible} Pareto balance of onset
+accuracy, post-prefix trajectory quality, calibrated uncertainty, and structural feasibility: it leads
+the admissible $\mathrm{P}^3$ ranking, attains the lowest worst-state trajectory error and the lowest
+trajectory CRPS among admissible models, near-zero physics violations, and recovers a measured
+cyclic-resistance curve. Strong unconstrained baselines (CatBoost on scalar onset; a Transformer on raw
+trajectory) win individual metrics but violate physics or omit uncertainty/CRR. We release a reproducible
+object-held-out benchmark and ablations isolating each component.
 \end{abstract}
 
-% Uncomment the following to link to your code, datasets, an extended version or similar.
-% You must keep this block between (not within) the abstract and the main body of the paper.
-% Make sure that you do not de-anonymize yourself with these links.
-% \begin{links}
-%     \link{Code}{https://aaai.org/example/code}
-%     \link{Datasets}{https://aaai.org/example/datasets}
-%     \link{Extended version}{https://aaai.org/example/extended-version}
-% \end{links}
+\section{Introduction}
+Soil liquefaction---the loss of effective stress in saturated granular soil under cyclic loading---is a
+high-consequence dynamic failure that drives large economic losses and threatens lives and
+infrastructure. Engineering practice evaluates it through the cyclic stress ratio / cyclic resistance
+ratio (CSR/CRR) ``simplified procedure'' and its probabilistic successors
+\citep{seedidriss71,youd01,boulanger16}. These procedures are well established, but they compress a
+cyclic process into a triggering boundary or probability, rather than forecasting the full excess
+pore-pressure trajectory $\mathrm{PPR}(N)$ and the event time under partial early observations.
 
-\section{Preparing an Anonymous Submission}
+Machine-learning models for liquefaction have grown rapidly, yet they have been criticized for weak
+comparison to state-of-practice, insufficient validation, limited reproducibility, and a tendency to
+treat the problem as static classification \citep{maurer23,jas23,sanger25}. This is precisely the
+\emph{small, expensive, site-specific data} regime that data-centric geotechnics identifies as needing
+strong inductive bias and honest, site-aware evaluation \citep{phoon22,baghbani22}. The same dynamic
+instability of saturated sands is studied with constitutive and laboratory models in the geotechnical
+literature \citep{termart25,termart23,sidorov24}, while recent data-driven work increasingly targets
+transfer across sites and probabilistic assessment \citep{guotransfer25,demir24}. Crucially, each
+datum here is costly ground truth obtained from a multi-day physical experiment, so the scientific
+question is not how to fit large data but how to extract maximal signal per experiment.
 
-This document details the formatting requirements for anonymous submissions. The requirements are the same as for camera ready papers but with a few notable differences:
+We formulate laboratory liquefaction assessment as \emph{prefix-conditioned probabilistic event-time
+forecasting}: given static soil/loading descriptors and an early PPR prefix, predict the continuation of
+$\mathrm{PPR}(N)$, the probability of liquefaction, and the censored time-to-event $N_{\mathrm{liq}}$.
+This connects scientific machine learning, latent-variable inference, neural differential equations,
+normalizing flows, uncertainty calibration, and survival/event-time modeling
+\citep{karniadakis21,chen18,latentnode22,rezende15,guo17,romano19,cuqds25,davis06,abdar21,cox72}.
 
-\begin{itemize}
-    \item Anonymous submissions must not include the author names and affiliations. Write ``Anonymous Submission'' as the ``sole author'' and leave the affiliations empty.
-    \item The PDF document's metadata should be cleared with a metadata-cleaning tool before submitting it. This is to prevent leaked information from revealing your identity.
-    \item References must be anonymized whenever the reader can infer that they are to the authors' previous work.
-    \item AAAI's copyright notice should not be included as a footer in the first page.
-    \item You do not need to provide any copyright transfer form at this stage.
-    \item Depending on the conference, you may be required to include a reproducibility checklist or prepare it separately. Check the conference's instructions in their website.
-    \item Similarly, depending on the conference you may be allowed to submit a supplementary technical appendix after the references, or you may be allowed to submit it as a separate document, or you may not be allowed to submit a technical appendix at all.
-\end{itemize}
+We introduce \textbf{DPI-Flow}, a physics-structured probabilistic model that amortizes inference of
+physically constrained latent parameters $\theta$, refines them through prefix calibration, and
+integrates a differentiable analytical CRR/damage/PPR layer; uncertainty is propagated through the flow
+by Monte-Carlo sampling at inference. Our contributions are: (i) a \textbf{prefix-conditioned
+onset-forecasting formulation} for cyclic liquefaction tests; (ii) a \textbf{conditional parameter flow
+plus differentiable analytical layer} that guarantees feasible monotone accumulation while producing
+risk, $N_{\mathrm{liq}}$ and a CRR curve from one latent state; (iii) a \textbf{censoring-aware
+objective} that learns from liquefied (exact), stabilized (right-censored) and unfinished tests; (iv) an
+\textbf{object-held-out benchmark} on 1{,}093 real tests with strong tabular, sequence and
+physics-informed baselines and object-cluster confidence intervals; and (v) a \textbf{transparent
+uncertainty/physics evaluation}. Under honest evaluation, DPI-Flow is not best on every individual metric;
+it is the best \emph{physically admissible} Pareto balance---a more defensible and, we argue, more useful
+result for engineering practice.
 
-You can remove the copyright notice and ensure that your names aren't shown by including \texttt{submission} option when loading the \texttt{aaai2027} package:
+\section{Problem Setup}
+\paragraph{Task.} A cyclic test is observed on a cycle grid $N_1<\dots<N_T$. For specimen $i$ we have
+static descriptors $s_i\in\mathbb{R}^{d_s}$ (soil physical/mechanical properties and loading parameters),
+a cyclic-stress history $c_i\in\mathbb{R}^{T}$ with $c_{it}=\mathrm{CSR}_i(N_t)$, and an early
+\emph{prefix} of the measured excess pore-pressure ratio $r_{i,1:L}$ with $L$ the prefix length. The onset
+is the first threshold crossing $N^\star_i=\min\{N_t: r_i(N_t)\ge\tau\}$ with $\tau=0.95$, the label is
+$y_i=\mathbf{1}[N^\star_i\le N_T]$, and $N_{\mathrm{liq},i}=N^\star_i$ (or right-censored at $N_T$). The
+targets are the continuation $r_i(N_t)$ for $N_t>N_L$, the risk $y_i$, and the censored event time
+$N_{\mathrm{liq},i}$.
 
-\begin{quote}\begin{scriptsize}\begin{verbatim}
-\documentclass[letterpaper]{article}
-\usepackage[submission]{aaai2027}
-\end{verbatim}\end{scriptsize}\end{quote}
+\paragraph{Strictly pre-onset prefix.} The observed prefix is truncated \emph{strictly before onset}: no
+prefix step is at or beyond the onset cycle. Without this, fast tests leak the event into the input and
+inflate onset metrics; enforcing it removed leakage in $24\%$ of liquefied specimens whose 12-step prefix
+otherwise reached $r\ge 0.95$.
 
-The remainder of this document contains the original camera-ready instructions. Any contradiction of the above points ought to be ignored while preparing anonymous submissions.
+\paragraph{Three censoring regimes.} An observability mask $o_i\in\{0,1\}$ encodes: (1)~liquefied
+($y_i{=}1$): $N_{\mathrm{liq},i}$ observed exactly, $o_i{=}1$; (2)~stabilized non-liquefying (flat PPR
+tail past a practical horizon): $N_{\mathrm{liq},i}$ right-censored, $o_i{=}1$; (3)~unfinished
+non-liquefying: terminal unobservable, $o_i{=}0$---excluded from $N_{\mathrm{liq}}$ supervision/metrics but
+retained for trajectory learning \citep{cox72,deepsurv18}.
 
-\section{Camera-Ready Guidelines}
+\paragraph{Evaluation protocol.} Site/object correlation makes random splits leak. We use
+\emph{object-held-out} repeated stratified grouped $K$-fold cross-validation: every object is entirely in
+the test fold exactly once, folds are balanced so each test fold contains a CRR-measured object, and each
+validation set spans both classes \citep{roberts17}. The primary trajectory metric is the
+\emph{post-prefix} (continuation) error. Confidence intervals come from an \emph{object-cluster bootstrap}
+on pooled out-of-fold predictions (resampling sites, not samples), and paired significance aggregates
+per object before a Wilcoxon signed-rank test, avoiding pseudo-replication.
 
-Congratulations on having a paper selected for inclusion in an AAAI Press proceedings or technical report! This document details the requirements necessary to get your accepted paper published using PDF\LaTeX{}. If you are using Microsoft Word, instructions are provided in a different document. AAAI Press does not support any other formatting software.
+\section{Method: DPI-Flow}
+DPI-Flow infers a distribution over physically constrained parameters $\theta$ of an analytical
+liquefaction model and integrates that model differentiably, so that one latent state produces the PPR
+trajectory, risk, event time and CRR curve.
 
-The instructions herein are provided as a general guide for experienced \LaTeX{} users. If you do not know how to use \LaTeX{}, please obtain assistance locally. AAAI cannot provide you with support and the accompanying style files are \textbf{not} guaranteed to work. If the results you obtain are not in accordance with the specifications you received, you must correct your source file to achieve the correct result.
+\paragraph{Encoder, posterior and conditional flow.} A residual encoder maps the context
+$x_i=[\,s_i,\,\bar{u}_i,\,r_{i,1:L},\,m_{i,1:L}\,]$ (static features, prefix summary $\bar u_i$, prefix
+values and observation mask) to $h_i=E_\psi(x_i)$. A Gaussian base posterior is reparameterized and pushed
+through a \emph{conditional affine flow} $T_\phi$ \citep{rezende15,realnvp17}:
+\begin{equation}
+z_i=\mu(h_i)+\sigma(h_i)\odot\epsilon,\quad \epsilon\sim\mathcal{N}(0,I),\quad \theta_i=T_\phi(z_i;h_i),
+\end{equation}
+where $\log\sigma^2(h_i)$ is clipped to $[-5,3]$ and each of the two flow blocks applies
+$u\mapsto u\odot e^{\,0.35\tanh(W_s h_i)}+W_t h_i$. A bounding map $\pi_i=\Theta(\theta_i)$ sends each raw
+coordinate through a $\mathrm{sigmoid}$/$\mathrm{softmax}$ into its admissible physical range (mixture
+weights $w\in\Delta^3$, damage rate $\lambda$, exponents $m,\nu$, PPR-growth coefficients
+$\alpha,\beta,\gamma,p$ and their post-event counterparts, trigger sharpness $\kappa$, threshold $z_0$).
 
-These instructions are generic. Consequently, they do not include specific dates, page charges, and so forth. Please consult your specific written conference instructions for details regarding your submission. Please review the entire document for specific instructions that might apply to your particular situation. All authors must comply with the following:
+\paragraph{Differentiable analytical layer.} Rather than decode the trajectory with a black-box sequence
+model or a learned solution operator \citep{deeponet21,chen18}, $\pi_i$ drives an analytical layer
+\citep{seedmartin76,cetinbilge12}. The cyclic-resistance boundary is a differentiable mixture of four
+families (hyperbolic, power, exponential, logarithmic),
+\begin{equation}
+\mathrm{CRR}(N)=\textstyle\sum_{k=1}^{4} w_k\,\phi_k(N;\pi)\;\ge\;10^{-4},
+\end{equation}
+and a coupled damage--pore-pressure system is integrated by explicit Euler on the cycle grid. With stress
+ratio $\rho_t=c_{it}/\mathrm{CRR}(N_t)$, drive $\varphi_t=\tfrac{1}{6}\mathrm{softplus}\!\big(6(\rho_t-0.9)\big)$
+and trigger gate $g_t=\sigma\!\big(\kappa(z_t-z_0)\big)$,
+\begin{align}
+\dot z_t &= \lambda\,\rho_t^{\,m}\,(1-z_t)^{\nu},\\
+\dot r_t &= (1-g_t)\!\left[\alpha\varphi_t(1-r_t)^{p}+\tfrac{\beta}{N_t+\tau}-\gamma r_t\right]\nonumber\\
+         &\quad +\,g_t\!\left[\alpha'(1-r_t)^{p'}+\tfrac{\beta'}{N_t+0.7\tau}-\gamma' r_t\right],
+\end{align}
+with $z_{t+1}=\mathrm{clip}(z_t+\Delta N_{t+1}\dot z_t,0,0.999)$ and
+$r_{t+1}=\mathrm{clip}(r_t+\Delta N_{t+1}\dot r_t,0,1.02)$. A small zero-initialized residual is added and
+the trajectory is projected onto the physically admissible set,
+\begin{equation}
+\hat{r}=\Pi\!\big(r+0.1\tanh \xi_\omega(h)\big),\qquad
+\Pi(x)=\mathrm{clip}\big(\mathrm{cummax}(x),0,1.05\big),
+\label{eq:proj}
+\end{equation}
+so $\hat r$ is monotone non-decreasing and bounded \emph{by construction} under the undrained
+monotone-accumulation assumption. The event time is a differentiable soft first-hitting of the monotone
+envelope $\bar r=\mathrm{cummax}(\hat r)$ with $p_t=\sigma\!\big(\beta_0(\bar r_t-\tau)\big)$,
+$\delta_t=\max(p_t-p_{t-1},0)$:
+\begin{equation}
+\widehat{N}^{\mathrm{liq}}=\textstyle\sum_t \delta_t N_t+\big(1-\sum_t\delta_t\big)\,N_T .
+\end{equation}
 
-\begin{itemize}
-\item You must use the 2027 AAAI Press \LaTeX{} style file and the aaai2027.bst bibliography style files, which are located in the 2027 AAAI Author Kit (aaai2027.sty, aaai2027.bst).
-\item You must complete, sign, and return by the deadline the AAAI copyright form (unless directed by AAAI Press to use the AAAI Distribution License instead).
-\item You must read and format your paper source and PDF according to the formatting instructions for authors.
-\item You must submit your electronic files and abstract using our electronic submission form \textbf{on time.}
-\item You must pay any required page or formatting charges to AAAI Press so that they are received by the deadline.
-\item You must check your paper before submitting it, ensuring that it compiles without error, and complies with the guidelines found in the AAAI Author Kit.
-\end{itemize}
+\paragraph{Risk and censoring-aware objective.} Risk fuses a discriminative head with a physical prior
+through a learnable gate $g_\pi$ (initialized at $0$): $\hat p_i=\sigma\!\big(\mathrm{MLP}(h_i)+g_\pi\,
+s^{\mathrm{phys}}_i+\mathrm{RiskHead}(h_i)\big)$. Writing the normalized log event time
+$n=\log(1{+}N)/\log(1{+}N_{\mathrm{ref}})$ and heteroscedastic variance $\hat v_{it}=\exp(\eta_t(h_i)+2s)$
+(with conformal scale $s$, below), the loss is
+\begin{align}
+\mathcal{L}=&\;\underbrace{\tfrac{1}{|\mathcal{M}|}\!\!\sum_{(i,t)\in\mathcal{M}}\!\!
+\Big[\tfrac12\log\hat v_{it}+\tfrac{(\hat r_{it}-r_{it})^2}{2\hat v_{it}}\Big]}_{\mathcal{L}_{\mathrm{traj}}\;(\text{Gaussian NLL})}
++\,0.8\,\mathcal{L}_{\mathrm{BCE}}+0.3\,\mathcal{L}_{\mathrm{rank}}\nonumber\\
+&+\,0.25\,\mathcal{L}_{N_{\mathrm{liq}}}+\mathcal{L}_{\mathrm{reg}}+0.02\,\mathrm{KL}\big(q(\theta|h)\,\|\,\mathcal{N}(0,I)\big),
+\end{align}
+where $\mathcal{M}$ are observed trajectory steps, $\mathcal{L}_{\mathrm{rank}}$ is a soft-AUC term, and
+the event-time term is censoring-aware:
+\begin{equation}
+\mathcal{L}_{N_{\mathrm{liq}}}=\frac{\sum_i o_i\big[\,y_i(\hat n_i-n_i)^2+(1-y_i)\max(n_i-\hat n_i,0)^2\big]}{\sum_i o_i},
+\end{equation}
+i.e.\ exact for liquefied, one-sided for right-censored stabilized specimens, and masked ($o_i{=}0$) for
+unfinished ones \citep{cox72,dsm21}. $\mathcal{L}_{\mathrm{reg}}$ collects label-free physics
+regularizers (CRR monotonicity, boundedness, second-order smoothness).
 
-\section{Copyright}
-All papers submitted for publication by AAAI Press must be accompanied by a valid signed copyright form. They must also contain the AAAI copyright notice at the bottom of the first page of the paper. There are no exceptions to these requirements. If you fail to provide us with a signed copyright form or disable the copyright notice, we will be unable to publish your paper. There are \textbf{no exceptions} to this policy. You will find a PDF version of the AAAI copyright form in the AAAI AuthorKit. Please see the specific instructions for your conference for submission details.
+\paragraph{Conformal calibration.} A single scale $s$ is fit on the \emph{validation set of each outer
+fold} so that the empirical $90\%$ interval coverage matches nominal, then applied as
+$\hat v\leftarrow\hat v\,e^{2s}$ \citep{guo17,romano19}.
 
-\section{Formatting Requirements in Brief}
-We need source and PDF files that can be used in a variety of ways and can be output on a variety of devices. The design and appearance of the paper is strictly governed by the aaai style file (aaai2027.sty).
-\textbf{You must not make any changes to the aaai style file, nor use any commands, packages, style files, or macros within your own paper that alter that design, including, but not limited to spacing, floats, margins, fonts, font size, and appearance.} AAAI imposes requirements on your source and PDF files that must be followed. Most of these requirements are based on our efforts to standardize conference manuscript properties and layout. All papers submitted to AAAI for publication will be recompiled for standardization purposes. Consequently, every paper submission must comply with the following requirements:
+\paragraph{Uncertainty propagated through the flow.} At inference we draw $K$ parameter samples
+$\theta^{(k)}=T_\phi(\mu+\sigma\epsilon^{(k)};h)$ and roll each through the analytical layer, yielding
+$\hat r^{(k)},\hat v^{(k)}$. The predictive moments decompose uncertainty into aleatoric and epistemic
+parts,
+\begin{equation}
+\bar r=\tfrac1K\!\sum_k \hat r^{(k)},\quad
+\bar v=\underbrace{\tfrac1K\!\sum_k \hat v^{(k)}}_{\text{aleatoric}}+\underbrace{\tfrac1K\!\sum_k(\hat r^{(k)}-\bar r)^2}_{\text{epistemic}},
+\end{equation}
+making the reported uncertainty a genuine propagation \emph{through} the conditional flow rather than a
+deterministic posterior-mean readout.
 
-\begin{itemize}
-\item Your .tex file must compile in PDF\LaTeX{} --- (you may not include .ps or .eps figure files.)
-\item All fonts must be embedded in the PDF file --- including your figures.
-\item Modifications to the style file, whether directly or via commands in your document may not ever be made, most especially when made in an effort to avoid extra page charges or make your paper fit in a specific number of pages.
-\item No type 3 fonts may be used (even in illustrations).
-\item You may not alter the spacing above and below captions, figures, headings, and subheadings.
-\item You may not alter the font sizes of text elements, footnotes, heading elements, captions, or title information (for references and mathematics, please see the limited exceptions provided herein).
-\item You may not alter the line spacing of text.
-\item Your title must follow Title Case capitalization rules (not sentence case).
-\item \LaTeX{} documents must use the Times-like serif text font provided automatically by the aaai2027 style file. You may not use Computer Modern or Palatino for the text of your paper, and you must not load \texttt{times} or any other text-font package in your preamble---the style file manages the text font automatically.
-\item Your source must not require use of fonts for non-Roman alphabets within the text itself. If your paper includes symbols in other languages (such as, but not limited to, Arabic, Chinese, Hebrew, Japanese, Thai, Russian and other Cyrillic languages), you must restrict their use to bit-mapped figures. Fonts that require non-English language support (CID and Identity-H) must be converted to outlines or removed from the document (even if they are in a graphics file embedded in the document).
-\item Two-column format in AAAI style is required for all papers.
-\item The paper size for final submission must be US letter without exception.
-\item The source file must exactly match the PDF.
-\item The document margins may not be exceeded (no content should overflow into the margins or gutter).
-\item The number of pages and the file size must be as specified for your event.
-\item No document may be password protected.
-\item Neither the PDFs nor the source may contain any embedded links or bookmarks (no hyperref or navigator packages).
-\item Your source and PDF must not have any page numbers, footers, or headers (no pagestyle commands).
-\item Your PDF must conform to PDF version 1.5 or higher.
-\item Your \LaTeX{} sources archive must not contain unnecessary files (figures, extra .tex files, etc.).
-\item Your graphics must be sized appropriately outside of \LaTeX{} (do not use the ``clip" or ``trim'' command) .
-\end{itemize}
+\section{Experimental Setup}
+\paragraph{Data.} 1{,}093 real cyclic tests across 20 sites (640 liquefied, 453 non-liquefying), with a
+measured CRR curve available for a subset of sites; Vs is derived from small-strain $G_0$, grain-size and
+PLAXIS classification from sieve data. Shear-wave velocity is measured directly on only a minority of
+specimens, and grain-size on roughly half; the rest require missing-value handling rather than fabricated
+defaults. Unlike open field databases \citep{brandenberg20}, the dataset is comprehensive within its
+scope (the available objects of this laboratory campaign), not universal.
 
-If you do not follow these requirements, your paper will be returned to you to correct the deficiencies.
+\paragraph{Baselines.} We compare against state-of-practice-style physics (a physics-informed neural network, PINN
+\citep{raissi19}), gradient-boosted tabular
+(CatBoost) \citep{catboost18}, deep tabular (FT-Transformer) \citep{fttrans21}, sequence models
+(Transformer, GRU, TCN) \citep{informer21}, and probabilistic flows (Neural Spline Flow, RealNVP)
+\citep{nsf19,realnvp17}. All torch models use serious training (long schedules with cosine annealing and
+early stopping) and per-model grid search; CatBoost uses its native fit.
 
-\section{What Files to Submit}
-You must submit the following items to ensure that your paper is published:
-\begin{itemize}
-\item A fully-compliant PDF file.
-\item Your \LaTeX{} source file submitted as a \textbf{single} .tex file (do not use the ``input" command to include sections of your paper --- every section must be in the single source file). (The only allowable exception is .bib file, which should be included separately).
-\item The bibliography (.bib) file(s).
-\item Your source must compile on our system, which includes only standard \LaTeX{} 2020 TeXLive support files.
-\item Only the graphics files used in compiling paper.
-\item The \LaTeX{}-generated files (e.g. .aux,  .bbl file, PDF, etc.).
-\end{itemize}
+\paragraph{Protocol.} Repeated ($\times 3$) stratified grouped 5-fold object-held-out CV (15 folds);
+publication-grade training; $K{=}8$ Monte-Carlo predictive samples. We report means over folds with
+object-cluster bootstrap 95\% intervals.
 
-Your \LaTeX{} source will be reviewed and recompiled on our system (if it does not compile, your paper will be returned to you). \textbf{Do not submit your source in multiple text files.} Your single \LaTeX{} source file must include all your text, your bibliography (formatted using aaai2027.bst), and any custom macros.
-
-Your files should work without any supporting files (other than the program itself) on any computer with a standard \LaTeX{} distribution.
-
-\textbf{Do not send files that are not actually used in the paper.} Avoid including any files not needed for compiling your paper, including, for example, this instructions file, unused graphics files, style files, additional material sent for the purpose of the paper review, intermediate build files and so forth.
-
-\textbf{Obsolete style files.} The commands for some common packages (such as some used for algorithms), may have changed. Please be certain that you are not compiling your paper using old or obsolete style files.
-
-\textbf{Final Archive.} Place your source files in a single archive which should be compressed using .zip. The final file size may not exceed 10 MB.
-Name your source file with the last (family) name of the first author, even if that is not you.
-
-
-\section{Using \LaTeX{} to Format Your Paper}
-
-The latest version of the AAAI style file is available on AAAI's website. Download this file and place it in the \TeX\ search path. Placing it in the same directory as the paper should also work. You must download the latest version of the complete AAAI Author Kit so that you will have the latest instruction set and style file.
-
-\subsection{Document Preamble}
-
-In the \LaTeX{} source for your paper, you \textbf{must} place the following lines as shown in the example in this subsection. Add or subtract author and address lines as necessary, and uncomment the portions that apply to you. In most instances, this is all you need to do to format your paper correctly. The aaai2027 style file automatically loads all required text fonts (\texttt{newtxtext} for serif, \texttt{helvet} for sans-serif, \texttt{courier} for monospaced); do not add \textbackslash usepackage\{times\}, \textbackslash usepackage\{helvet\}, \textbackslash usepackage\{courier\}, or any other font package, as doing so will conflict with the style.
-
-Leave the setcounter for section number depth commented out and set at 0 unless you want to add section numbers to your paper. If you do add section numbers, you must uncomment this line and change the number to 1 (for section numbers), or 2 (for section and subsection numbers). The style file will not work properly with numbering of subsubsections, so do not use a number higher than 2.
-
-\subsubsection{The Following Must Appear in Your Preamble}
-\begin{quote}
-\begin{scriptsize}\begin{verbatim}
-\documentclass[letterpaper]{article}
-% DO NOT CHANGE THIS
-\usepackage{aaai2027} % DO NOT CHANGE THIS
-\usepackage[hyphens]{url} % DO NOT CHANGE THIS
-\usepackage{graphicx} % DO NOT CHANGE THIS
-\urlstyle{rm} % DO NOT CHANGE THIS
-\def\UrlFont{\rm} % DO NOT CHANGE THIS
-\usepackage{natbib}  % DO NOT CHANGE THIS
-\usepackage{caption}  % DO NOT CHANGE THIS
-\frenchspacing % DO NOT CHANGE THIS
-%
-% Keep the \pdfinfo as shown here. There's no need
-% for you to add the /Title and /Author tags.
-\pdfinfo{
-/TemplateVersion (2027.1)
-}
-\end{verbatim}\end{scriptsize}
-\end{quote}
-
-\subsection{Preparing Your Paper}
-
-After the preamble above, you should prepare your paper as follows:
-\begin{quote}
-\begin{scriptsize}\begin{verbatim}
-\begin{document}
-\maketitle
-\begin{abstract}
-%...
-\end{abstract}\end{verbatim}\end{scriptsize}
-\end{quote}
-
-\noindent If you want to add links to the paper's code, dataset(s), and extended version or similar this is the place to add them, within a \emph{links} environment:
-\begin{quote}%
-\begin{scriptsize}\begin{verbatim}
-\begin{links}
-  \link{Code}{https://aaai.org/example/guidelines}
-  \link{Datasets}{https://aaai.org/example/datasets}
-  \link{Extended version}{https://aaai.org/example}
-\end{links}\end{verbatim}\end{scriptsize}
-\end{quote}
-\noindent Make sure that you do not de-anonymize yourself with these links if you are preparing an anonymous submission.
-
-\noindent You should then continue with the body of your paper. Your paper must conclude with the references, which should be inserted as follows:
-\begin{quote}
-\begin{scriptsize}\begin{verbatim}
-% References and End of Paper
-% These lines must be placed at the end of your paper
-\bibliography{Bibliography-File}
-\end{document}
-\end{verbatim}\end{scriptsize}
-\end{quote}
-
-\subsection{Commands and Packages That May Not Be Used}
 \begin{table*}[t]
 \centering
-
-\begin{tabular}{llll}
-  \toprule
-  \textbackslash abovecaption &
-  \textbackslash abovedisplay &
-  \textbackslash addevensidemargin &
-  \textbackslash addsidemargin \\
-  \textbackslash addtolength &
-  \textbackslash baselinestretch &
-  \textbackslash belowcaption &
-  \textbackslash belowdisplay \\
-  \textbackslash break &
-  \textbackslash clearpage &
-  \textbackslash clip &
-  \textbackslash columnsep \\
-  \textbackslash float &
-  \textbackslash linespread &
-  \textbackslash newpage &
-  \textbackslash pagebreak \\
-  \textbackslash setlength &
-  \textbackslash textheight &
-  \textbackslash tiny &
-  \textbackslash topmargin \\
-  \textbackslash trim &
-  \textbackslash vskip\{- &
-  \textbackslash vspace\{- \\
-  \bottomrule
+\small
+\caption{Object-held-out cross-validation (15 folds; mean). Onset by AUPRC; calibration by ECE and 90\%
+coverage; trajectory by post-prefix RMSE and worst-state RMSE; $N_{\mathrm{liq}}$ by censored-aware
+log-MAE; physics-violation rate (PVR); CRR recovery RMSE; admissible $\mathrm{P}^3$ (reference PINN${=}100$).
+Best admissible value in each column in \textbf{bold}; ``--'' denotes a metric the model does not produce.}
+\label{tab:main}
+\begin{tabular}{lcccccccccc}
+\toprule
+Model & AUPRC$\uparrow$ & Brier$\downarrow$ & ECE$\downarrow$ & Cov@90 & CRPS$\downarrow$ & RMSE$_{\text{cont}}\downarrow$ & RMSE$_{\text{worst}}\downarrow$ & $N_{\mathrm{liq}}$logMAE$\downarrow$ & PVR$\downarrow$ & $\mathrm{P}^3\uparrow$ \\
+\midrule
+\textbf{DPI-Flow}   & 0.986 & 0.047 & \textbf{0.050} & 0.834 & \textbf{0.043} & 0.081 & \textbf{0.111} & \textbf{0.244} & 0.012 & \textbf{454.7} \\
+\midrule
+Transformer         & 0.964 & 0.049 & 0.073 & 0.928 & 0.026 & \textit{0.051} & \textit{0.096} & 0.528 & 0.091 & 253.8 \\
+Neural Spline Flow  & 0.985 & 0.050 & 0.061 & 0.674 & 0.063 & 0.107 & 0.142 & 0.753 & 0.813 & 184.4 \\
+GRU                 & 0.944 & 0.125 & 0.162 & 0.861 & 0.067 & 0.119 & 0.192 & 1.266 & 0.513 & 111.9 \\
+PINN (ref.)         & 0.951 & 0.110 & 0.150 & 0.823 & 0.085 & 0.154 & 0.240 & 1.192 & 0.000 & 100.0 \\
+TCN                 & 0.936 & 0.134 & 0.151 & 0.821 & 0.086 & 0.166 & 0.250 & 1.435 & 0.694 & 87.9 \\
+CatBoost            & \textit{0.996} & \textit{0.038} & 0.051 & -- & -- & -- & -- & \textit{0.214} & -- & -- \\
+\bottomrule
 \end{tabular}
-\caption{Commands that must not be used}
-\label{table1}
 \end{table*}
 
-\begin{table}[t]
-\centering
-\begin{tabular}{llll}
-  \toprule
-    authblk & babel & balance & cjk \\
-    epsf & epsfig & euler & float \\
-    fullpage & geometry & graphics & hyperref \\
-    layout & lmodern & navigator & pdfcomment \\
-    pgfplots & psfig & pstricks & t1enc \\
-    times & titlesec & tocbibind & ulem \\
-  \bottomrule
-\end{tabular}
-\caption{LaTeX style packages that must not be used.}
-\label{table2}
-\end{table}
+\section{Results}
+\paragraph{A competitive Pareto balance, not a uniform win.} Table~\ref{tab:main} and
+Figure~\ref{fig:pareto} tell a deliberately honest story. The strongest \emph{unconstrained} baselines win
+\emph{individual} metrics: CatBoost attains the best scalar onset (AUPRC $0.996$, Brier $0.038$) and the
+best $N_{\mathrm{liq}}$ log-MAE ($0.214$), but produces no trajectory, no calibrated uncertainty and no
+CRR; a Transformer attains the best raw post-prefix trajectory error ($0.051$) but \emph{violates physics}
+(PVR $0.091$) and over-covers ($93\%$ at the $90\%$ level). Among the \emph{physically admissible} models
+(those below the $5\%$ feasibility gate of the $\mathrm{P}^3$ profile---here DPI-Flow and PINN), DPI-Flow
+is the clear leader: it tops the admissible $\mathrm{P}^3$ ranking ($454.7$ vs.\ PINN $100$), attains the
+lowest worst-state trajectory error ($0.111$) and trajectory CRPS ($0.043$), the best calibration
+(ECE $0.050$), near-zero physics violations ($0.012$), and recovers a measured CRR curve (RMSE $0.212$).
 
-There are a number of packages, commands, scripts, and macros that are incompatible with aaai2027.sty. The common ones are listed in tables \ref{table1} and \ref{table2}. Generally, if a command, package, script, or macro alters float spacings, margins, fonts, sizing, linespacing, or the presentation of the references and citations, it is unacceptable. Note that negative vskip and vspace may not be used except in certain rare occurrences, and may never be used around tables, figures, captions, sections, subsections, subsubsections, or references.
+\paragraph{Onset is strong but near-ceiling.} Object-cluster bootstrap intervals on AUPRC overlap across
+the top models (DPI-Flow $0.986\,[0.947,0.999]$, NSF $0.985$, CatBoost $0.996\,[0.987,1.000]$): the
+prefix-conditioned onset signal is strong, and differences among the leaders are not statistically
+distinguishable at the site level. This is reassuring rather than suspicious, because the signal collapses
+under the no-prefix stress test (below).
 
+\paragraph{$N_{\mathrm{liq}}$ favors the structured model.} Object-level paired Wilcoxon tests
+(Holm-corrected, $n{=}16$ sites) show DPI-Flow significantly better than PINN, Transformer, NSF, GRU and
+TCN on censored $N_{\mathrm{liq}}$ ($p{=}0.004$), and statistically tied with CatBoost. On raw post-prefix
+trajectory the Transformer is significantly better than DPI-Flow ($p{=}0.005$; Figure~\ref{fig:forest}),
+consistent with the trade-off above.
 
-\subsection{Page Breaks}
-For your final camera ready copy, you must not use any page break commands. References must flow directly after the text without breaks. Note that some conferences require references to be on a separate page during the review process. AAAI Press, however, does not require this condition for the final paper.
+\paragraph{Calibration.} After fold-local conformal scaling, DPI-Flow is the best-calibrated model
+(ECE $0.050$; Figure~\ref{fig:reliability}); $90\%$-interval coverage is a conservative $0.83$ under
+site-level distribution shift, which we report honestly rather than tuning on test.
 
-
-\subsection{Paper Size, Margins, and Column Width}
-Papers must be formatted to print in two-column format on 8.5 x 11 inch US letter-sized paper. The margins must be exactly as follows:
-\begin{itemize}
-\item Top margin: 1.25 inches (first page), .75 inches (others)
-\item Left margin: .75 inches
-\item Right margin: .75 inches
-\item Bottom margin: 1.25 inches
-\end{itemize}
-
-
-The default paper size in most installations of \LaTeX{} is A4. However, because we require that your electronic paper be formatted in US letter size, the aaai2027.sty style file enforces US letter page size automatically. Please note that using any other package to alter page size (such as, but not limited to the Geometry package) will result in your final paper being returned to you for correction.
-
-
-\subsubsection{Column Width and Margins.}
-To ensure maximum readability, your paper must include two columns. Each column should be 3.3 inches wide (slightly more than 3.25 inches), with a .375 inch (.952 cm) gutter of white space between the two columns. The aaai2027.sty file will automatically create these columns for you.
-
-\subsection{Overlength Papers}
-If your paper is too long and you resort to formatting tricks to make it fit, it is quite likely that it will be returned to you. The best way to retain readability if the paper is overlength is to cut text, figures, or tables. There are a few acceptable ways to reduce paper size that don't affect readability. First, turn on \textbackslash frenchspacing, which will reduce the space after periods. Next, move all your figures and tables to the top of the page. Consider removing less important portions of a figure. If you use \textbackslash centering instead of \textbackslash begin\{center\} in your figure environment, you can also buy some space. For mathematical environments, you may reduce fontsize {\bf but not below 6.5 point}.
-
-
-Commands that alter page layout are forbidden. These include \textbackslash columnsep,  \textbackslash float, \textbackslash topmargin, \textbackslash topskip, \textbackslash textheight, \textbackslash textwidth, \textbackslash oddsidemargin, and \textbackslash evensizemargin (this list is not exhaustive). If you alter page layout, you will be required to pay the page fee. Other commands that are questionable and may cause your paper to be rejected include \textbackslash parindent, and \textbackslash parskip. Commands that alter the space between sections are forbidden. The title sec package is not allowed. Regardless of the above, if your paper is obviously ``squeezed" it is not going to to be accepted. Options for reducing the length of a paper include reducing the size of your graphics, cutting text, or paying the extra page charge (if it is offered).
-
-
-\subsection{Type Font and Size}
-Your paper must be formatted using the Times-like serif text font provided automatically by the aaai2027 style file (\texttt{newtxtext}). We will not accept papers formatted using Computer Modern or Palatino or some other text typeface. Do not load \texttt{times}, \texttt{helvet}, \texttt{courier}, or any other font package in your preamble; the style file loads all three automatically. Sans-serif text, when used, is Helvetica (\texttt{helvet}); monospaced text is Courier (\texttt{courier}). Use Symbol, Lucida, or Computer Modern for \textit{mathematics only.}
-
-Do not use type 3 fonts for any portion of your paper, including graphics. Type 3 bitmapped fonts are designed for fixed resolution printers. Most print at 300 dpi even if the printer resolution is 1200 dpi or higher. They also often cause high resolution imagesetter devices to crash. Consequently, AAAI will not accept electronic files containing obsolete type 3 fonts. Files containing those fonts (even in graphics) will be rejected. (Authors using blackboard symbols must avoid packages that use type 3 fonts.)
-
-Fortunately, the aaai2027 style file --- which loads \texttt{newtxtext}, \texttt{helvet}, and \texttt{courier} --- embeds Type~1 outlines automatically under PDF\LaTeX{}. Computer Modern used for mathematics is also fine: current TeX Live and MiKTeX distributions include cm-super and Latin Modern Type~1 fonts by default, so no manual font installation is required.
-
-If you are unsure whether your paper contains Type~3 fonts, open the PDF in a viewer such as Adobe Acrobat Reader and inspect the font list (File $>$ Properties $>$ Fonts). Each embedded font should be listed as ``Type~1,'' ``TrueType,'' or ``OpenType'' --- not ``Type~3.'' The same inspection applies to embedded figures: export them from your illustration tool as PDF or high-resolution PNG/JPEG rather than EPS or PostScript.
-
-The default size for your type must be ten-point with twelve-point leading (line spacing). Start all pages (except the first) directly under the top margin. (See the next section for instructions on formatting the title page.) Indent ten points when beginning a new paragraph, unless the paragraph begins directly below a heading or subheading.
-
-\subsubsection{Nonroman Fonts.}
-If your paper includes symbols in other languages (such as, but not limited to, Arabic, Chinese, Hebrew, Japanese, Thai, Russian and other Cyrillic languages), you must restrict their use to bit-mapped figures.
-
-\subsection{Title and Authors}
-Your title must appear centered over both text columns in sixteen-point bold type (twenty-four point leading). The title must be written in Title Case according to the Chicago Manual of Style rules. The rules are a bit involved, but in general verbs (including short verbs like be, is, using, and go), nouns, adverbs, adjectives, and pronouns should be capitalized, (including both words in hyphenated terms), while articles, conjunctions, and prepositions are lower case unless they directly follow a colon or long dash. You can use the online tool \url{https://titlecaseconverter.com/} to double-check the proper capitalization (select the "Chicago" style and mark the "Show explanations" checkbox).
-
-Author's names should appear below the title of the paper, centered in twelve-point type (with fifteen point leading), along with affiliation(s) and complete address(es) (including electronic mail address if available) in nine-point roman type (the twelve point leading). You should begin the two-column format when you come to the abstract.
-
-\subsubsection{Formatting Author Information.}
-Author information has to be set according to the following specification depending if you have one or more than one affiliation. You may not use a table nor may you employ the \texttt{authorblk.sty} package. For one or several authors from the same institution, please separate them with commas and write all affiliation directly below (one affiliation per line) using the macros \textbackslash author and \textbackslash affiliations:
-
-\begin{quote}\begin{scriptsize}\begin{verbatim}
-\author{
-    Author 1, ..., Author n\\
-}
-\affiliations {
-    Address line\\
-    ... \\
-    Address line\\
-}
-\end{verbatim}\end{scriptsize}\end{quote}
-
-
-\noindent For authors from multiple institutions, use \textbackslash textsuperscript \{\textbackslash rm x\} to link authors to their affiliations. Ensure there are no spaces between the author name and the superscript. The comma should be placed after the superscript.
-
-\begin{quote}\begin{scriptsize}\begin{verbatim}
-\author{
-    AuthorOne\equalcontrib\textsuperscript{\rm 1,\rm 2},
-    AuthorTwo\equalcontrib\textsuperscript{\rm 2},
-    AuthorThree\textsuperscript{\rm 3},\\
-    AuthorFour\textsuperscript{\rm 4},\\
-    AuthorFive\textsuperscript{\rm 5}
-}
-\affiliations {
-    \textsuperscript{\rm 1}AffiliationOne,\\
-    \textsuperscript{\rm 2}AffiliationTwo,\\
-    \textsuperscript{\rm 3}AffiliationThree,\\
-    \textsuperscript{\rm 4}AffiliationFour,\\
-    \textsuperscript{\rm 5}AffiliationFive\\
-    \{email, email\}@affiliation.com,
-    email@affiliation.com,
-    email@affiliation.com,
-    email@affiliation.com
-}
-\end{verbatim}\end{scriptsize}\end{quote}
-
-You can indicate that some authors contributed equally using the \textbackslash equalcontrib command. This will add a marker after the author names and a footnote on the first page.
-
-Similarly, you can mark author(s) as corresponding author(s) with the \textbackslash corresponding command within the \textbackslash author environment.
-
-Note that you may want to  break the author list for better visualization. You can achieve this using a simple line break (\textbackslash  \textbackslash).
-
-\subsection{\LaTeX{} Copyright Notice}
-If you use aaai2027.sty in camera-ready mode the copyright notice is inserted automatically and may not be disabled. In submission mode the copyright disclaimer is automatically suppressed.
-
-\subsection{Credits}
-Any credits to a sponsoring agency should appear in the acknowledgments section, unless the agency requires different placement. If it is necessary to include this information on the front page, use
-\textbackslash thanks in either the \textbackslash author or \textbackslash title commands.
-For example:
-\begin{quote}
-\begin{small}
-\textbackslash title\{Very Important Results in AI\textbackslash thanks\{This work is
- supported by everybody.\}\}
-\end{small}
-\end{quote}
-Multiple \textbackslash thanks commands can be given. Each will result in a separate footnote indication in the author or title with the corresponding text at the bottom of the first column of the document. Note that the \textbackslash thanks command is fragile. You will need to use \textbackslash protect.
-
-Please do not include \textbackslash pubnote commands in your document.
-
-\subsection{Abstract}
-Follow the example commands in this document for creation of your abstract. The command \textbackslash begin\{abstract\} will automatically indent the text block. Please do not indent it further. {Do not include references in your abstract!}
-
-\subsection{Page Numbers}
-
-Do not print any page numbers on your paper. The use of \textbackslash pagestyle is forbidden.
-
-\subsection{Text}
-The main body of the paper must be formatted in black, ten-point Times Roman with twelve-point leading (line spacing). You may not reduce font size or the linespacing. Commands that alter font size or line spacing (including, but not limited to baselinestretch, baselineshift, linespread, and others) are expressly forbidden. In addition, you may not use color in the text.
-
-\subsection{Citations}
-Citations within the text should include the author's last name and year, for example (Newell 1980). Append lower-case letters to the year in cases of ambiguity. Multiple authors should be treated as follows: (Feigenbaum and Engelmore 1988) or (Ford, Hayes, and Glymour 1992). In the case of four or more authors, list only the first author, followed by et al. (Ford et al. 1997).
-
-\subsection{Extracts}
-Long quotations and extracts should be indented ten points from the left and right margins.
-
-\begin{quote}
-This is an example of an extract or quotation. Note the indent on both sides. Quotation marks are not necessary if you offset the text in a block like this, and properly identify and cite the quotation in the text.
-
-\end{quote}
-
-\subsection{Footnotes}
-Use footnotes judiciously, taking into account that they interrupt the reading of the text. When required, they should be consecutively numbered throughout with superscript Arabic numbers. Footnotes should appear at the bottom of the page, separated from the text by a blank line space and a thin, half-point rule.
-
-\subsection{Headings and Sections}
-When necessary, headings should be used to separate major sections of your paper. Remember, you are writing a short paper, not a lengthy book! An overabundance of headings will tend to make your paper look more like an outline than a paper. The aaai2027.sty package will create headings for you. Do not alter their size nor their spacing above or below.
-
-\subsubsection{Section Numbers.}
-The use of section numbers in AAAI Press papers is optional. To use section numbers in \LaTeX{}, uncomment the setcounter line in your document preamble and change the 0 to a 1. Section numbers should not be used in short poster papers and/or extended abstracts.
-
-\subsubsection{Section Headings.}
-Sections must appear in the following order:
-\begin{enumerate}
-\item Main content sections
-\item Content Appendices (optional).  These appendices are considered part of the main paper, count towards page limits and and are subject to the same formatting and review requirements.
-\item Ethical Statement (optional, unnumbered)
-\item Acknowledgments (optional, unnumbered)
-\item References (unnumbered)
-\item Supplementary Material / Technical Appendices (only if permitted by the conference). Policies regarding supplementary material vary across conferences: some require technical appendices to be submitted as separate documents, some permit them at submission time but do not publish them in the proceedings, and others do not allow them at all. Consult the conference website for the applicable instructions.
-\end{enumerate}
-
-\subsubsection{Content Appendices.}
-Content appendices must appear after the main content. If your main sections are numbered, appendix sections must use letters instead of arabic numerals. In \LaTeX{} you can use the \texttt{\textbackslash appendix} command to achieve this effect and then use \texttt{\textbackslash section\{Heading\}} normally for your appendix sections.
-
-\subsubsection{Ethical Statement.}
-You can write a statement about the potential ethical impact of your work, including its broad societal implications, both positive and negative. If included, such statement must be written in an unnumbered section titled \emph{Ethical Statement}.
-
-\subsubsection{Acknowledgments.}
-The acknowledgments section, if included, appears right before the references and is headed ``Acknowledgments". It must not be numbered even if other sections are (use \texttt{\textbackslash section*\{Acknowledgments\}} in \LaTeX{}). This section includes acknowledgments of help from associates and colleagues, credits to sponsoring agencies, financial support, and permission to publish. Please acknowledge other contributors, grant support, and so forth, in this section. Do not put acknowledgments in a footnote on the first page. If your grant agency requires acknowledgment of the grant on page 1, limit the footnote to the required statement, and put the remaining acknowledgments at the back. Please try to limit acknowledgments to no more than three sentences.
-
-\subsubsection{References.}
-The references section should be labeled ``References" and must appear at the very end of the paper (don't end the paper with references, and then put a figure by itself on the last page). A sample list of references is given later on in these instructions. Please use a consistent format for references. Poorly prepared or sloppy references reflect badly on the quality of your paper and your research. Please prepare complete and accurate citations.
-
-\subsection{Illustrations and Figures}
+\paragraph{Ranking robustness.} The admissible $\mathrm{P}^3$ top-1 (DPI-Flow) is stable in $100\%$ of
+perturbations of the criterion weights (Dirichlet, $n{=}600$), the physical-feasibility gate thresholds,
+the reference model, and the inclusion of risk-only baselines (Kendall-$\tau{=}1.0$).
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.9\columnwidth]{Figures/figure1} % Reduce the figure size so that it is slightly narrower than the column. Don't use precise values for figure width.This setup will avoid overfull boxes.
-\caption{Using the trim and clip commands produces fragile layers that can result in disasters (like this one from an actual paper) when the color space is corrected or the PDF combined with others for the final proceedings. Crop your figures properly in a graphics program -- not in LaTeX.}
-\label{fig1}
+\includegraphics[width=\columnwidth]{Figures/fig_pareto.pdf}
+\caption{Onset (AUPRC) vs.\ post-prefix trajectory error. Upper-left is better; filled markers are
+physically admissible (PVR$\le 0.01$). Unconstrained baselines win a single axis but are infeasible or
+omit structured outputs; DPI-Flow occupies the admissible frontier.}
+\label{fig:pareto}
 \end{figure}
 
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
-\includegraphics[width=0.8\textwidth]{Figures/figure2} % Reduce the figure size so that it is slightly narrower than the column.
-\caption{Adjusting the bounding box instead of actually removing the unwanted data resulted multiple layers in this paper. It also needlessly increased the PDF size. In this case, the size of the unwanted layer doubled the paper's size, and produced the following surprising results in final production. Crop your figures properly in a graphics program. Don't just alter the bounding box.}
-\label{fig2}
-\end{figure*}
+\includegraphics[width=\columnwidth]{Figures/fig_reliability.pdf}
+\caption{Reliability diagram of onset risk for DPI-Flow under object-held-out CV; marker size encodes bin
+count. Expected calibration error $0.050$.}
+\label{fig:reliability}
+\end{figure}
 
-% Using the \centering command instead of \begin{center} ... \end{center} will save space
-% Positioning your figure at the top of the page will save space and make the paper more readable
-% Using 0.95\columnwidth in conjunction with the
+\section{Ablations and Robustness}
+We ablate each component on the same object-held-out protocol (Figure~\ref{fig:ablation}).
 
+\paragraph{The prefix is the dominant driver.} Removing the observed prefix (no-prefix stress test)
+degrades onset AUPRC $0.970\!\to\!0.865$, post-prefix RMSE $0.080\!\to\!0.153$, worst-state
+$0.146\!\to\!0.202$ and calibration ECE $0.080\!\to\!0.164$. Because the prefix is strictly pre-onset,
+this confirms the prefix-conditioned formulation does real work and the onset signal is not a leakage
+artifact.
 
-Your paper must compile in PDF\LaTeX{}. Consequently, all your figures must be .jpg, .png, or .pdf. You may not use the .gif (the resolution is too low), .ps, or .eps file format for your figures.
+\paragraph{Physical structure buys feasibility and event-time, at a trajectory cost.} Replacing the
+analytical layer with a black-box decoder (\emph{wo-ode}) lowers raw post-prefix RMSE to $0.044$ but
+\emph{worsens} $N_{\mathrm{liq}}$ log-MAE $0.328\!\to\!0.614$; removing both the layer and the monotone
+projection (\emph{blackbox-raw}) drops physics violations from $\sim$0 to $0.225$. Thus the gain of the
+structured model is not reducible to a cumulative-maximum post-processing: the ODE layer trades a little
+raw trajectory accuracy for substantially better event-time prediction, feasibility, and the CRR/parameter
+outputs.
 
-Figures, drawings, tables, and photographs should be placed throughout the paper on the page (or the subsequent page) where they are first discussed. Do not group them together at the end of the paper. If placed at the top of the paper, illustrations may run across both columns. Figures must not invade the top, bottom, or side margin areas. Figures must be inserted using the \textbackslash usepackage\{graphicx\}. Number figures sequentially, for example, figure 1, and so on. Do not use minipage to group figures.
+\paragraph{Each remaining component contributes as designed.} Removing the monotone projection raises PVR
+$0.004\!\to\!0.087$; removing conformal calibration drops coverage $0.849\!\to\!0.790$; replacing the
+conditional flow with a plain Gaussian posterior worsens trajectory ($0.080\!\to\!0.087$, worst-state
+$0.146\!\to\!0.152$). The model is robust to feature ablations: zeroing the Vs or grain-size features
+changes all metrics by less than $0.02$.
 
-If you normally create your figures using pgfplots, note that pgfplots itself must not be used in your paper source (see Table~\ref{table2}). Pre-generate your figures externally, export them as PDF files, and import them with \textbackslash includegraphics. Bounding and trim boxes created by pgfplots are fragile and tend to create issues.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{Figures/fig_ablation.pdf}
+\caption{Component contribution to worst-state post-prefix RMSE (mean $\pm$ 95\% CI over folds). ``full''
+in accent; removing the prefix is by far the largest effect.}
+\label{fig:ablation}
+\end{figure}
 
-When you include your figures, you must crop them \textbf{outside} of \LaTeX{}. The command \textbackslash includegraphics*[clip=true, viewport 0 0 10 10]{...} might result in a PDF that looks great, but the image is not really cropped, so \textbf{this is forbidden}. The full image can reappear (and obscure whatever it is overlapping) when page numbers are applied or color space is standardized. Figures \ref{fig1}, and \ref{fig2} display some unwanted results that often occur.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{Figures/fig_forest_traj.pdf}
+\caption{Post-prefix trajectory RMSE across models with object-cluster bootstrap 95\% intervals (lower is
+better). The Transformer leads raw trajectory but is physically infeasible (Table~\ref{tab:main}).}
+\label{fig:forest}
+\end{figure}
 
-All figures must be in .jpg, .png, or .pdf format before submission. Pre-convert any EPS or PostScript illustrations using tools such as \texttt{epstopdf} (for EPS to PDF) or \texttt{ps2pdf} (for PostScript to PDF) outside of \LaTeX{}, and verify the resulting PDF for correct bounding boxes.
+\section{Limitations}
+CRR recovery is evaluated on a small number of measured-CRR sites per held-out fold; we therefore frame it
+as \emph{exploratory recovery of measured CRR boundaries}, not robust cross-site generalization. The
+monotone projection encodes an undrained accumulation assumption, not a universal physical law; zero
+physics-violation rate is feasibility by construction, which we complement with black-box controls rather
+than treat as empirical proof. The prefix-conditioned setting makes onset easier; we address this with
+no-prefix and feature-ablation stress tests. The benchmark is a single laboratory campaign; lab-to-field
+transfer is not claimed.
 
-\subsubsection {Figure Captions.}The illustration number and caption must appear \textit{under} the illustration. Labels and other text with the actual illustration must be at least nine-point type. However, the font and size of figure captions must be 10 point roman. Do not make them smaller, bold, or italic. (Individual words may be italicized if the context requires differentiation.)
-
-\subsection{Tables}
-
-Tables should be presented in 10 point roman type. If necessary, they may be altered to 9 point type. You must not use \texttt{\textbackslash resizebox} or other commands that resize the entire table to make it smaller, because you can't control the final font size this way.
-If your table is too large you can use \texttt{\textbackslash setlength\{\textbackslash tabcolsep\}\{1mm\}} to compress the columns a bit or you can adapt the content (e.g.: reduce the decimal precision when presenting numbers, use shortened column titles, make some column double-line to get it narrower). (Note: \texttt{\textbackslash setlength\{\textbackslash tabcolsep\}} is a permitted exception to the general \texttt{\textbackslash setlength} ban in Table~\ref{table1}.)
-
-Tables that do not fit in a single column must be placed across double columns. If your table won't fit within the margins even when spanning both columns and using the above techniques, you must split it in two separate tables.
-
-\subsubsection {Table Captions.} The number and caption for your table must appear \textit{under} (not above) the table.  Additionally, the font and size of table captions must be 10 point roman and must be placed beneath the figure. Do not make them smaller, bold, or italic. (Individual words may be italicized if the context requires differentiation.)
-
-
-
-\subsubsection{Low-Resolution Bitmaps.}
-You may not use low-resolution (such as 72 dpi) screen-dumps and GIF files---these files contain so few pixels that they are always blurry, and illegible when printed. If they are color, they will become an indecipherable mess when converted to black and white. This is always the case with gif files, which should never be used. The resolution of screen dumps can be increased by reducing the print size of the original file while retaining the same number of pixels. You can also enlarge files by manipulating them in software such as PhotoShop. Your figures should be 300 dpi when incorporated into your document.
-
-\subsubsection{\LaTeX{} Overflow.}
-\LaTeX{} users please beware: \LaTeX{} will sometimes put portions of the figure or table or an equation in the margin. If this happens, you need to make the figure or table span both columns. If absolutely necessary, you may reduce the figure, or reformat the equation, or reconfigure the table.{ \bf Check your log file!} You must fix any overflow into the margin (that means no overfull boxes in \LaTeX{}). \textbf{Nothing is permitted to intrude into the margin or gutter.}
-
-
-\subsubsection{Using Color.}
-Use of color should be limited to figures and minor text details (it is ok to colorize one word, but not an entire sentence). It must be WCAG 2.0 compliant. (That is, the contrast ratio must be greater than 4.5:1 no matter the font size.) It may never be used for any portion of the text of your paper. The archival version of your paper may be printed in grayscale. The web version should be readable by persons with disabilities. Consequently, because conversion to grayscale can cause undesirable effects (red changes to black, yellow can disappear, and so forth), we strongly suggest you test the figures in your document when converted to grayscale. Also, you should be mindful of readers who may happen to have trouble distinguishing colors. Hence, your paper must be decipherable without using color for distinction.
-
-\subsubsection{Drawings.}
-We suggest you use computer drawing software (such as Adobe Illustrator or, (if unavoidable), the drawing tools in Microsoft Word) to create your illustrations. Do not use Microsoft Publisher. These illustrations will look best if all line widths are uniform (half- to two-point in size), and you do not create labels over shaded areas. Shading should be 133 lines per inch if possible. Use Times Roman or Helvetica for all figure call-outs. \textbf{Do not use hairline width lines} --- be sure that the stroke width of all lines is at least .5 pt. Zero point lines will print on a laser printer, but will completely disappear on the high-resolution devices used by our printers.
-
-\subsubsection{Photographs and Images.}
-Photographs and other images should be in grayscale (color photographs will not reproduce well; for example, red tones will reproduce as black, yellow may turn to white, and so forth) and set to a minimum of 300 dpi. Do not prescreen images.
-
-\subsubsection{Resizing Graphics.}
-Resize your graphics \textbf{before} you include them with LaTeX. You may \textbf{not} use trim or clip options as part of your \textbackslash includegraphics command. Resize the media box of your PDF using a graphics program instead.
-
-\subsubsection{Fonts in Your Illustrations.}
-You must embed all fonts in your graphics before including them in your LaTeX document.
-
-\subsubsection{Algorithms.}
-Algorithms and/or programs are a special kind of figures. Like all illustrations, they should appear floated to the top (preferably) or bottom of the page. However, their caption should appear in the header, left-justified and enclosed between horizontal lines, as shown in Algorithm~\ref{alg:algorithm}. The algorithm body should be terminated with another horizontal line. It is up to the authors to decide whether to show line numbers or not, how to format comments, etc.
-
-In \LaTeX{} algorithms may be typeset using the {\tt algorithm} and {\tt algorithmic} packages, but you can also use one of the many other packages for the task.
-
-\begin{algorithm}[tb]
-\caption{Example algorithm}
-\label{alg:algorithm}
-\textbf{Input}: Your algorithm's input\\
-\textbf{Parameter}: Optional list of parameters\\
-\textbf{Output}: Your algorithm's output
-\begin{algorithmic}[1] %[1] enables line numbers
-\STATE Let $t=0$.
-\WHILE{condition}
-\STATE Do some action.
-\IF {conditional}
-\STATE Perform task A.
-\ELSE
-\STATE Perform task B.
-\ENDIF
-\ENDWHILE
-\STATE \textbf{return} solution
-\end{algorithmic}
-\end{algorithm}
-
-\subsubsection{Listings.}
-Listings are much like algorithms and programs. They should also appear floated to the top (preferably) or bottom of the page. Listing captions should appear in the header, left-justified and enclosed between horizontal lines as shown in Listing~\ref{lst:listing}. Terminate the body with another horizontal line and avoid any background color. Line numbers, if included, must appear within the text column.
-
-\begin{listing}[tb]%
-\caption{Example listing {\tt quicksort.hs}}%
-\label{lst:listing}%
-\begin{lstlisting}[language=Haskell]
-quicksort :: Ord a => [a] -> [a]
-quicksort []     = []
-quicksort (p:xs) = (quicksort lesser) ++ [p] ++ (quicksort greater)
-	where
-		lesser  = filter (< p) xs
-		greater = filter (>= p) xs
-\end{lstlisting}
-\end{listing}
-
-\subsection{References}
-The AAAI style includes a set of definitions for use in formatting references with BibTeX. These definitions make the bibliography style fairly close to the ones  specified in the Reference Examples appendix below. To use these definitions, you also need the BibTeX style file ``aaai2027.bst," available in the AAAI Author Kit on the AAAI web site. Then, at the end of your paper but before \textbackslash end{document}, you need to put the following lines:
-
-\begin{quote}
-\begin{small}
-\textbackslash bibliography\{bibfile1,bibfile2,...\}
-\end{small}
-\end{quote}
-
-Please note that the aaai2027.sty class already sets the bibliographystyle for you, so you do not have to place any \textbackslash bibliographystyle command in the document yourselves. The aaai2027.sty file is incompatible with the hyperref and navigator packages. If you use either, your references will be garbled and your paper will be returned to you.
-
-References may be the same size as surrounding text.
-However, in this section (only), you may reduce the size to {\em \textbackslash small} (9pt) if your paper exceeds the allowable number of pages. Making it any smaller than 9 point with 10 point linespacing, however, is not allowed.
-
-The list of files in the \textbackslash bibliography command should be the names of your BibTeX source files (that is, the .bib files referenced in your paper).
-
-The following commands are available for your use in citing references:
-\begin{quote}
-{\em \textbackslash cite:} Cites the given reference(s) with a full citation. This appears as ``(Author Year)'' for one reference, or ``(Author Year; Author Year)'' for multiple references.\smallskip\\
-{\em \textbackslash shortcite:} Cites the given reference(s) with just the year. This appears as ``(Year)'' for one reference, or ``(Year; Year)'' for multiple references.\smallskip\\
-{\em \textbackslash citeauthor:} Cites the given reference(s) with just the author name(s) and no parentheses.\smallskip\\
-{\em \textbackslash citeyear:} Cites the given reference(s) with just the date(s) and no parentheses.
-\end{quote}
-You may also use any of the \emph{natbib} citation commands.
-
-
-\section{Proofreading Your PDF}
-Please check all the pages of your PDF file. The most commonly forgotten element is the acknowledgments --- especially the correct grant number. Authors also commonly forget to add the metadata to the source, use the wrong reference style file, or don't follow the capitalization rules or comma placement for their author-title information properly. A final common problem is text (especially equations) that runs into the margin. You will need to fix these common errors before submitting your file.
-
-\section{Improperly Formatted Files }
-In the past, AAAI has corrected improperly formatted files submitted by the authors. Unfortunately, this has become an increasingly burdensome expense that we can no longer absorb). Consequently, if your file is improperly formatted, it will be returned to you for correction.
-
-\section{Naming Your Electronic File}
-We require that you name your \LaTeX{} source file with the last name (family name) of the first author so that it can easily be differentiated from other submissions. Complete file-naming instructions will be provided to you in the submission instructions.
-
-\section{Submitting Your Electronic Files to AAAI}
-Instructions on paper submittal will be provided to you in your acceptance letter.
-
-\section{Inquiries}
-If you have any questions about the preparation or submission of your paper as instructed in this document, please contact AAAI Press at the address given below. If you have technical questions about implementation of the aaai style file, please contact an expert at your site. We do not provide technical support for \LaTeX{} or any other software package. To avoid problems, please keep your paper simple, and do not incorporate complicated macros and style files.
-
-\begin{quote}
-\noindent AAAI Press\\
-1101 Pennsylvania Ave, NW Suite 300\\
-Washington, DC 20004 USA\\
-\textit{Telephone:} 1-202-360-4062\\
-\textit{E-mail:} See the submission instructions for your particular conference or event.
-\end{quote}
-
-\section{Additional Resources}
-\LaTeX{} is a difficult program to master. If you encounter issues producing correct PDF output, please consult your TeX distribution documentation (TeX Live or MiKTeX) and ensure you are using an up-to-date PDF\LaTeX{} workflow. Most compilation and font issues can be resolved by updating your distribution and avoiding deprecated packages.
-
-\appendix
-\section{Reference Examples}
-\label{sec:reference_examples}
-
-Formatted bibliographies should look like the following examples. You should use BibTeX to generate the references. Missing fields are unacceptable when compiling references, and usually indicate that you are using the wrong type of entry (BibTeX class).
-
-\paragraph{Book with multiple authors} Use the \texttt{@book} class.\\[.2em]
-\nocite{em:86}
-%%BIBENTRY-BEGIN:em:86|.%%
-Engelmore, R.; and Morgan, A., eds. 1986.
-\newblock \emph{Blackboard Systems}.
-\newblock Reading, Mass.: Addison-Wesley.
-%%BIBENTRY-END:em:86%%
-
-\paragraph{Journal and magazine articles} Use the \texttt{@article} class.\\[.2em]
-\nocite{r:80}
-%%BIBENTRY-BEGIN:r:80|.\\[.2em]%%
-Robinson, A.~L. 1980.
-\newblock New Ways to Make Microcircuits Smaller.
-\newblock \emph{Science}, 208(4447): 1019--1022.\\[.2em]
-%%BIBENTRY-END:r:80%%
-\nocite{hcr:83}
-%%BIBENTRY-BEGIN:hcr:83|.%%
-Hasling, D.~W.; Clancey, W.~J.; and Rennels, G. 1984.
-\newblock Strategic explanations for a diagnostic consultation system.
-\newblock \emph{International Journal of Man-Machine Studies}, 20(1): 3--19.
-%%BIBENTRY-END:hcr:83%%
-
-\paragraph{Proceedings paper published by a society, press or publisher} Use the \texttt{@inproceedings} class. You may abbreviate the \emph{booktitle} field, but make sure that the conference edition is clear.\\[.2em]
-\nocite{c:84}
-%%BIBENTRY-BEGIN:c:84|.\\[.2em]%%
-Clancey, W.~J. 1984.
-\newblock {Classification Problem Solving}.
-\newblock In \emph{Proceedings of the Fourth National Conference on Artificial
-  Intelligence}, 45--54. Menlo Park, Calif.: AAAI Press.\\[.2em]
-%%BIBENTRY-END:c:84%%
-\nocite{c:83}
-%%BIBENTRY-BEGIN:c:83|.%%
-Clancey, W.~J. 1983.
-\newblock {Communication, Simulation, and Intelligent Agents: Implications of
-  Personal Intelligent Machines for Medical Education}.
-\newblock In \emph{Proceedings of the Eighth International Joint Conference on
-  Artificial Intelligence {(IJCAI-83)}}, 556--560. Menlo Park, Calif: {IJCAI
-  Organization}.
-%%BIBENTRY-END:c:83%%
-
-\paragraph{University technical report} Use the \texttt{@techreport} class.\\[.2em]
-\nocite{r:86}
-%%BIBENTRY-BEGIN:r:86|.%%
-Rice, J. 1986.
-\newblock {Poligon: A System for Parallel Problem Solving}.
-\newblock Technical Report KSL-86-19, Dept.\ of Computer Science, Stanford
-  Univ.
-%%BIBENTRY-END:r:86%%
-
-\paragraph{Dissertation or thesis} Use the \texttt{@phdthesis} class.\\[.2em]
-\nocite{c:79}
-%%BIBENTRY-BEGIN:c:79|.%%
-Clancey, W.~J. 1979.
-\newblock \emph{{Transfer of Rule-Based Expertise through a Tutorial
-  Dialogue}}.
-\newblock {Ph.D.} diss., Dept.\ of Computer Science, Stanford Univ., Stanford,
-  Calif.
-%%BIBENTRY-END:c:79%%
-
-\paragraph{Forthcoming publication} Use the \texttt{@misc} class with a \texttt{note="Forthcoming"} annotation.
-\begin{quote}
-\begin{footnotesize}
-\begin{verbatim}
-@misc(key,
-  [...]
-  note="Forthcoming",
-)
-\end{verbatim}
-\end{footnotesize}
-\end{quote}
-\nocite{c:21}
-%%BIBENTRY-BEGIN:c:21|.%%
-Clancey, W.~J. 2021.
-\newblock {The Engineering of Qualitative Models}.
-\newblock Forthcoming.
-%%BIBENTRY-END:c:21%%
-
-\paragraph{ArXiv paper} Fetch the BibTeX entry from the ``Export Bibtex Citation" link in the arXiv website. Notice it uses the \texttt{@misc} class instead of the \texttt{@article} one, and that it includes the \texttt{eprint} and \texttt{archivePrefix} keys.
-\begin{quote}
-\begin{footnotesize}
-\begin{verbatim}
-@misc(key,
-  [...]
-  eprint="xxxx.yyyy",
-  archivePrefix="arXiv",
-)
-\end{verbatim}
-\end{footnotesize}
-\end{quote}
-\nocite{c:22}
-%%BIBENTRY-BEGIN:c:22|.%%
-Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; Jones, L.; Gomez, A.~N.;
-  Kaiser, L.; and Polosukhin, I. 2023.
-\newblock Attention Is All You Need.
-\newblock arXiv:1706.03762.
-%%BIBENTRY-END:c:22%%
-
-\paragraph{Website or online resource} Use the \texttt{@misc} class. Add the url in the \texttt{howpublished} field and the date of access in the \texttt{note} field:
-\begin{quote}
-\begin{footnotesize}
-\begin{verbatim}
-@misc(key,
-  [...]
-  howpublished="\url{http://...}",
-  note="Accessed: YYYY-mm-dd",
-)
-\end{verbatim}
-\end{footnotesize}
-\end{quote}
-\nocite{c:23}
-%%BIBENTRY-BEGIN:c:23|.%%
-{NASA}. 2015.
-\newblock Pluto: The 'Other' Red Planet.
-\newblock \url{https://www.nasa.gov/nh/pluto-the-other-red-planet}.
-\newblock Accessed: 2018-12-06.
-%%BIBENTRY-END:c:23%%
-
-\section*{Acknowledgments}
-AAAI is especially grateful to Peter Patel Schneider for his work in implementing the original aaai.sty file, liberally using the ideas of other style hackers, including Barbara Beeton. We also acknowledge with thanks the work of George Ferguson for his guide to using the style and BibTeX files --- which has been incorporated into this document --- and Hans Guesgen, who provided several timely modifications, as well as the many others who have, from time to time, sent in suggestions on improvements to the AAAI style. We are especially grateful to Francisco Cruz, Marc Pujol-Gonzalez, and Mico Loretan for the improvements to the Bib\TeX{} and \LaTeX{} files made in 2020.
-
-The preparation of the \LaTeX{} and Bib\TeX{} files that implement these instructions was supported by Schlumberger Palo Alto Research, AT\&T Bell Laboratories, Morgan Kaufmann Publishers, The Live Oak Press, LLC, and AAAI Press. Bibliography style changes were added by Sunil Issar. \verb+\+pubnote was added by J. Scott Penberthy. George Ferguson added support for printing the AAAI copyright slug. Additional changes to aaai2027.sty and aaai2027.bst have been made by Francisco Cruz, Marc Pujol-Gonzalez, and Mico Loretan.
-
-\bigskip
-\noindent Thank you for reading these instructions carefully. We look forward to receiving your electronic files!
+\section{Conclusion}
+We presented DPI-Flow, a physics-constrained conditional flow for prefix-conditioned liquefaction
+forecasting, and an object-held-out benchmark with honest, site-aware statistics. The defensible result is
+not that one model wins everywhere, but that DPI-Flow provides the best \emph{physically admissible} Pareto
+balance of onset accuracy, post-prefix trajectory quality, calibrated and flow-propagated uncertainty, and
+structural feasibility, while uniquely recovering interpretable physical parameters and a CRR curve.
+Scalar-only models (CatBoost) and unconstrained sequence models (Transformer) remain valuable points on
+the frontier. A natural extension, \emph{DPI-SSM}, keeps the conditional-flow parameter-inference
+front-end but replaces the fixed-form Euler integrator with a learned state-space recurrence as the
+dynamics engine, trading some interpretability for trajectory capacity; we leave this, together with
+onset-coherence diagnostics ($\mathrm{CRR}(N_{\mathrm{liq}})\!\approx\!\mathrm{CSR}$) and lab-to-field
+transfer, to future work. We hope the released benchmark and ablation protocol make follow-up work in this
+scarce, high-stakes regime easier to evaluate.
 
 \bibliography{aaai2027}
-
-% Check whether the conference requires a reproducibility checklist to be included in the paper.
-% If so, you can uncomment the following line and ajust the path to include it.
-% \input{ReproducibilityChecklist.tex}
 
 \end{document}

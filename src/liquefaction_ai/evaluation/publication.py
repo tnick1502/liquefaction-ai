@@ -155,14 +155,15 @@ def pareto_plot(summary_df: pd.DataFrame, x: str = "Traj_RMSE_continuation", y: 
     if xs_col not in d or ys_col not in d:
         raise ValueError(f"summary lacks {xs_col}/{ys_col}")
     pvr = d.get("Physics_Violation_Rate_mean", pd.Series(np.zeros(len(d)), index=d.index))
+    gate = 0.05   # physical-feasibility gate of the P3 profile (PVR>gate => excluded/unreliable)
     fig, ax = plt.subplots(figsize=(6.2, 5.0))
     for _, r in d.iterrows():
-        m = r["model"]; admissible = float(pvr.get(r.name, 0.0)) <= 0.01
+        m = r["model"]; admissible = float(pvr.get(r.name, 0.0)) <= gate
         col = _bar_color(m, ref)
         ax.scatter(r[xs_col], r[ys_col], s=130, c=(col if admissible else "white"),
                    edgecolor=col if admissible else INK, linewidth=1.4, zorder=3)
         ax.annotate(m, (r[xs_col], r[ys_col]), xytext=(5, 4), textcoords="offset points", fontsize=8)
-    ax.scatter([], [], s=90, c=BLUE, edgecolor=INK, label="physics-admissible (PVR≤0.01)")
+    ax.scatter([], [], s=90, c=BLUE, edgecolor=INK, label="physics-admissible (PVR≤0.05)")
     ax.scatter([], [], s=90, c="white", edgecolor=INK, label="physics-violating")
     ax.set_xlabel(f"{x} — post-prefix trajectory error (lower better)")
     ax.set_ylabel(f"{y} — onset detection (higher better)")
