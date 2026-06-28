@@ -13,16 +13,24 @@
     "use_crr_damage": true,
     "integrator": "euler",
     "liq_threshold": 0.95,
-    "use_observed_aux_loss": true,
-    "hidden_dim": 96
+    "hidden_dim": 160
   },
   "search": {
+    "grid": {
+      "hidden_dim": [
+        96,
+        128,
+        160
+      ]
+    },
+    "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 96
+      "hidden_dim": 160
     }
   },
-  "epochs": 80,
-  "publication_retrain": true,
-  "early_stopping_patience": 12,
-  "early_stopping_min_delta": 0.0001
+  "epochs": 6,
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "batch_size": 256,
+  "calib_scale": 0.75
 }

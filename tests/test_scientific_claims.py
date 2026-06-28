@@ -87,18 +87,22 @@ def test_pdf_reports_and_publication_notebooks_removed():
     assert not (REPO_ROOT / "results" / "report_figs").exists()
 
 
-def test_runners_cover_current_notebook_pipeline_without_hardcoded_raw_path():
+def test_notebook_pipeline_is_complete():
+    """Пайплайн полностью покрыт ноутбуками (корневые .py-оркестраторы удалены — всё в ноутбуках)."""
+    nb = REPO_ROOT / "notebooks"
     expected = [
+        "1_data_preparation/1_1_3_real_objects_loader.ipynb",
+        "2_model_training/2_2_dpi_flow.ipynb",
         "2_model_training/2_4_dpi_evt.ipynb",
-        "4_topology/4_1_dpi_flow_latent_topology.ipynb",
-        "4_topology/4_2_topological_early_warning.ipynb",
-        "4_topology/4_3_evt_neural_ssm_topological_regularization.ipynb",
+        "3_evaluations/3_1_core_metrics.ipynb",
+        "3_evaluations/3_4_object_cv_and_ci.ipynb",
+        "3_evaluations/3_5_significance_tests.ipynb",
+        "3_evaluations/3_6_ablations.ipynb",
+        "3_evaluations/3_7_publication_figures.ipynb",
+        "3_evaluations/3_8_consistency_and_p3_sensitivity.ipynb",
     ]
-    for runner in ("run_all.py", "run_nbexec.py"):
-        src = (REPO_ROOT / runner).read_text(encoding="utf-8")
-        for rel in expected:
-            assert rel in src, f"{runner} не запускает {rel}"
-        assert "/sessions/determined-cool-fermat" not in src
+    for rel in expected:
+        assert (nb / rel).exists(), f"нет ноутбука пайплайна: {rel}"
 
 
 def test_readme_mentions_three_structured_models():

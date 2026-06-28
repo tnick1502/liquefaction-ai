@@ -94,11 +94,13 @@ class ExperimentConfig:
     benchmark_train_fraction: float = 0.70
     benchmark_val_fraction: float = 0.15
     batch_size: int = 256
-    baseline_epochs: int = 4
-    physics_epochs: int = 6
-    publication_baseline_epochs: int = 50
-    publication_physics_epochs: int = 80
-    early_stopping_patience: int = 12
+    baseline_epochs: int = 4               # demo/дымовой режим (быстро)
+    physics_epochs: int = 6                # demo/дымовой режим (быстро)
+    # --- ФИНАЛЬНЫЙ (публикационный) режим: много эпох + ранняя остановка по best-val ---
+    publication_baseline_epochs: int = 120   # потолок; реально остановит early stopping
+    publication_physics_epochs: int = 200    # потолок; реально остановит early stopping
+    grid_search_epochs: int = 20             # серьёзный грид-сёрч (не 1–2 эпохи)
+    early_stopping_patience: int = 25        # терпеливее для длинного обучения
     early_stopping_min_delta: float = 1e-4
     ablation_epochs: int = 2
     learning_rate: float = 2e-3
@@ -116,6 +118,13 @@ class ExperimentConfig:
     use_observed_aux_loss: bool = True
     group_split_by_object: bool = True     # Основной протокол: leakage-free разбиение по объекту/площадке
     #                                        (ни один объект не попадает одновременно в train/val/test)
+    # --- Анти-утечка префикса (P0-c). Наблюдаемый префикс ОБРЕЗАЕТСЯ строго до onset разжижения,
+    #     иначе на быстрых опытах вход уже содержит само событие (≈24% разжижающихся) и AUROC≈1.0
+    #     становится артефактом утечки метки через вход. См. data.real_adapter.strict_pre_onset_prefix_mask.
+    prefix_strict_preonset: bool = True     # обрезать префикс строго до onset (рекоменд. протокол)
+    prefix_onset_threshold: float = LIQ_THRESHOLD   # порог ru, определяющий onset (тот же, что у события)
+    prefix_onset_margin: int = 1            # доп. буфер шагов: последний шаг префикса < onset_idx − margin
+    prefix_min_len: int = 3                 # минимальная длина префикса, НО только если не пересекает onset
 
 
 def get_default_config() -> ExperimentConfig:

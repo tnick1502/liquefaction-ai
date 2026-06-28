@@ -1,18 +1,26 @@
 {
   "model_type": "RiskMLP",
-  "display_name": "RiskMLP",
+  "display_name": "MLP-Risk",
   "model_kwargs": {
     "static_dim": 34,
     "prefix_dim": 6,
     "hidden_dim": 128
   },
   "search": {
+    "grid": {
+      "hidden_dim": [
+        64,
+        128
+      ]
+    },
+    "score_metric": "Brier",
     "best": {
       "hidden_dim": 128
     }
   },
   "epochs": 50,
-  "publication_retrain": true,
-  "early_stopping_patience": 12,
-  "early_stopping_min_delta": 0.0001
+  "learning_rate": 0.002,
+  "weight_decay": 0.0001,
+  "batch_size": 256,
+  "seed": 42
 }

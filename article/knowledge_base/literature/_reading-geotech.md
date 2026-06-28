@@ -35,3 +35,5 @@ tags: [reading-list, direction/geotech, moc]
 [[chen-2018-neuralode]] · [[rezende-mohamed-2015]] · [[dinh-2017-realnvp]] · [[durkan-2019-neural-spline-flows]] · [[cox-1972]] · [[roberts-2017]] · [[guo-2017-calibration]]
 
 > Полные рекомендации: `../../recommendations.md` · трек: [[../tracks/Q1-journal]]
+
+> 🎯 Рамка значимости/ценности данных (применять в Intro+Significance+Limitations): [[../formulations/significance-and-data-value]]

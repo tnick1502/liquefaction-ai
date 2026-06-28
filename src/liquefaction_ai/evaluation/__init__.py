@@ -38,6 +38,21 @@ from liquefaction_ai.evaluation.metrics import (
     subsample_split,
 )
 from liquefaction_ai.evaluation.regression import compute_mse, compute_r2, compute_wape
+# P0-b / P2: статистика значимости и публикационные фигуры (чистый numpy/pandas/matplotlib).
+# CV и абляции (torch) импортируются напрямую из модулей cross_validation / ablation_study,
+# чтобы не тянуть torch/обучение в каждый импорт evaluation.
+from liquefaction_ai.evaluation.significance import (
+    paired_significance,
+    bootstrap_classification,
+    object_cluster_bootstrap,
+)
+from liquefaction_ai.evaluation.publication import (
+    reliability_diagram,
+    forest_plot,
+    ablation_bars,
+    pareto_plot,
+    headline_table,
+)
 
 __all__ = [
     "collect_outputs",
@@ -73,4 +88,12 @@ __all__ = [
     "compute_r2",
     "compute_mse",
     "compute_wape",
+    "paired_significance",
+    "bootstrap_classification",
+    "object_cluster_bootstrap",
+    "reliability_diagram",
+    "forest_plot",
+    "ablation_bars",
+    "pareto_plot",
+    "headline_table",
 ]

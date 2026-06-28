@@ -38,6 +38,9 @@ def test_only_notebook_generated_tables_are_committed():
         "probabilistic_quality.csv",
         "ood_by_soil.csv",
         "ood_by_csr.csv",
+        # P2 publication headline (ноутбук 3_7, object-cluster bootstrap CI)
+        "publication_headline_grouped.csv",
+        "publication_headline_loo.csv",
     }
     present = {p.name for p in TABLES.glob("*.csv")}
     assert present <= allowed, f"лишние CSV вне notebook-пайплайна: {sorted(present - allowed)}"

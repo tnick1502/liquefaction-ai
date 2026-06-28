@@ -1,7 +1,7 @@
 soil_en,samples,mean_traj_rmse,mean_nliq_log_err,physics_violation_rate,AUROC
-Loam,47,0.142,0.1189,0.0,1.0
-Clay,42,0.1651,0.1083,0.0,1.0
-Medium sand,27,0.2441,0.1943,0.0,1.0
-Fine sand,26,0.0983,0.0003,0.0,0.88
-Silty sand,24,0.168,0.4513,0.0,1.0
-Gravelly sand,2,0.1505,0.6602,0.0,
+Loam,47,0.117,0.1148,0.0,1.0
+Clay,42,0.1348,0.1037,0.0,1.0
+Medium sand,27,0.2102,0.2348,0.0,1.0
+Fine sand,26,0.0964,0.0105,0.0,0.52
+Silty sand,24,0.1124,0.1787,0.0,1.0
+Gravelly sand,2,0.0912,0.0,0.0,

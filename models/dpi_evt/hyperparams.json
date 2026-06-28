@@ -14,14 +14,8 @@
     "nliq_from_curve": true,
     "liq_threshold": 0.95,
     "calibration_steps": 0,
-    "use_traj_residual": false,
-    "use_observed_aux_loss": true
-  },
-  "search": {
-    "best": {}
+    "use_traj_residual": false
   },
   "epochs": 80,
-  "publication_retrain": true,
-  "early_stopping_patience": 12,
-  "early_stopping_min_delta": 0.0001
+  "calib_scale": 0.9000000000000001
 }

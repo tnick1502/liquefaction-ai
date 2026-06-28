@@ -35,7 +35,7 @@ def plot_curves_overlay(
     log_y: bool = False,
     log_y_secondary: bool = False,
     scatter_points: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-    scatter_label: str = "Экспериментальные точки",
+    scatter_label: str = "Experimental points",
 ) -> MplFig:
     """
     Несколько модельных кривых на одном графике (общая сетка по оси X).
@@ -93,8 +93,8 @@ def plot_function(
     title: Optional[str] = None,
     x_label: str = "X",
     y_label: str = "Y",
-    func_label: str = "Модель",
-    scatter_label: str = "Экспериментальные точки",
+    func_label: str = "Model",
+    scatter_label: str = "Experimental points",
     log_x: bool = False,
     log_y: bool = False,
 ) -> MplFig:

@@ -289,6 +289,9 @@ class DPIFlow(nn.Module):
         use_traj_residual: bool = True,
         liq_threshold: float = 0.95,
         use_observed_aux_loss: bool = True,
+        use_monotone_clip: bool = True,
+        use_discriminative_risk: bool = True,
+        use_censored_nliq: bool = True,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -311,6 +314,13 @@ class DPIFlow(nn.Module):
         self.calibration_lr = calibration_lr
         self.use_analytical_layer = use_analytical_layer
         self.use_flow = use_flow
+        # Флаги абляций (P1): отключают отдельные компоненты вклада для component-contribution таблицы.
+        self.use_monotone_clip = use_monotone_clip            # монотонная проекция PPR (физика)
+        self.use_discriminative_risk = use_discriminative_risk  # дискрим. risk-голова + soft-AUC
+        self.use_censored_nliq = use_censored_nliq            # цензур-aware loss N_liq (vs обычный MSE)
+        # Принудительное стохастическое сэмплирование θ на инференсе (для MC-пропагации
+        # неопределённости ЧЕРЕЗ conditional flow, а не deterministic posterior mean).
+        self._force_sample = False
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
         self.liq_threshold = liq_threshold   # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
@@ -372,7 +382,10 @@ class DPIFlow(nn.Module):
         mu = self.mu_head(encoded_context)
         raw_logvar = torch.clamp(self.logvar_head(encoded_context), min=-5.0, max=3.0)
         if self.probabilistic:
-            eps = torch.randn_like(mu) if self.training else torch.zeros_like(mu)
+            # Сэмплируем θ при обучении ИЛИ при включённой MC-оценке (_force_sample);
+            # иначе — posterior mean. Это и обеспечивает пропагацию неопределённости через flow.
+            stochastic = self.training or self._force_sample
+            eps = torch.randn_like(mu) if stochastic else torch.zeros_like(mu)
             latent = mu + torch.exp(0.5 * raw_logvar) * eps
         else:
             latent = mu
@@ -408,6 +421,12 @@ class DPIFlow(nn.Module):
 
         return theta_anchor + (theta_work.detach() - theta_anchor.detach())
 
+    def _project_traj(self, tm: torch.Tensor) -> torch.Tensor:
+        """Проекция траектории PPR. С монотонностью (физика) или только bounded-clamp (абляция)."""
+        if self.use_monotone_clip:
+            return monotone_clip(tm)
+        return torch.clamp(tm, -0.02, 1.05)
+
     def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
         Прямой проход по батчу: вывод θ, калибровка и моделирование траекторий.
@@ -426,7 +445,7 @@ class DPIFlow(nn.Module):
             tm = outputs["traj_mean"]
             if self.use_traj_residual:
                 tm = tm + 0.10 * torch.tanh(self.traj_residual(encoded))
-            outputs["traj_mean"] = monotone_clip(tm)
+            outputs["traj_mean"] = self._project_traj(tm)
             summary = physics_summary(outputs["traj_mean"], outputs["z"], outputs["g"], outputs["nliq_norm"])
             # Дискриминативный риск (ранжирование) + физический prior через обучаемый гейт + калибровка
             risk_prior = 6.0 * (
@@ -435,9 +454,11 @@ class DPIFlow(nn.Module):
                 + 0.25 * outputs["z"].amax(dim=1)
                 - 0.75
             )
-            risk_logit = (self.risk_clf(encoded).squeeze(-1)
-                          + self.prior_gate * risk_prior
-                          + self.risk_head(encoded, summary))
+            # Абляция «w/o discriminative risk»: убираем обучаемую risk_clf-голову, оставляя
+            # только физический prior (через гейт) и summary-голову.
+            risk_logit = (self.prior_gate * risk_prior + self.risk_head(encoded, summary))
+            if self.use_discriminative_risk:
+                risk_logit = risk_logit + self.risk_clf(encoded).squeeze(-1)
             # Гетероскедастичная неопределённость (+ пост-hoc конформный масштаб)
             outputs["traj_logvar"] = self.logvar_head_seq(encoded) + 2.0 * self.calib_log_scale
             outputs.update(
@@ -453,9 +474,11 @@ class DPIFlow(nn.Module):
             return outputs
 
         decoded = self.direct_decoder(context)
-        traj_mean = monotone_clip(torch.sigmoid(self.direct_traj_head(decoded)))
+        traj_mean = self._project_traj(torch.sigmoid(self.direct_traj_head(decoded)))
         traj_logvar = torch.clamp(self.direct_logvar_head(decoded), min=-6.0, max=2.0) + 2.0 * self.calib_log_scale
-        risk_logit = self.direct_risk_head(decoded).squeeze(-1) + self.risk_clf(encoded).squeeze(-1)
+        risk_logit = self.direct_risk_head(decoded).squeeze(-1)
+        if self.use_discriminative_risk:
+            risk_logit = risk_logit + self.risk_clf(encoded).squeeze(-1)
         nliq_norm = torch.sigmoid(self.direct_nliq_head(decoded).squeeze(-1))
         mcr = torch.as_tensor(self.max_cycle_reference, device=traj_mean.device, dtype=traj_mean.dtype)
         return {
@@ -474,6 +497,58 @@ class DPIFlow(nn.Module):
             "raw_logvar": raw_logvar,
         }
 
+    def predictive(self, batch: Dict[str, torch.Tensor], mc_samples: int = 8) -> Dict[str, torch.Tensor]:
+        """
+        MC-предиктив: K стохастических проходов с сэмплированием θ ЧЕРЕЗ conditional flow.
+
+        Возвращает выходы с неопределённостью, **пропагированной через flow + ODE**, а не
+        deterministic posterior mean. Дисперсия траектории = aleatoric (среднее exp(logvar) по
+        сэмплам, включает конформный масштаб) + epistemic (разброс средних между сэмплами θ).
+        Если модель не вероятностная или mc_samples<=1 — обычный forward_batch.
+
+        :param batch: словарь батча
+        :param mc_samples: число MC-сэмплов θ
+        :return: словарь выходов (traj_mean/traj_logvar/risk_prob/nliq/...) c MC-неопределённостью
+        """
+        if not self.probabilistic or mc_samples <= 1:
+            return self.forward_batch(batch)
+        prev = self._force_sample
+        self._force_sample = True
+        try:
+            means, alea_vars, risks, nliqs, crrs, last = [], [], [], [], [], None
+            for _ in range(int(mc_samples)):
+                o = self.forward_batch(batch)
+                means.append(o["traj_mean"])
+                alea_vars.append(torch.exp(o["traj_logvar"]))
+                risks.append(o["risk_prob"])
+                if "nliq_norm" in o:
+                    nliqs.append(o["nliq_norm"])
+                if "crr" in o and torch.is_tensor(o["crr"]):
+                    crrs.append(o["crr"])
+                last = o
+        finally:
+            self._force_sample = prev
+        M = torch.stack(means, 0)                 # (K,B,T)
+        pred_mean = M.mean(0)
+        epistemic = M.var(0, unbiased=False)
+        aleatoric = torch.stack(alea_vars, 0).mean(0)
+        pred_var = aleatoric + epistemic
+        risk_prob = torch.stack(risks, 0).mean(0).clamp(1e-6, 1 - 1e-6)
+        out = dict(last)
+        out["traj_mean"] = pred_mean
+        out["traj_logvar"] = torch.log(pred_var.clamp_min(1e-12))
+        out["risk_prob"] = risk_prob
+        out["risk_logit"] = torch.log(risk_prob) - torch.log1p(-risk_prob)
+        out["traj_epistemic_var"] = epistemic
+        if crrs:                                  # усредняем CRR по MC-сэмплам (для CRR-claim)
+            out["crr"] = torch.stack(crrs, 0).mean(0)
+        if nliqs:
+            nn_ = torch.stack(nliqs, 0).mean(0)
+            out["nliq_norm"] = nn_
+            mcr = torch.as_tensor(self.max_cycle_reference, device=nn_.device, dtype=nn_.dtype)
+            out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
+        return out
+
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
         Вычислить суммарную функцию потерь и выходы по батчу.
@@ -490,10 +565,20 @@ class DPIFlow(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
-                                              batch["label"], batch.get("n_liq_observed"))
+        if self.use_censored_nliq:
+            nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
+                                                  batch["label"], batch.get("n_liq_observed"))
+        else:
+            # Абляция: обычный masked-MSE по N_liq (без односторонней цензуры right-censored негативов),
+            # но с той же маской наблюдаемости терминала, чтобы сравнение было честным.
+            obsm = batch.get("n_liq_observed")
+            obsm = torch.ones_like(batch["n_liq_norm"]) if obsm is None else obsm
+            nliq_loss = (((outputs["nliq_norm"] - batch["n_liq_norm"]) ** 2) * obsm).sum() / obsm.sum().clamp_min(1.0)
         risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        rank_loss = soft_auc_loss(outputs["risk_logit"], batch["label"])  # прямая оптимизация AUROC
+        # Абляция «w/o discriminative risk / soft-AUC»: убираем прямую оптимизацию AUROC.
+        rank_loss = (soft_auc_loss(outputs["risk_logit"], batch["label"])
+                     if self.use_discriminative_risk
+                     else torch.zeros((), device=outputs["traj_mean"].device))
         # Саморегуляризаторы (без участия истинных латентных состояний)
         monotonicity = torch.relu(outputs["crr"][:, 1:] - outputs["crr"][:, :-1]).mean()
         boundedness = (torch.relu(outputs["traj_mean"] - 1.02) + torch.relu(-outputs["traj_mean"])).mean()

@@ -43,3 +43,5 @@ tags: [reading-list, direction/aaai, moc]
 [[maurer-sanger-2023]] (gap) · [[seed-idriss-1971]] · [[boulanger-idriss-2016]] · [[sanger-2025-mechanics]] (ближайший конкурент)
 
 > Полные рекомендации: `../../recommendations.md` · трек: [[../tracks/AAAI-27]]
+
+> 🎯 Рамка значимости/ценности данных (применять в Intro+Significance+Limitations): [[../formulations/significance-and-data-value]]

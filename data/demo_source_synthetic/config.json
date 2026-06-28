@@ -10,6 +10,11 @@
   "batch_size": 256,
   "baseline_epochs": 4,
   "physics_epochs": 6,
+  "publication_baseline_epochs": 120,
+  "publication_physics_epochs": 200,
+  "grid_search_epochs": 20,
+  "early_stopping_patience": 25,
+  "early_stopping_min_delta": 0.0001,
   "ablation_epochs": 2,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
@@ -23,5 +28,10 @@
   "dataset_source": "synthetic",
   "liq_threshold": 0.95,
   "min_nonliq_complete_cycles": 500.0,
-  "group_split_by_object": true
+  "use_observed_aux_loss": true,
+  "group_split_by_object": true,
+  "prefix_strict_preonset": true,
+  "prefix_onset_threshold": 0.95,
+  "prefix_onset_margin": 1,
+  "prefix_min_len": 3
 }

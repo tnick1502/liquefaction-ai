@@ -25,3 +25,13 @@ NSF имеет лучший raw RMSE (0.1029), но Physics_Violation_Rate=0.917
 
 ## Keywords
 Machine Learning; Scientific ML; Physics-informed ML; Neural Differential Equations; Uncertainty Quantification; Calibration; Robustness/Generalization; Time-Series Forecasting; Event-Time Prediction; Survival Analysis; Tabular Learning; AI for Engineering.
+
+## ⚖️ Реформулировка claim после честного grouped CV (рецензент, раунд 2)
+После leakage-free CV **DPI-Flow не выигрывает по большинству отдельных метрик** — и это нормально:
+- **CatBoost** — лучший scalar onset/risk (AUPRC/Brier) и N_liq;
+- **Transformer / NSF** — сильнее по trajectory/CRPS;
+- **EVT-NeuralSSM** — лучший интегральный P³;
+- **DPI-Flow** — наиболее интерпретируемая probabilistic parameter inference через flow + лучший physics–uncertainty trade-off; **DPI-EVT** усиливает physical coupling.
+
+**Запрещённый claim:** «DPI-Flow achieves SOTA across predictive metrics».
+**Защищаемый claim:** *DPI-Flow provides a competitive Pareto balance of onset accuracy, trajectory quality, calibrated uncertainty (decomposed epistemic+aleatoric via flow), and structural feasibility — while remaining the most interpretable probabilistic parameter-inference model.* Это более зрелая и убедительная статья, чем «наша модель лучшая везде».

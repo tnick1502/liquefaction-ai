@@ -258,20 +258,24 @@ def collect_outputs(
     :param device: устройство инференса
     :return: словарь конкатенированных выходов модели в виде массивов numpy
     """
-    # Единый сид проекта делает вероятностную оценку (MC-сэмплирование θ) детерминированной.
-    # Состояние RNG сохраняется и восстанавливается, чтобы оценка не сбивала обучение
-    # (например, при трекинге метрик по эпохам).
+    # Единый сид проекта делает вероятностную MC-оценку воспроизводимой. Состояние RNG
+    # сохраняется и восстанавливается, чтобы оценка не сбивала обучение.
+    # ВАЖНО: если модель поддерживает predictive(...) и config.mc_samples_eval>1 — неопределённость
+    # пропагируется через conditional flow (K стохастических сэмплов θ), а не берётся deterministic
+    # posterior mean (см. dpi_flow.DPIFlow.predictive). Иначе — обычный forward_batch.
     import random as _random
     _torch_state = torch.get_rng_state()
     _np_state = np.random.get_state()
     _py_state = _random.getstate()
     set_global_seed(config.seed)
     model.eval()
+    mc = int(getattr(config, "mc_samples_eval", 1) or 1)
+    use_mc = mc > 1 and hasattr(model, "predictive")
     collected: Dict[str, List[torch.Tensor]] = {}
     try:
         with torch.no_grad():
             for batch in iterate_minibatches(split, config.batch_size, device, shuffle=False):
-                outputs = model.forward_batch(batch)
+                outputs = model.predictive(batch, mc) if use_mc else model.forward_batch(batch)
                 for key, value in outputs.items():
                     if torch.is_tensor(value):
                         collected.setdefault(key, []).append(value.detach().cpu())
@@ -500,6 +504,25 @@ def compute_metrics(
         "N_liq_n_observed": int(obs.sum()),
     }
 
+    # --- P2: N_liq только на РАЗЖИЖАЮЩИХСЯ (точные таргеты) — прозрачный headline без цензур-эффектов ---
+    if int(liq.sum()) > 0:
+        metrics["N_liq_logMAE_liq"] = float(np.mean(np.abs(log_err[liq])))
+        metrics["N_liq_MAE_liq"] = float(np.mean(np.abs(nliq_err[liq])))
+        # --- P2: онсет-таймлайнс / lead-time (early-warning рамка) ---
+        # Доля разжижающихся, где модель ставит онсет НЕ ПОЗЖЕ фактического (timely warning),
+        # и систематический сдвиг тайминга в циклах (<0 ⇒ предупреждает раньше = консервативно).
+        pred_on = nliq_pred[liq]; true_on = nliq_true[liq]; timing_bias = pred_on - true_on
+        metrics["Onset_EarlyWarning_Rate"] = float(np.mean(pred_on <= true_on + 1e-6))
+        metrics["Onset_Timing_Bias_cyc"] = float(np.median(timing_bias))
+        metrics["Onset_Timing_MAE_cyc"] = float(np.median(np.abs(timing_bias)))
+        sb = np.full(len(nliq_true), np.nan); sb[liq] = timing_bias
+        sample_df["onset_timing_bias_cyc"] = sb
+    else:
+        for _k in ("N_liq_logMAE_liq", "N_liq_MAE_liq", "Onset_EarlyWarning_Rate",
+                   "Onset_Timing_Bias_cyc", "Onset_Timing_MAE_cyc"):
+            metrics[_k] = float("nan")
+        sample_df["onset_timing_bias_cyc"] = np.nan
+
     auroc, auprc, brier = safe_binary_metrics(y_true, y_prob)
     metrics["AUROC"] = auroc
     metrics["AUPRC"] = auprc
@@ -602,6 +625,11 @@ def compute_metrics(
                 metrics[f"Coverage_{level}"] = cov
                 metrics[f"Interval_Width_{level}"] = width
                 cov_gaps.append(abs(cov - level / 100.0))
+                if level == 90:
+                    # Per-sample покрытие@90 (доля валидных шагов внутри интервала) — для
+                    # object-cluster bootstrap калибровки (корректные CI вместо наивных fold-CI).
+                    inb = ((true >= lower) & (true <= upper)) * mask
+                    sample_df["coverage90"] = inb.sum(axis=1) / np.maximum(mask.sum(axis=1), 1.0)
             # Сводная ошибка калибровки интервалов (среднее |покрытие − номинал| по уровням)
             metrics["Calibration_Error"] = float(np.mean(cov_gaps))
             # Гауссовская NLL — собственно правило (proper scoring) для вероятностного прогноза

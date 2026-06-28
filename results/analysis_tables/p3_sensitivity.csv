@@ -1,5 +1,5 @@
-test,top1_stable_%,kendall_tau_mean,kendall_tau_min,note
-"weights (Dirichlet, n=600)",96.5,0.8444444444444443,-0.3333333333333333,лидер=DPI-Flow
-gate thresholds (soft×hard grid),100.0,,,top1 ∈ ['DPI-Flow']
-"reference model (PINN, DPI-Flow, Transformer, DPI-EVT)",100.0,1.0,1.0,ранжирование идентично для всех reference
-"exclude risk-only (CatBoost, FT-Transformer, MLP-Risk)",100.0,1.0,,ранжирование пригодных не меняется
+test,top1_stable_%,kendall_tau_mean,kendall_tau_min
+weights Dirichlet n=600,100.0,1.0,1.0
+gate thresholds grid,100.0,,
+reference model,100.0,1.0,1.0
+exclude risk-only,100.0,1.0,

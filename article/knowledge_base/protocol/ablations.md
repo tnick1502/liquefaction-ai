@@ -18,3 +18,21 @@ tags: [protocol, ablations, P1]
 7. **Robustness к пропускам Vs/grainsize** (Vs только 16.7%, grainsize ~55%) → стресс на imputation.
 
 Связано: [[evaluation-protocol]] · [[metrics]]
+
+## ✅ Статус: РЕАЛИЗОВАНО (ноутбук **3_6** / `evaluation.ablation_study`)
+Флаги в `models/dpi_flow.py` + раннер на объектном фолде (как P0), метрики **по 3 состояниям**.
+
+| Абляция (рек.) | Как реализовано | Вариант в раннере |
+|---|---|---|
+| w/o conformal calibration | не вызываем `fit_interval_scale` (calib_log_scale=0) | `wo_conformal` |
+| Flow vs честный Gaussian-posterior | `use_flow=False` | `gaussian_posterior` |
+| w/o monotonicity projection | `use_monotone_clip=False` (→ bounded-clamp) | `wo_monotone` |
+| w/o discriminative risk / soft-AUC | `use_discriminative_risk=False` | `wo_risk_softauc` |
+| Censoring/Tobit N_liq | `use_censored_nliq=False` (→ обычный MSE) | `wo_censored_nliq` |
+| (структурная) w/o ODE | `use_analytical_layer=False` | `wo_ode` |
+| Robustness к пропускам Vs | обнуление `V_s,Vs1` (=среднее) | `miss_vs` |
+| Robustness к пропускам grainsize | обнуление `D_r,I_p,fines_content,clay_fraction,log10_Cu` | `miss_grainsize` |
+| Prefix-length sensitivity (п.6) | ре-материализация с разным `config.prefix_len`, затем `--only full --tag prefixK` | prefix-свип |
+
+Запуск: ноутбук **3_6** (FOLDS=[0,1,2], агрегация в нём же → `ablations_summary.csv`). `QUICK=True` — дымовой тест. Фигуры — `ablation_bars` (3_6).
+Все файлы компилируются; прогон требует torch (локально). См. [[p0-findings]].

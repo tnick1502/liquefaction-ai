@@ -7,7 +7,7 @@ status: TODO (multiseed не прогнан)
 Связано: [[../tracks/AAAI-27]] · [[metrics]] · [[ablations]] · [[../literature/roberts-2017]] · [[../literature/maurer-sanger-2023]]
 
 ## Почему это P0
-Текущий headline — single-seed на **random split** → object leakage. Рецензент AAAI спишет метрики как inflated. `run_multiseed.py --grouped` существует, но **не прогнан** (`results/analysis_tables/multiseed_raw.csv` пуст).
+Текущий headline — single-seed на **random split** → object leakage. Рецензент AAAI спишет метрики как inflated. Grouped CV реализован в ноутбуке **3_4** (`evaluation.cross_validation.make_grouped_cv_folds`).
 
 ## Целевой протокол
 1. **Primary = object-held-out (grouped) CV.** Ни один объект не в train и test одновременно. random — только secondary «для сравнения с практикой». Обоснование: [[../literature/roberts-2017]].

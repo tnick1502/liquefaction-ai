@@ -26,6 +26,8 @@ __all__ = [
     "safe_strata",
     "stratified_subset_indices",
     "make_benchmark_splits",
+    "make_grouped_cv_folds",
+    "make_loo_object_folds",
     "prepare_benchmark_dataset",
     "iterate_minibatches",
 ]
@@ -253,10 +255,182 @@ def make_benchmark_splits(meta: pd.DataFrame, subset_size: int, seed: int, confi
     }
 
 
+def _object_level_table(benchmark_meta: pd.DataFrame, uniq: np.ndarray) -> pd.DataFrame:
+    """Объектные характеристики для стратификации фолдов: размер, доля разжижения, наличие CRR."""
+    g = benchmark_meta.groupby("object")
+    n = g.size().reindex(uniq).fillna(0).astype(int)
+    if "has_measured_crr" in benchmark_meta.columns:
+        crr = g["has_measured_crr"].max().reindex(uniq).fillna(0).astype(int)
+    else:
+        crr = pd.Series(0, index=uniq, dtype=int)
+    if "liq_label" in benchmark_meta.columns:
+        liq = g["liq_label"].mean().reindex(uniq).fillna(0.0)
+    else:
+        liq = pd.Series(0.0, index=uniq)
+    return pd.DataFrame({"object": uniq, "n": n.values, "has_crr": crr.values,
+                         "liq_bin": (liq.values >= 0.5).astype(int)}).set_index("object")
+
+
+def _pick_balanced_val(pool: List[str], k: int, stats: pd.DataFrame, rng) -> List[str]:
+    """Выбрать val-объекты с ОБОИМИ классами (liq-мажор + non-liq-мажор) и приоритетом CRR-объекта.
+
+    Слабая валидация = главная методологическая дыра (рецензент): val из одного CRR-объекта часто
+    positive-only, что ломает early stopping/калибровку/сравнение Brier-ECE. Поэтому берём минимум
+    по одному объекту каждого класса (если оба доступны) и стараемся включить CRR-объект.
+    """
+    if not pool:
+        return []
+    perm = list(np.array(pool)[rng.permutation(len(pool))])
+    pos = [o for o in perm if int(stats.loc[o, "liq_bin"]) == 1]
+    neg = [o for o in perm if int(stats.loc[o, "liq_bin"]) == 0]
+    chosen: List[str] = []
+    if pos:
+        chosen.append(pos[0])
+    if neg:
+        chosen.append(neg[0])
+    # гарантируем хотя бы один CRR-объект в val (для отдельной CRR-калибровки/диагностики)
+    if not any(int(stats.loc[o, "has_crr"]) for o in chosen):
+        crr = [o for o in perm if int(stats.loc[o, "has_crr"]) and o not in chosen]
+        if crr:
+            chosen.append(crr[0])
+    for o in perm:                       # добор до k, если запрошено больше
+        if len(chosen) >= max(k, 2):
+            break
+        if o not in chosen:
+            chosen.append(o)
+    return chosen
+
+
+def _balanced_object_folds(uniq: np.ndarray, stats: pd.DataFrame, n_splits: int, rng) -> Dict[str, int]:
+    """Сбалансированное распределение объектов по фолдам с приоритетом **CRR-покрытия**.
+
+    CRR-объекты (самые ценные и редкие) распределяются ПЕРВЫМИ единой round-robin-последовательностью
+    по всем фолдам — при n_crr ≈ n_splits каждый тест-фолд гарантированно получает CRR-объект.
+    Затем не-CRR-объекты продолжают тот же round-robin. Внутри каждой группы liq/non-liq чередуются,
+    что балансирует долю разжижения. Работает при ЛЮБЫХ размерах страт (исправляет молчаливый откат
+    StratifiedKFold к обычному KFold, оставлявший фолды без CRR).
+    """
+    def interleave(objs: List[str]) -> List[str]:
+        objs = list(objs); rng.shuffle(objs)
+        pos = [o for o in objs if int(stats.loc[o, "liq_bin"]) == 1]
+        neg = [o for o in objs if int(stats.loc[o, "liq_bin"]) == 0]
+        out: List[str] = []
+        while pos or neg:
+            if pos:
+                out.append(pos.pop())
+            if neg:
+                out.append(neg.pop())
+        return out
+
+    crr = [o for o in uniq if int(stats.loc[o, "has_crr"]) == 1]
+    non = [o for o in uniq if int(stats.loc[o, "has_crr"]) == 0]
+    assign: Dict[str, int] = {}
+    cursor = int(rng.integers(0, n_splits))
+    for group in (interleave(crr), interleave(non)):
+        for o in group:
+            assign[o] = cursor % n_splits
+            cursor += 1
+    return assign
+
+
+def make_grouped_cv_folds(
+    meta: pd.DataFrame,
+    subset_size: int,
+    seed: int,
+    config: ExperimentConfig,
+    n_splits: int = 5,
+    val_objects: int = 2,
+    n_repeats: int = 1,
+) -> List[Dict[str, np.ndarray]]:
+    """
+    **Основной протокол P0:** balanced **repeated** grouped K-fold по объектам (leakage-free).
+
+    Объекты распределяются round-robin ВНУТРИ каждого страта (наличие CRR × преобладающая метка),
+    что балансирует разнообразие и **CRR-покрытие** между фолдами при любых размерах страт
+    (исправляет молчаливый откат к обычному KFold). Каждый объект целиком в test ровно одного
+    фолда; из train выделяется val с ОБОИМИ классами и CRR-объектом. Состав test определяется
+    объектами, а не числом проб. ``n_repeats`` повторяет всю схему с другими сидами (repeated CV).
+
+    :param n_splits: число фолдов
+    :param val_objects: минимум объектов в val (≥2, оба класса)
+    :param n_repeats: число повторов CV (разные сиды) → repeated grouped CV
+    :return: список словарей ``{repeat, fold, benchmark_idx, train_rel, val_rel, test_rel}``
+    """
+    benchmark_idx = stratified_subset_indices(meta, subset_size, seed)
+    benchmark_meta = meta.iloc[benchmark_idx].reset_index(drop=True)
+    rel = np.arange(len(benchmark_idx))
+    if "object" not in benchmark_meta.columns:
+        raise ValueError("make_grouped_cv_folds требует колонку 'object' в meta")
+    objects = benchmark_meta["object"].to_numpy()
+    uniq = np.array(sorted(pd.unique(objects)))
+    n_splits = int(max(2, min(n_splits, len(uniq))))
+    stats = _object_level_table(benchmark_meta, uniq)
+
+    folds: List[Dict[str, np.ndarray]] = []
+    for rep in range(int(max(1, n_repeats))):
+        rng = np.random.default_rng(seed + 1009 * rep)
+        assign = _balanced_object_folds(uniq, stats, n_splits, rng)
+        for k in range(n_splits):
+            te_obj = [o for o in uniq if assign[o] == k]
+            rest = [o for o in uniq if assign[o] != k]
+            va_obj = set(_pick_balanced_val(rest, val_objects, stats, rng))
+            tr_obj = [o for o in rest if o not in va_obj]
+            folds.append({
+                "repeat": rep,
+                "fold": k,
+                "benchmark_idx": benchmark_idx,
+                "train_rel": np.sort(rel[np.isin(objects, tr_obj)]),
+                "val_rel": np.sort(rel[np.isin(objects, list(va_obj))]),
+                "test_rel": np.sort(rel[np.isin(objects, te_obj)]),
+            })
+    return folds
+
+
+def make_loo_object_folds(
+    meta: pd.DataFrame,
+    subset_size: int,
+    seed: int,
+    config: ExperimentConfig,
+    val_objects: int = 1,
+) -> List[Dict[str, np.ndarray]]:
+    """
+    **Вторичный протокол P0:** leave-one-object-out по всем объектам (самая честная пер-объектная
+    оценка обобщения). Каждый объект по очереди — единственный test; из остальных выделяется
+    небольшой val (приоритет CRR-объекта), остальное — train.
+
+    :return: список словарей ``{fold, test_object, benchmark_idx, train_rel, val_rel, test_rel}``
+    """
+    benchmark_idx = stratified_subset_indices(meta, subset_size, seed)
+    benchmark_meta = meta.iloc[benchmark_idx].reset_index(drop=True)
+    rel = np.arange(len(benchmark_idx))
+    if "object" not in benchmark_meta.columns:
+        raise ValueError("make_loo_object_folds требует колонку 'object' в meta")
+    objects = benchmark_meta["object"].to_numpy()
+    uniq = np.array(sorted(pd.unique(objects)))
+    stats = _object_level_table(benchmark_meta, uniq)
+    rng = np.random.default_rng(seed)
+    folds: List[Dict[str, np.ndarray]] = []
+    for k, te_o in enumerate(uniq):
+        rest = [o for o in uniq if o != te_o]
+        va_obj = set(_pick_balanced_val(rest, val_objects, stats, rng))
+        tr_obj = [o for o in rest if o not in va_obj]
+        folds.append({
+            "repeat": 0,
+            "fold": k,
+            "test_object": te_o,
+            "benchmark_idx": benchmark_idx,
+            "train_rel": np.sort(rel[np.isin(objects, tr_obj)]),
+            "val_rel": np.sort(rel[np.isin(objects, list(va_obj))]),
+            "test_rel": np.sort(rel[np.isin(objects, [te_o])]),
+        })
+    return folds
+
+
 def prepare_benchmark_dataset(
     population_dict: Dict[str, object],
     config: ExperimentConfig,
     device: torch.device,
+    precomputed_split: Dict[str, np.ndarray] | None = None,
 ) -> Dict[str, object]:
     """
     Собрать нормированные benchmark-тензоры и разбить их на выборки.
@@ -277,7 +451,10 @@ def prepare_benchmark_dataset(
     # По умолчанию используем готовое (запечённое в артефакт) разбиение. Если запрошено
     # leakage-free разбиение по объекту — пересобираем его на лету (это меняет train/val/test,
     # обеспечивая, что ни один объект не попадает одновременно в train и test).
-    if getattr(config, "group_split_by_object", False):
+    if precomputed_split is not None:
+        # Готовый фолд (например, из make_grouped_cv_folds / make_loo_object_folds).
+        bsplit = precomputed_split
+    elif getattr(config, "group_split_by_object", False):
         bsplit = make_benchmark_splits(population_dict["meta"],
                                        min(config.benchmark_subset, len(population_dict["meta"])),
                                        config.seed, config)

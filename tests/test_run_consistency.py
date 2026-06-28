@@ -1,25 +1,22 @@
 """
-Тест сквозной согласованности артефакта (обёртка над ``run_consistency.py``).
+Тест сквозной согласованности артефакта.
 
-Запускает скрипт проверки digitrock-консистентности (убранные утечные поля, Vs↔G0, plaxis по
-грансоставу, Cu=D60/D10, отсутствие NaN в признаках, наличие измеренной CRR) и требует, чтобы
-ни одна проверка не упала.
+Вызывает библиотечную проверку digitrock-консистентности (убранные утечные поля, Vs↔G0, plaxis по
+грансоставу, Cu=D60/D10, отсутствие NaN в признаках, наличие измеренной CRR) и требует, чтобы ни
+одна проверка не упала. Логика — в ``liquefaction_ai.data.consistency`` (раньше была в
+корневом скрипте run_consistency.py; теперь её же использует ноутбук 3_8).
 """
-import subprocess
-import sys
-
 import pytest
 
-from conftest import REAL_OBJECTS, REPO_ROOT
+from conftest import REAL_OBJECTS
+
+from liquefaction_ai.data.consistency import check_artifact_consistency
 
 _skip = pytest.mark.skipif(not REAL_OBJECTS.exists(), reason="нет артефакта data/real_objects")
 
 
 @_skip
-def test_run_consistency_all_ok():
-    proc = subprocess.run([sys.executable, "run_consistency.py"], cwd=REPO_ROOT,
-                          capture_output=True, text=True, timeout=300)
-    out = proc.stdout + proc.stderr
-    assert proc.returncode == 0, f"run_consistency завершился с ошибкой:\n{out[-800:]}"
-    assert "DONE" in out, "run_consistency не дошёл до конца"
-    assert "FAIL" not in out, f"провалена проверка консистентности:\n{out}"
+def test_artifact_consistency_all_ok():
+    ok, report = check_artifact_consistency(str(REAL_OBJECTS))
+    assert "DONE" in report[-1], "проверка не дошла до конца"
+    assert ok, "провалена проверка консистентности:\n" + "\n".join(report)

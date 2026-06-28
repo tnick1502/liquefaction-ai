@@ -209,17 +209,81 @@ def enrich_crr_breakdown(soil_df: pd.DataFrame, load_df: Optional[pd.DataFrame] 
     return soil_df
 
 
-def build_observed_prefix(r_obs: np.ndarray, valid_mask: np.ndarray, prefix_len: int):
+def strict_pre_onset_prefix_mask(
+    r_obs: np.ndarray,
+    valid_mask: np.ndarray,
+    prefix_len: int,
+    *,
+    strict: bool = True,
+    onset_threshold: float = 0.95,
+    margin: int = 1,
+    min_len: int = 3,
+) -> np.ndarray:
+    """
+    Маска наблюдаемого префикса, **обрезанного строго до onset разжижения** (P0-c, анти-утечка).
+
+    Без обрезки префикс = первые ``prefix_len`` валидных шагов; на быстрых опытах это окно уже
+    содержит момент разжижения (ru пересекает ``onset_threshold``), и модель «видит ответ».
+    Здесь для каждого образца последний шаг префикса гарантированно ``< onset_idx`` (а с учётом
+    ``margin`` — ``< onset_idx − margin``), поэтому во входе нет ни одной post-onset точки.
+
+    Гарантия отсутствия утечки: все индексы префикса ``< onset_idx`` ⇒ ru на них ``< onset_threshold``.
+    Пол ``min_len`` применяется только если он не пересекает onset (иначе берётся более короткий
+    префикс — такие сверхбыстрые опыты помечаются вызывающей стороной как трудные для onset-прогноза).
+
+    :param r_obs: измеренная траектория PPR (ru), форма (n, seq_len)
+    :param valid_mask: маска валидной длины, форма (n, seq_len)
+    :param prefix_len: максимальная длина префикса
+    :param strict: если False — старое поведение (первые ``prefix_len`` шагов, БЕЗ обрезки)
+    :param onset_threshold: порог ru, определяющий onset
+    :param margin: доп. буфер шагов перед onset
+    :param min_len: желаемая минимальная длина (только когда не пересекает onset)
+    :return: бинарная маска префикса, форма (n, seq_len), float32
+    """
+    n, seq_len = r_obs.shape
+    idx = np.arange(seq_len)[None, :]
+    if not strict:
+        return ((idx < prefix_len) & (valid_mask > 0)).astype(np.float32)
+    onset_hit = (r_obs >= onset_threshold) & (valid_mask > 0)
+    has_onset = onset_hit.any(axis=1)
+    onset_idx = np.where(has_onset, onset_hit.argmax(axis=1), seq_len).astype(int)
+    cut = onset_idx - int(margin)                                  # последний допустимый индекс = cut−1
+    floor = np.minimum(int(min_len), np.where(has_onset, onset_idx, prefix_len))
+    cut = np.maximum(cut, floor)                                   # пол min_len, но не дальше onset
+    cut = np.clip(cut, 0, prefix_len)                              # не превышать prefix_len
+    mask = (idx < cut[:, None]) & (valid_mask > 0)
+    return mask.astype(np.float32)
+
+
+def build_observed_prefix(
+    r_obs: np.ndarray,
+    valid_mask: np.ndarray,
+    prefix_len: int,
+    *,
+    strict_preonset: bool = True,
+    onset_threshold: float = 0.95,
+    margin: int = 1,
+    min_len: int = 3,
+):
     """
     Сформировать наблюдаемый префикс из измеренной траектории (без добавления шума).
+
+    По умолчанию префикс обрезается строго до onset (см. :func:`strict_pre_onset_prefix_mask`),
+    что устраняет утечку метки через вход (P0-c).
 
     :param r_obs: измеренная траектория PPR, форма (n, seq_len)
     :param valid_mask: маска валидной длины, форма (n, seq_len)
     :param prefix_len: длина префикса
+    :param strict_preonset: обрезать строго до onset (рекоменд.)
+    :param onset_threshold: порог ru для onset
+    :param margin: буфер шагов перед onset
+    :param min_len: минимальная длина префикса (если не пересекает onset)
     :return: словарь с ``prefix_obs`` и ``prefix_mask``
     """
-    n, seq_len = r_obs.shape
-    prefix_mask = ((np.arange(seq_len)[None, :] < prefix_len) & (valid_mask > 0)).astype(np.float32)
+    prefix_mask = strict_pre_onset_prefix_mask(
+        r_obs, valid_mask, prefix_len, strict=strict_preonset,
+        onset_threshold=onset_threshold, margin=margin, min_len=min_len,
+    )
     prefix_obs = (r_obs * prefix_mask).astype(np.float32)
     return {"prefix_obs": prefix_obs, "prefix_mask": prefix_mask}
 
@@ -291,7 +355,13 @@ def build_population_from_experiments(
     ensure_analysis_columns(soil_df, load_df, crr_obs_mask)
 
     delta_cycles = np.diff(np.concatenate([np.zeros((n, 1)), cycles], axis=1), axis=1).astype(np.float32)
-    observations = build_observed_prefix(r_measured.astype(np.float32), valid_mask.astype(np.float32), config.prefix_len)
+    observations = build_observed_prefix(
+        r_measured.astype(np.float32), valid_mask.astype(np.float32), config.prefix_len,
+        strict_preonset=getattr(config, "prefix_strict_preonset", True),
+        onset_threshold=getattr(config, "prefix_onset_threshold", config.liq_threshold),
+        margin=getattr(config, "prefix_onset_margin", 1),
+        min_len=getattr(config, "prefix_min_len", 3),
+    )
     features = build_feature_matrices(soil_df, load_df, cycles.astype(np.float32), delta_cycles,
                                       csr.astype(np.float32), observations, config.prefix_len)
 

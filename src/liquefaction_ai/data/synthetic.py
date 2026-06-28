@@ -424,6 +424,9 @@ def build_observations(
     cycles: np.ndarray,
     rng: np.random.Generator,
     prefix_len: int,
+    strict_preonset: bool = True,
+    onset_margin: int = 1,
+    prefix_min_len: int = 3,
 ) -> Dict[str, np.ndarray]:
     """
     Сформировать зашумлённые наблюдения и целевые величины supervision.
@@ -470,7 +473,13 @@ def build_observations(
     )
     r_obs = np.clip(r_true + noise + outliers, 0.0, 1.05).astype(np.float32)
 
-    prefix_mask = ((np.arange(seq_len)[None, :] < prefix_len) & (valid_mask > 0)).astype(np.float32)
+    # Анти-утечка префикса (P0-c): обрезаем строго до ИСТИННОГО onset (r_true ≥ LIQ_THRESHOLD),
+    # чтобы вход не содержал момент разжижения. Старое поведение — первые prefix_len шагов.
+    from liquefaction_ai.data.real_adapter import strict_pre_onset_prefix_mask
+    prefix_mask = strict_pre_onset_prefix_mask(
+        r_true, valid_mask, prefix_len, strict=strict_preonset,
+        onset_threshold=LIQ_THRESHOLD, margin=onset_margin, min_len=prefix_min_len,
+    )
     prefix_obs = (r_obs * prefix_mask).astype(np.float32)
 
     # Событие разжижения определяется по НАБЛЮДАЕМОМУ поровому давлению ru=PPR, пересекающему
@@ -681,7 +690,10 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     hidden = build_hidden_parameters(soil_df, load_df, cycles, rng)
     z_true, r_true, g_true = integrate_physics(hidden, csr, cycles, delta_cycles)
     observations = build_observations(
-        soil_df, load_df, hidden, z_true, r_true, g_true, cycles, rng, config.prefix_len
+        soil_df, load_df, hidden, z_true, r_true, g_true, cycles, rng, config.prefix_len,
+        strict_preonset=getattr(config, "prefix_strict_preonset", True),
+        onset_margin=getattr(config, "prefix_onset_margin", 1),
+        prefix_min_len=getattr(config, "prefix_min_len", 3),
     )
     features = build_feature_matrices(
         soil_df, load_df, cycles, delta_cycles, csr, observations, config.prefix_len

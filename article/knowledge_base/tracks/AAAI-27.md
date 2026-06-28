@@ -17,6 +17,7 @@ status: active
 Intro 0.75 · Problem Setup 0.75 · Method 1.5 · Experimental Setup 1.0 · Results 1.5 · Ablations & Robustness 1.0 · Limitations & Conclusion 0.5.
 
 ## Ключевые узлы
+- Значимость + ценность данных: [[../formulations/significance-and-data-value]]
 - Позиционирование/title: [[../formulations/positioning-and-title]]
 - Тезис/вклады: [[../formulations/thesis-and-contributions]]
 - Intro/Methods абзацы: [[../formulations/intro-paragraphs]] · [[../formulations/methods-paragraphs]] · [[../formulations/abstract-draft]]
@@ -34,6 +35,7 @@ Intro 0.75 · Problem Setup 0.75 · Method 1.5 · Experimental Setup 1.0 · Resu
 |---|---|
 | Выглядит как application paper | title/abstract/contributions — про ODE/flow/event-time/calibration; геотехника → benchmark |
 | AUROC≈1 → leakage/prefix-shortcut | no-prefix stress, object-held-out, проверка «префикс до onset» ([[../protocol/evaluation-protocol]]) |
+| «Мало данных / N мал» | переформулировать через [[../formulations/significance-and-data-value]]: дорогой эксперимент → scope-exhaustive архив; вклад = max сигнала на опыт |
 | Слабые baselines | GBDT + deep tabular + sequence + survival + classical triggering + Sanger 2025 ([[../protocol/baselines]]) |
 | Physics layer = hand-crafted | подать как generalizable abstraction: constrained param inference + diff. simulator + event-time loss + ablation |
 | Reproducibility | заполнить `AuthorKit27/ReproducibilityChecklist.tex` |

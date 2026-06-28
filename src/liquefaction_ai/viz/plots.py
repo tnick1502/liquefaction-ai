@@ -200,7 +200,7 @@ def histogram_grid(
     n_cols: int = 3,
     colors: Optional[Sequence[str]] = None,
     nbins: int = 40,
-    title: str = "Распределения параметров",
+    title: str = "Parameter distributions",
     row_height: int = 300,
     save: bool = False,
     fig_id: str = "",
@@ -248,7 +248,7 @@ def box_grid(
     titles: Optional[Sequence[str]] = None,
     n_cols: int = 3,
     colors: Optional[Sequence[str]] = None,
-    title: str = "Распределения по группам",
+    title: str = "Distributions by group",
     row_height: int = 330,
     save: bool = False,
     fig_id: str = "",
@@ -303,7 +303,7 @@ def box_grid(
 
 def correlation_heatmap(
     corr,
-    title: str = "Корреляционная матрица",
+    title: str = "Correlation matrix",
     save: bool = False,
     fig_id: str = "",
     height: int = 720,
@@ -445,7 +445,7 @@ def surface3d_grid(
     specs: Sequence[Dict],
     n_cols: int = 3,
     resolution: int = 40,
-    title: str = "Трёхмерные поверхности",
+    title: str = "3D surfaces",
     height: int = 520,
     save: bool = False,
     fig_id: str = "",
@@ -758,7 +758,7 @@ def grid_search_plot(
 
 def calibration_plot(
     curves: Dict[str, Tuple[np.ndarray, np.ndarray]],
-    title: str = "Калибровочные кривые",
+    title: str = "Calibration curves",
     colors: Optional[Sequence[str]] = None,
     save: bool = False,
     fig_id: str = "",
@@ -776,12 +776,12 @@ def calibration_plot(
     colors = list(colors) if colors is not None else QUALITATIVE
     figw, fig = new_figure((5.6, 5.4))
     ax = fig.add_subplot(111)
-    ax.plot([0, 1], [0, 1], ls="--", color=INK, linewidth=1.2, label="идеальная калибровка")
+    ax.plot([0, 1], [0, 1], ls="--", color=INK, linewidth=1.2, label="Perfect calibration")
     for i, (name, (mean_pred, frac_pos)) in enumerate(curves.items()):
         ax.plot(np.asarray(mean_pred), np.asarray(frac_pos), "-o", color=colors[i % len(colors)],
                 label=name, markersize=4, markeredgecolor="white", markeredgewidth=0.3)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    ax.set_title(title); ax.set_xlabel("Средний предсказанный риск")
-    ax.set_ylabel("Наблюдаемая частота разжижения")
+    ax.set_title(title); ax.set_xlabel("Mean predicted risk")
+    ax.set_ylabel("Observed liquefaction frequency")
     _legend(ax, fontsize=8); _style_axis(ax); fig.tight_layout()
     return save_figure(figw, fig_id, save)
