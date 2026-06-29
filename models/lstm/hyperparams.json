@@ -4,7 +4,7 @@
   "model_kwargs": {
     "static_dim": 34,
     "seq_dim": 5,
-    "hidden_dim": 64
+    "hidden_dim": 96
   },
   "search": {
     "grid": {
@@ -15,10 +15,10 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 64
+      "hidden_dim": 96
     }
   },
-  "epochs": 50,
+  "epochs": 120,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

@@ -23,7 +23,7 @@ import numpy as np
 from matplotlib.colors import to_rgba
 
 from liquefaction_ai.viz.figure_io import MplFig, new_figure, save_figure
-from liquefaction_ai.viz.theme import DIVERGING, GRID, INK, QUALITATIVE, SEQUENTIAL
+from liquefaction_ai.viz.theme import DIVERGING, GRID, INK, QUALITATIVE, SEQUENTIAL, plain_log_axis
 
 __all__ = ["data_overview_panel", "crr_physics_panel", "model_leaderboard_panel"]
 
@@ -145,7 +145,7 @@ def crr_physics_panel(
     for i, (st, row) in enumerate(grp.iterrows()):
         crr = row["crr_betta"] / N ** (1.0 - row["crr_alpha"])
         ax.plot(N, crr, color=QUALITATIVE[i % len(QUALITATIVE)], linewidth=2.0, label=st)
-    ax.set_xscale("log"); ax.set_xlabel("number of cycles N"); ax.set_ylabel("CRR (–)")
+    ax.set_xscale("log"); plain_log_axis(ax, "x"); ax.set_xlabel("number of cycles N"); ax.set_ylabel("CRR (–)")
     ax.set_title("CRR(N) = β / N^(1−α) by soil type"); ax.legend(fontsize=7.5, ncol=2); _clean(ax); _panel_label(ax, "a")
 
     # (b) CRR15 vs относительная плотность

@@ -1,5 +1,5 @@
 test,top1_stable_%,kendall_tau_mean,kendall_tau_min
-weights Dirichlet n=600,100.0,1.0,1.0
+weights Dirichlet n=600,98.5,0.8477777777777779,0.0
 gate thresholds grid,100.0,,
 reference model,100.0,1.0,1.0
 exclude risk-only,100.0,1.0,

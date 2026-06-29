@@ -49,14 +49,12 @@ def test_within_site_split_is_only_explicit_opt_in():
 # ---------------- полнота раннера ----------------
 
 def test_pipeline_notebooks_present():
+    # Единый ноутбук подготовки данных живёт в data/ (sites/ → data/dataset либо генерация).
+    assert (REPO_ROOT / "data" / "prepare_dataset.ipynb").exists(), "нет ноутбука data/prepare_dataset.ipynb"
     expected = [
-        "1_data_preparation/1_0_select_dataset.ipynb",
-        "1_data_preparation/1_1_data_generation.ipynb",
-        "1_data_preparation/1_1_2_real_data_adapter.ipynb",
-        "1_data_preparation/1_1_3_real_objects_loader.ipynb",
-        "1_data_preparation/1_2_exploratory_analysis.ipynb",
-        "1_data_preparation/1_3_crr_parameter_analysis.ipynb",
-        "1_data_preparation/1_4_dataset_split.ipynb",
+        "1_data_analysis/1_1_exploratory_analysis.ipynb",
+        "1_data_analysis/1_2_crr_parameter_analysis.ipynb",
+        "1_data_analysis/1_3_dataset_split.ipynb",
         "2_model_training/2_1_baseline_models.ipynb",
         "2_model_training/2_2_dpi_flow.ipynb",
         "2_model_training/2_3_evt_neural_ssm.ipynb",
@@ -90,8 +88,8 @@ def test_pdf_reports_and_publication_notebooks_removed():
 def test_notebook_pipeline_is_complete():
     """Пайплайн полностью покрыт ноутбуками (корневые .py-оркестраторы удалены — всё в ноутбуках)."""
     nb = REPO_ROOT / "notebooks"
+    assert (REPO_ROOT / "data" / "prepare_dataset.ipynb").exists(), "нет ноутбука data/prepare_dataset.ipynb"
     expected = [
-        "1_data_preparation/1_1_3_real_objects_loader.ipynb",
         "2_model_training/2_2_dpi_flow.ipynb",
         "2_model_training/2_4_dpi_evt.ipynb",
         "3_evaluations/3_1_core_metrics.ipynb",

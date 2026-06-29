@@ -2,16 +2,10 @@
 Подпакет работы с данными.
 
 Объединяет генерацию синтетической популяции (``synthetic``), стратифицированное
-разбиение и сборку benchmark-тензоров (``splits``), сериализацию артефакта (``io``)
-и локализацию метаданных (``meta``).
+разбиение и сборку benchmark-тензоров (``splits``), сериализацию артефакта (``io``), локализацию метаданных (``meta``)
+и сборку популяции из сырых пиклов опытов (``raw_loader``).
 """
 
-from liquefaction_ai.data.dataset_source import (
-    available_sources,
-    dataset_dir,
-    load_active_population,
-    materialize_dataset,
-)
 from liquefaction_ai.data.io import load_population_artifact, save_population_artifact
 from liquefaction_ai.data.meta import localize_meta_frame, localize_series
 from liquefaction_ai.data.ppr_envelope import (
@@ -19,6 +13,8 @@ from liquefaction_ai.data.ppr_envelope import (
     monotone_smooth,
     smooth_ppr_trajectory,
 )
+from liquefaction_ai.data.raw_loader import (build_real_objects_population, find_cloud_root,
+                                              DEFAULT_TEST_TYPES, read_statement)
 from liquefaction_ai.data.real_adapter import (
     build_observed_prefix,
     build_population_from_experiments,
@@ -34,6 +30,10 @@ from liquefaction_ai.data.splits import (
 from liquefaction_ai.data.synthetic import generate_population
 
 __all__ = [
+    "read_statement",
+    "DEFAULT_TEST_TYPES",
+    "find_cloud_root",
+    "build_real_objects_population",
     "generate_population",
     "save_population_artifact",
     "load_population_artifact",
@@ -50,8 +50,4 @@ __all__ = [
     "smooth_ppr_trajectory",
     "extract_upper_envelope",
     "monotone_smooth",
-    "materialize_dataset",
-    "load_active_population",
-    "available_sources",
-    "dataset_dir",
 ]

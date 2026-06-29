@@ -18,7 +18,7 @@ from matplotlib.colors import to_rgba
 from scipy.interpolate import griddata
 
 from liquefaction_ai.viz.figure_io import MplFig, new_figure, save_figure
-from liquefaction_ai.viz.theme import DIVERGING, GRID, INK, QUALITATIVE, SEQUENTIAL
+from liquefaction_ai.viz.theme import DIVERGING, GRID, INK, QUALITATIVE, SEQUENTIAL, plain_log_axis
 
 __all__ = [
     "histogram_grid",
@@ -378,8 +378,8 @@ def scatter(
     if hline is not None:
         ax.axhline(hline, ls="--", color="#c46b6b", linewidth=1.3)
     ax.set_title(title); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
-    if logx: ax.set_xscale("log")
-    if logy: ax.set_yscale("log")
+    if logx: ax.set_xscale("log"); plain_log_axis(ax, "x")
+    if logy: ax.set_yscale("log"); plain_log_axis(ax, "y")
     _style_axis(ax); fig.tight_layout()
     return save_figure(figw, fig_id, save)
 
@@ -618,8 +618,8 @@ def lines(
     if hline is not None:
         ax.axhline(hline, ls="--", color="#c46b6b", linewidth=1.3)
     ax.set_title(title); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
-    if logx: ax.set_xscale("log")
-    if logy: ax.set_yscale("log")
+    if logx: ax.set_xscale("log"); plain_log_axis(ax, "x")
+    if logy: ax.set_yscale("log"); plain_log_axis(ax, "y")
     if show_leg: _legend(ax, fontsize=8.5)
     _style_axis(ax); fig.tight_layout()
     return save_figure(figw, fig_id, save)
@@ -673,7 +673,7 @@ def line_with_bands(
                 color=_color(s.get("color"), INK), linestyle=_DASH.get(s.get("dash", "solid"), "-"),
                 linewidth=s.get("width", 2.0))
     ax.set_title(title); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
-    if logx: ax.set_xscale("log")
+    if logx: ax.set_xscale("log"); plain_log_axis(ax, "x")
     _legend(ax, fontsize=8.5); _style_axis(ax); fig.tight_layout()
     return save_figure(figw, fig_id, save)
 

@@ -8,7 +8,7 @@ date: 2026-06-28
 Связано: [[evaluation-protocol]] · [[object-split-policy]] · [[../formulations/significance-and-data-value]] · `../../recommendations.md` §2
 
 ## ✅ P0-c — Prefix leakage: НАЙДЕНА и ИСПРАВЛENA
-**Находка** (numpy по `data/demo_run/arrays.npz`): у **152/637 = 23.9%** разжижающихся префикс доходил до/за onset; в 23.8% вход уже достигал ru≥0.95 — т.е. модель «видела» само разжижение. Это и есть причина AUROC≈1.0.
+**Находка** (numpy по `data/dataset/arrays.npz`): у **152/637 = 23.9%** разжижающихся префикс доходил до/за onset; в 23.8% вход уже достигал ru≥0.95 — т.е. модель «видела» само разжижение. Это и есть причина AUROC≈1.0.
 
 **Фикс (реализован в коде):**
 - `config.py`: флаги `prefix_strict_preonset=True`, `prefix_onset_threshold=LIQ_THRESHOLD`, `prefix_onset_margin=1`, `prefix_min_len=3`.

@@ -25,6 +25,7 @@ __all__ = [
     "INK",
     "GRID",
     "register_theme",
+    "plain_log_axis",
     "soil_color_map",
     "load_color_map",
     "model_color_map",
@@ -123,6 +124,25 @@ def register_theme() -> str:
         "image.cmap": SEQUENTIAL_NAME,
     })
     return TEMPLATE_NAME
+
+
+def plain_log_axis(ax, axis: str = "x") -> None:
+    """
+    Лог-шкала с обычными (не mathtext) подписями делений: 1, 10, 100, 1000, …
+
+    matplotlib по умолчанию рисует деления лог-оси как mathtext (``$10^{n}$``), для чего нужен
+    математический шрифт DejaVu Sans. Если кэш шрифтов matplotlib повреждён, рендер падает с
+    ``ValueError: Failed to find font DejaVu Sans``. Обычный формат делений mathtext не использует
+    и потому устойчив к состоянию кэша шрифтов (а для числа циклов N подписи 10/100/1000 даже
+    читабельнее, чем 10^n).
+
+    :param ax: оси matplotlib
+    :param axis: ``"x"`` или ``"y"`` — какую ось форматировать
+    """
+    from matplotlib.ticker import FuncFormatter, NullFormatter
+    target = ax.xaxis if axis == "x" else ax.yaxis
+    target.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    target.set_minor_formatter(NullFormatter())
 
 
 def soil_color_map(soil_names: List[str]) -> Dict[str, str]:

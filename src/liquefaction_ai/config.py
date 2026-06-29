@@ -27,7 +27,7 @@ __all__ = [
 # Один и тот же порог описывает ВСЕ компоненты события: бинарную метку разжижения, число
 # циклов N_liq, наблюдаемый триггер g_obs (auxiliary supervision) и момент пересечения в
 # моделях. Значение ru ≥ 0.95 соответствует определению разжижения в исходных данных
-# (ведомости digitrock, загрузчик 1_1_3). Менять порог нужно ТОЛЬКО здесь.
+# (ведомости digitrock, сборка data/prepare_dataset.ipynb). Менять порог нужно ТОЛЬКО здесь.
 LIQ_THRESHOLD: float = 0.95
 
 
@@ -66,7 +66,7 @@ class ExperimentConfig:
     :param measured_crr_fraction: доля грунтов с «измеренной» кривой CRR(N) (имитация серии из
         6 образцов); такие кривые используются как опциональная наблюдаемая супервизия границы CRR
     :param dataset_source: активный источник данных пайплайна — ``synthetic`` или
-        ``real_objects`` (см. :mod:`liquefaction_ai.data.dataset_source`)
+        ``real_objects`` (выбирается в ``data/prepare_dataset.ipynb`` через ``LIQ_DATASET``)
     :param liq_threshold: канонический порог события разжижения по ru=PPR (см. :data:`LIQ_THRESHOLD`);
         единый для метки, N_liq, наблюдаемого триггера g_obs и пересечения в моделях
     :param min_nonliq_complete_cycles: минимальная длительность неразжижившегося опыта, после

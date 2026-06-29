@@ -1,8 +1,8 @@
 """
-Сквозная проверка digitrock-консистентности материализованного артефакта.
+Сквозная проверка digitrock-консистентности артефакта ``data/dataset``.
 
-Логика бывшего корневого скрипта ``run_consistency.py``, оформленная как импортируемая функция:
-её вызывают и ноутбук 3_8, и тест ``tests/test_run_consistency.py``. torch не требуется.
+Импортируемая функция, которую вызывают и ноутбук 3_8, и тест
+``tests/test_run_consistency.py``. torch не требуется.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from liquefaction_ai.data.grainsize import FRACTION_KEYS, plaxis_classification
 from liquefaction_ai.physics.g0 import vs_from_g0
 
 
-def check_artifact_consistency(src_dir: str = "data/real_objects") -> Tuple[bool, List[str]]:
+def check_artifact_consistency(src_dir: str = "data/dataset") -> Tuple[bool, List[str]]:
     """Проверить самосогласованность артефакта. Возвращает (все_ок, список_строк_отчёта).
 
     Проверки: убраны утечные/латентные поля (risk_score_true, OCR); Vs == sqrt(G0·1000/ρ) по

@@ -9,13 +9,38 @@
     "prefix_len": 12,
     "max_cycle_reference": 3000.0,
     "probabilistic": true,
-    "use_flow": true,
-    "crr_mode": "decoupled",
+    "use_flow": false,
     "nliq_from_curve": true,
     "liq_threshold": 0.95,
-    "calibration_steps": 0,
-    "use_traj_residual": false
+    "use_traj_residual": false,
+    "hidden_dim": 192,
+    "crr_mode": "decoupled",
+    "calibration_steps": 1
   },
-  "epochs": 80,
-  "calib_scale": 0.9000000000000001
+  "search": {
+    "grid": {
+      "hidden_dim": [
+        128,
+        160,
+        192
+      ],
+      "crr_mode": [
+        "decoupled",
+        "hybrid",
+        "damage"
+      ],
+      "calibration_steps": [
+        0,
+        1
+      ]
+    },
+    "score_metric": "Traj_RMSE",
+    "best": {
+      "hidden_dim": 192,
+      "crr_mode": "decoupled",
+      "calibration_steps": 1
+    }
+  },
+  "epochs": 200,
+  "calib_scale": 1.55
 }

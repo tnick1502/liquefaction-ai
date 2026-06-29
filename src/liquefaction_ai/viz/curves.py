@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from liquefaction_ai.viz.figure_io import MplFig, new_figure
-from liquefaction_ai.viz.theme import GRID, QUALITATIVE
+from liquefaction_ai.viz.theme import GRID, QUALITATIVE, plain_log_axis
 
 
 def _build_x_grid(x_range: Tuple[float, float], n_points: int, log_x: bool) -> np.ndarray:
@@ -68,11 +68,11 @@ def plot_curves_overlay(
                    edgecolors="white", linewidths=0.4, label=scatter_label)
 
     ax.set_title(title or ""); ax.set_xlabel(x_label); ax.set_ylabel(y_label)
-    if log_x: ax.set_xscale("log")
-    if log_y: ax.set_yscale("log")
+    if log_x: ax.set_xscale("log"); plain_log_axis(ax, "x")
+    if log_y: ax.set_yscale("log"); plain_log_axis(ax, "y")
     if ax2 is not None:
         if y_label_secondary: ax2.set_ylabel(y_label_secondary)
-        if log_y_secondary: ax2.set_yscale("log")
+        if log_y_secondary: ax2.set_yscale("log"); plain_log_axis(ax2, "y")
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = (ax2.get_legend_handles_labels() if ax2 is not None else ([], []))
     leg = ax.legend(h1 + h2, l1 + l2, loc="best", frameon=True, framealpha=0.85, edgecolor=GRID, fontsize=8.5)
@@ -126,8 +126,8 @@ def plot_function(
         ax.scatter(np.asarray(xp), np.asarray(yp), s=34, color="#2b2f36", zorder=5,
                    edgecolors="white", linewidths=0.4, label=scatter_label)
     ax.set_title(title or ""); ax.set_xlabel(x_label); ax.set_ylabel(y_label)
-    if log_x: ax.set_xscale("log")
-    if log_y: ax.set_yscale("log")
+    if log_x: ax.set_xscale("log"); plain_log_axis(ax, "x")
+    if log_y: ax.set_yscale("log"); plain_log_axis(ax, "y")
     ax.grid(True, color=GRID, linewidth=0.7, alpha=0.9); ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)

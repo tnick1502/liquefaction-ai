@@ -28,6 +28,7 @@ Thumbs.db
 # Generated datasets at repo root (keep data/.gitkeep)
 #data/*
 !data/.gitkeep
+data/sites/*
 
 # Веса моделей (артефакты обучения); гиперпараметры и история коммитятся
 models/**/*.pt

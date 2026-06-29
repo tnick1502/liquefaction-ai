@@ -10,27 +10,38 @@
     "max_cycle_reference": 3000.0,
     "use_trigger_head": true,
     "structured_post_event": true,
-    "use_crr_damage": true,
-    "integrator": "euler",
     "liq_threshold": 0.95,
-    "hidden_dim": 160
+    "hidden_dim": 160,
+    "integrator": "heun",
+    "use_crr_damage": false
   },
   "search": {
     "grid": {
       "hidden_dim": [
         96,
         128,
-        160
+        160,
+        192
+      ],
+      "integrator": [
+        "heun",
+        "euler"
+      ],
+      "use_crr_damage": [
+        true,
+        false
       ]
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 160
+      "hidden_dim": 160,
+      "integrator": "heun",
+      "use_crr_damage": false
     }
   },
   "epochs": 6,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 0.75
+  "calib_scale": 1.3
 }

@@ -27,8 +27,9 @@ date: 2026-06-28
 `src/liquefaction_ai/models/ensemble.py` — при необходимости ансамбль собирается из него (1 ячейка).
 
 ## Порядок перезапуска (локально)
-1. **Данные:** `1_data_preparation/1_0..1_4` — материализация артефакта **с фиксом утечки префикса**
-   (`config.prefix_strict_preonset=True`). Это критично: иначе AUROC≈1.0 — артефакт утечки.
+1. **Данные:** `data/prepare_dataset.ipynb` — сборка единственного артефакта `data/dataset`
+   (sites/ → dataset либо синтетика) **с фиксом утечки префикса** (`config.prefix_strict_preonset=True`).
+   Это критично: иначе AUROC≈1.0 — артефакт утечки. Далее `1_data_analysis/1_1..1_3` только читают артефакт.
 2. **Обучение:** `2_model_training/2_1` (бейзлайны) → `2_2` DPI-Flow → `2_3` EVT-NeuralSSM → `2_4` DPI-EVT.
 3. **Базовая оценка:** `3_evaluations/3_1` (лидерборд) → `3_2` (старые ablations/OOD) → `3_3` (кейсы).
 4. **Reviewer-response (P0–P2):** `3_4` object-CV+CI → `3_5` significance → `3_6` ablations → `3_7` figures → `3_8` consistency+P³-sensitivity.

@@ -1,0 +1,53 @@
+{
+  "static_feature_names": [
+    "e",
+    "D_r",
+    "I_p",
+    "V_s",
+    "xi",
+    "sigma_eff",
+    "log10_permeability",
+    "fines_content",
+    "clay_fraction",
+    "log10_Cu",
+    "K0",
+    "Vs1",
+    "static_shear_ratio",
+    "crr_alpha",
+    "crr_betta",
+    "CSR_base",
+    "frequency",
+    "amp_scale",
+    "N_max",
+    "nonstationarity",
+    "soil_gravelly_sand",
+    "soil_coarse_sand",
+    "soil_medium_sand",
+    "soil_fine_sand",
+    "soil_silty_sand",
+    "soil_sandy_loam",
+    "soil_loam",
+    "soil_clay",
+    "soil_peat",
+    "mode_storm",
+    "mode_seismic",
+    "mode_technogenic",
+    "mode_stationary_cyclic",
+    "mode_variable_amplitude"
+  ],
+  "prefix_summary_names": [
+    "prefix_mean",
+    "prefix_last",
+    "prefix_peak",
+    "prefix_slope",
+    "prefix_var",
+    "prefix_coverage"
+  ],
+  "seq_feature_names": [
+    "CSR",
+    "log_cycle_norm",
+    "delta_cycle_norm",
+    "prefix_obs",
+    "prefix_mask"
+  ]
+}

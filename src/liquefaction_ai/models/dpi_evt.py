@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from liquefaction_ai.models.dpi_flow import ConditionalAffineFlow
+from liquefaction_ai.models.dpi_flow import ConditionalCouplingFlow, flow_kl_per_dim
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
 from liquefaction_ai.models.heads import physics_summary
 from liquefaction_ai.training.losses import (gaussian_nll, masked_censored_nliq_loss, masked_mean,
@@ -62,7 +62,8 @@ class DPIEvtNet(EVTNeuralSSM):
         self.liq_threshold = liq_threshold
         self.use_observed_aux_loss = use_observed_aux_loss
         self.logvar_head = nn.Linear(hidden_dim, 33)
-        self.flow = ConditionalAffineFlow(33, hidden_dim)
+        # Conditional RealNVP с latent-зависимым coupling и log-det (вместо диагонального flow).
+        self.flow = ConditionalCouplingFlow(33, hidden_dim, n_layers=4, hidden=64)
         self.crr_ref_head = nn.Linear(hidden_dim, 3)              # [CRR_ref, λ_crr, m_crr]
         self.traj_residual = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
                                            nn.Linear(hidden_dim, seq_len))
@@ -82,7 +83,10 @@ class DPIEvtNet(EVTNeuralSSM):
         return latent, mu, raw_logvar
 
     def _theta_from_latent(self, latent, encoded):
-        return self.flow(latent, encoded) if self.use_flow else latent
+        """θ из латента через conditional RealNVP; возвращает (θ, log|det ∂θ/∂z|)."""
+        if self.use_flow:
+            return self.flow(latent, encoded)
+        return latent, torch.zeros(latent.shape[0], device=latent.device, dtype=latent.dtype)
 
     # ---------- CRR ----------
     def crr_from_damage_law(self, params, crr_ref, cycles):
@@ -178,7 +182,7 @@ class DPIEvtNet(EVTNeuralSSM):
         for _ in range(self.calibration_steps):
             work = work.detach().requires_grad_(True)
             with torch.enable_grad():
-                theta = self._theta_from_latent(work, encoded)
+                theta, _ = self._theta_from_latent(work, encoded)   # (θ, log_det) — берём θ
                 params = self.unpack_params(theta)
                 crr_dyn, _, _ = self._compute_crr_pair(encoded, params, batch["cycles"])
                 _, r_pref, _, _ = self._engine(encoded, params, crr_dyn, batch, n_steps=self.prefix_len)
@@ -204,8 +208,8 @@ class DPIEvtNet(EVTNeuralSSM):
         context = self.build_context(batch)
         encoded = self.context_encoder(context)
         latent, mu, raw_logvar = self.infer_theta(encoded)
-        latent = self.calibrate_theta(latent, encoded, batch)      # DPI: уточнение θ по префиксу
-        theta = self._theta_from_latent(latent, encoded)
+        latent = self.calibrate_theta(latent, encoded, batch)      # DPI: уточнение θ по префиксу (steps=0 → no-op)
+        theta, log_det = self._theta_from_latent(latent, encoded)
         params = self.unpack_params(theta)
         crr_dyn, crr_out, crr_cons = self._compute_crr_pair(encoded, params, batch["cycles"])
 
@@ -226,7 +230,11 @@ class DPIEvtNet(EVTNeuralSSM):
         risk_logit = (self.risk_clf(encoded).squeeze(-1) + self.prior_gate * risk_prior
                       + self.risk_head(encoded, summary))
         traj_logvar = self.logvar_head_seq(encoded) + 2.0 * self.calib_log_scale
-        kl = 0.5 * (torch.exp(raw_logvar) + mu.pow(2) - 1.0 - raw_logvar).mean(dim=1)
+        # Корректная плотность conditional flow: KL с log-det (при выключенном flow — обычный гауссов KL).
+        if self.probabilistic and self.use_flow:
+            kl = flow_kl_per_dim(latent, mu, raw_logvar, theta, log_det)
+        else:
+            kl = 0.5 * (torch.exp(raw_logvar) + mu.pow(2) - 1.0 - raw_logvar).mean(dim=1)
         return {
             "traj_mean": r, "ru": r, "damage": z, "traj_logvar": traj_logvar,
             "risk_logit": risk_logit, "risk_prob": torch.sigmoid(risk_logit),

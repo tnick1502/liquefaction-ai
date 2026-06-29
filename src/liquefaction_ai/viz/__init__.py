@@ -47,12 +47,14 @@ from liquefaction_ai.viz.theme import (
     TEMPLATE_NAME,
     load_color_map,
     model_color_map,
+    plain_log_axis,
     register_theme,
     soil_color_map,
 )
 
 __all__ = [
     "register_theme",
+    "plain_log_axis",
     "TEMPLATE_NAME",
     "QUALITATIVE",
     "SEQUENTIAL",

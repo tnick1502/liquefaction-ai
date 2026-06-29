@@ -34,11 +34,11 @@ VARIANTS = [
     ("full",               {}, True, [], None),
     ("wo_conformal",       {}, False, [], None),
     ("gaussian_posterior", {"use_flow": False}, True, [], None),
+    # wo_ode: убран ODE-слой; монотонная проекция (cummax) ОСТАЁТСЯ (use_monotone_clip=True — дефолт).
+    # Это и есть «black-box декодер + cummax», поэтому отдельный blackbox_cummax дублировал бы wo_ode.
     ("wo_ode",             {"use_analytical_layer": False}, True, [], None),
-    # «изотонический» контроль (замечание про physics): black-box декодер БЕЗ ODE, но С монотонной
-    # проекцией (=cummax). full vs blackbox_cummax vs blackbox_raw показывает, что выигрыш НЕ
-    # сводится к одному cummax-постпроцессингу.
-    ("blackbox_cummax",    {"use_analytical_layer": False, "use_monotone_clip": True}, True, [], None),
+    # «изотонический» контроль (замечание про physics): тот же black-box БЕЗ ODE и БЕЗ cummax.
+    # Пара wo_ode (с cummax) vs blackbox_raw (без) показывает, что выигрыш НЕ сводится к cummax-постпроцессингу.
     ("blackbox_raw",       {"use_analytical_layer": False, "use_monotone_clip": False}, True, [], None),
     ("wo_monotone",        {"use_monotone_clip": False}, True, [], None),
     ("wo_risk_softauc",    {"use_discriminative_risk": False}, True, [], None),

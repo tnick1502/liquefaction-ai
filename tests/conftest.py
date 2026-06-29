@@ -7,6 +7,6 @@ SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-REAL_OBJECTS = REPO_ROOT / "data" / "real_objects"
-DEMO_RUN = REPO_ROOT / "data" / "demo_run"
+REAL_OBJECTS = REPO_ROOT / "data" / "dataset"
+DEMO_RUN = REPO_ROOT / "data" / "dataset"
 TABLES = REPO_ROOT / "results" / "tables"
