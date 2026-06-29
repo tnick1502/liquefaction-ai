@@ -128,8 +128,12 @@ class ExperimentConfig:
     # --- Протокол префикса. "preonset" — основной (анти-утечка, длина зависит от onset → outcome-dependent).
     #     "fixed_k" — отдельный leakage-free протокол: ФИКСИРОВАННОЕ окно первых prefix_fixed_k шагов для
     #     ВСЕХ опытов, не зависящее от исхода; K выбран малым, чтобы разжижение почти не попадало в окно.
-    prefix_mode: str = "preonset"           # "preonset" | "fixed_k"
+    # "landmark" (рекомендуемый primary, leakage-free onset forecasting): префикс = наблюдения до
+    #   ФИЗИЧЕСКОГО landmark-цикла N₀; risk set — только опыты, не разжижившиеся до N₀ (см. splits).
+    # "fixed_k" — фикс. окно первых K шагов сетки. "preonset" — обрезка до onset (outcome-dependent).
+    prefix_mode: str = "landmark"           # "landmark" | "fixed_k" | "preonset"
     prefix_fixed_k: int = 6                 # длина фиксированного префикса (шагов) для prefix_mode="fixed_k"
+    prefix_landmark_cycles: float = 20.0    # физический landmark N₀ (циклы) для prefix_mode="landmark"
 
 
 def get_default_config() -> ExperimentConfig:

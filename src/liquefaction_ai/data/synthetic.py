@@ -18,7 +18,7 @@ ODE-переформулировки (см. демонстрационный н�
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -81,12 +81,26 @@ def build_log_dense_cycles(n_max: np.ndarray, seq_len: int) -> Tuple[np.ndarray,
     :return: кортеж (cycles, delta_cycles), оба формы (n, seq_len); ``delta_cycles``
              — приращения ΔN между соседними узлами (для численного интегрирования)
     """
-    base = np.geomspace(1e-3, 1.0, seq_len)
-    base = (base - base.min()) / (base.max() - base.min())
-    cycles = 1.0 + (n_max[:, None] - 1.0) * base[None, :]
+    if _LANDMARK_GRID["n0"] is not None:
+        # #6 общий early-cycle grid: первые k узлов = geomspace(1, N₀, k) ОДИНАКОВЫ для всех опытов,
+        # остальные — geomspace(N₀, N_max_i) (поздняя часть зависит от опыта). Векторизовано.
+        n0 = max(float(_LANDMARK_GRID["n0"]), 1.001); k = int(min(max(_LANDMARK_GRID["k"], 2), seq_len - 1))
+        early = np.geomspace(1.0, n0, k)
+        logn0 = np.log(n0); lognm = np.log(np.maximum(n_max, n0 * 1.01))
+        frac = np.linspace(0.0, 1.0, seq_len - k + 1)[1:]
+        late = np.exp(logn0 + (lognm[:, None] - logn0) * frac[None, :])
+        cycles = np.concatenate([np.tile(early, (len(n_max), 1)), late], axis=1)
+    else:
+        base = np.geomspace(1e-3, 1.0, seq_len)
+        base = (base - base.min()) / (base.max() - base.min())
+        cycles = 1.0 + (n_max[:, None] - 1.0) * base[None, :]
     cycles = np.maximum.accumulate(cycles, axis=1)
     delta_cycles = np.diff(np.concatenate([np.zeros((n_max.shape[0], 1)), cycles], axis=1), axis=1)
     return cycles.astype(np.float32), delta_cycles.astype(np.float32)
+
+
+# Конфигурация landmark-сетки для build_log_dense_cycles (устанавливается generate_population).
+_LANDMARK_GRID = {"n0": None, "k": 12}
 
 
 
@@ -427,6 +441,7 @@ def build_observations(
     strict_preonset: bool = True,
     onset_margin: int = 1,
     prefix_min_len: int = 3,
+    landmark_cycles: Optional[float] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Сформировать зашумлённые наблюдения и целевые величины supervision.
@@ -475,11 +490,15 @@ def build_observations(
 
     # Анти-утечка префикса (P0-c): обрезаем строго до ИСТИННОГО onset (r_true ≥ LIQ_THRESHOLD),
     # чтобы вход не содержал момент разжижения. Старое поведение — первые prefix_len шагов.
-    from liquefaction_ai.data.real_adapter import strict_pre_onset_prefix_mask
-    prefix_mask = strict_pre_onset_prefix_mask(
-        r_true, valid_mask, prefix_len, strict=strict_preonset,
-        onset_threshold=LIQ_THRESHOLD, margin=onset_margin, min_len=prefix_min_len,
-    )
+    from liquefaction_ai.data.real_adapter import strict_pre_onset_prefix_mask, landmark_prefix_mask
+    if landmark_cycles is not None:
+        # #3 landmark: окно по физическим циклам ≤ N₀, capped по prefix_len (как у real-адаптера).
+        prefix_mask = landmark_prefix_mask(cycles, valid_mask, landmark_cycles, prefix_len=prefix_len)
+    else:
+        prefix_mask = strict_pre_onset_prefix_mask(
+            r_true, valid_mask, prefix_len, strict=strict_preonset,
+            onset_threshold=LIQ_THRESHOLD, margin=onset_margin, min_len=prefix_min_len,
+        )
     prefix_obs = (r_obs * prefix_mask).astype(np.float32)
 
     # Событие разжижения определяется по НАБЛЮДАЕМОМУ поровому давлению ru=PPR, пересекающему
@@ -564,7 +583,7 @@ def build_feature_matrices(
     ).astype(np.float32)
     delta_log_n = np.log1p(cycles[np.arange(n), last_prefix_idx]) - np.log1p(cycles[:, 0])
     prefix_slope = ((last_prefix - first_prefix) / np.maximum(delta_log_n, 1e-3)).astype(np.float32)
-    prefix_coverage = (prefix_count / prefix_len).astype(np.float32)
+    prefix_coverage = np.minimum(prefix_count / prefix_len, 1.0).astype(np.float32)   # ≤1 (landmark cap)
 
     static_feature_names = (
         [
@@ -685,18 +704,26 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     soil_profile = sample_soil_profiles(config.n_scenarios, rng, type_ground_probs)
     soil_df = soil_profile["soil_df"]
     load_df = sample_loads(config.n_scenarios, rng, LOAD_MODE_SPECS, LOAD_NAMES, load_mode_probs)
+    # #6: для landmark — общий early-cycle grid (см. build_log_dense_cycles).
+    if getattr(config, "prefix_mode", "preonset") == "landmark":
+        _LANDMARK_GRID["n0"] = float(getattr(config, "prefix_landmark_cycles", 20.0))
+        _LANDMARK_GRID["k"] = int(getattr(config, "prefix_len", 12))
+    else:
+        _LANDMARK_GRID["n0"] = None
     cycles, delta_cycles = build_log_dense_cycles(load_df["N_max"].to_numpy(), config.seq_len)
     csr = build_csr_history(load_df, cycles, config.max_csr_clip)
     hidden = build_hidden_parameters(soil_df, load_df, cycles, rng)
     z_true, r_true, g_true = integrate_physics(hidden, csr, cycles, delta_cycles)
-    # Режим fixed_k → outcome-independent окно (strict=False); сам prefix_len сохраняем,
-    # чтобы не менять формы внутренних массивов синтетики.
-    _fixed_k = getattr(config, "prefix_mode", "preonset") == "fixed_k"
+    # Протокол префикса: "landmark" (по физ.циклам ≤ N₀), "fixed_k" (K шагов), "preonset" (до onset).
+    _mode = getattr(config, "prefix_mode", "preonset")
+    _fixed_k = _mode == "fixed_k"; _landmark = _mode == "landmark"
+    _pref_window = int(getattr(config, "prefix_fixed_k", 6)) if _fixed_k else config.prefix_len
     observations = build_observations(
-        soil_df, load_df, hidden, z_true, r_true, g_true, cycles, rng, config.prefix_len,
-        strict_preonset=(False if _fixed_k else getattr(config, "prefix_strict_preonset", True)),
+        soil_df, load_df, hidden, z_true, r_true, g_true, cycles, rng, _pref_window,
+        strict_preonset=(False if (_fixed_k or _landmark) else getattr(config, "prefix_strict_preonset", True)),
         onset_margin=getattr(config, "prefix_onset_margin", 1),
         prefix_min_len=getattr(config, "prefix_min_len", 3),
+        landmark_cycles=(float(getattr(config, "prefix_landmark_cycles", 20.0)) if _landmark else None),
     )
     features = build_feature_matrices(
         soil_df, load_df, cycles, delta_cycles, csr, observations, config.prefix_len
@@ -721,6 +748,23 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     crr_obs_mask = (rng_crr.random(config.n_scenarios) < config.measured_crr_fraction).astype(np.float32)
     crr_obs = hidden["crr_mix"].astype(np.float32)
     meta["has_measured_crr"] = crr_obs_mask.astype(int)
+
+    # #3 landmark risk set (synthetic, симметрично real-адаптеру): исключить разжижившихся ДО
+    # физического N₀ — их нельзя прогнозировать из префикса ≤N₀ (событие уже произошло).
+    if _landmark:
+        _N0 = float(getattr(config, "prefix_landmark_cycles", 20.0))
+        _keep = ~((observations["liq_label"] > 0.5) & (observations["n_liq_true"] <= _N0))
+        if not bool(np.all(_keep)):
+            meta = meta[_keep].reset_index(drop=True)
+            cycles = cycles[_keep]; delta_cycles = delta_cycles[_keep]; csr = csr[_keep]
+            z_true = z_true[_keep]; r_true = r_true[_keep]; g_true = g_true[_keep]
+            crr_obs = crr_obs[_keep]; crr_obs_mask = crr_obs_mask[_keep]
+            hidden["crr_mix"] = hidden["crr_mix"][_keep]
+            for _k in ("r_obs", "valid_mask", "prefix_mask", "prefix_obs", "liq_label",
+                       "n_liq_true", "uncertainty_proxy", "g_obs", "risk_proxy"):
+                observations[_k] = observations[_k][_keep]
+            for _k in ("static_features", "prefix_summary", "seq_inputs"):
+                features[_k] = features[_k][_keep]
 
     benchmark = make_benchmark_splits(meta, config.benchmark_subset, config.seed, config)
 

@@ -1,39 +1,34 @@
 """
-Тест object-held-out (CV+) conformal покрытия.
-
-Проверяет, что при site-level shift (у разных объектов свой масштаб ошибки) наивная гауссова
-калибровка z·σ систематически недопокрывает, а leave-one-object-out conformal поднимает покрытие
-к номиналу 0.90.
+Тест inductive split-conformal покрытия (#5, исправлено): калибровка на ОТДЕЛЬНОМ наборе,
+без transductive утечки ответов теста.
 """
 import numpy as np
 
-from liquefaction_ai.evaluation.metrics import object_conformal_coverage
+from liquefaction_ai.evaluation.metrics import split_conformal_coverage
 
 
-def test_objconf_beats_gaussian_under_site_shift():
+def test_split_conformal_hits_nominal_same_distribution():
     rng = np.random.default_rng(0)
-    n_obj, per, T = 8, 40, 30
-    preds, trues, stds, objs = [], [], [], []
-    for o in range(n_obj):
-        scale = 1.0 + 2.5 * (o / n_obj)        # масштаб ошибки растёт по объектам (site shift)
-        p = np.zeros((per, T), dtype=float)
-        s = np.full((per, T), 0.1, dtype=float)  # модель рапортует одинаковый недооценённый σ
-        t = p + rng.normal(0.0, 0.1 * scale, size=(per, T))
-        preds.append(p); stds.append(s); trues.append(t); objs += [f"obj{o}"] * per
-    pred = np.vstack(preds); std = np.vstack(stds); true = np.vstack(trues)
-    mask = np.ones_like(pred); objects = np.array(objs)
-
-    # наивное гауссово покрытие@90 (z=1.645)
-    z = 1.6449
-    cov_gauss = float(((true >= pred - z * std) & (true <= pred + z * std)).mean())
-    cov_oc, width_oc = object_conformal_coverage(pred, std, true, mask, objects, level=0.90)
-
-    assert cov_gauss < 0.85, f"ожидалось недопокрытие наивной калибровки, получено {cov_gauss}"
-    assert 0.86 <= cov_oc <= 0.94, f"object-conformal покрытие вне полосы: {cov_oc}"
-    assert width_oc > 0
+    N, T, sigma = 400, 30, 0.1
+    def block(seed):
+        r = np.random.default_rng(seed)
+        pred = np.zeros((N, T)); std = np.full((N, T), sigma)
+        true = pred + r.normal(0, sigma, size=(N, T))
+        return pred, std, true, np.ones((N, T))
+    cal = block(1); test = block(2)
+    cov, w = split_conformal_coverage(*cal, *test, level=0.90)
+    assert 0.86 <= cov <= 0.94 and w > 0   # калибровка на cal → номинал на test
 
 
-def test_objconf_nan_with_few_objects():
-    pred = np.zeros((4, 5)); std = np.ones((4, 5)); true = np.zeros((4, 5)); mask = np.ones((4, 5))
-    cov, w = object_conformal_coverage(pred, std, true, mask, np.array(["a", "a", "b", "b"]))
-    assert np.isnan(cov) and np.isnan(w)   # < 3 объектов → не определено
+def test_split_conformal_does_not_peek_at_test_labels():
+    # если калибровочный std занижен, покрытие на тесте падает — т.е. квантиль берётся ТОЛЬКО из cal,
+    # а не подгоняется под истинные ошибки теста (что дало бы ~номинал «бесплатно»).
+    rng = np.random.default_rng(0)
+    N, T = 300, 20
+    cal_pred = np.zeros((N, T)); cal_std = np.full((N, T), 0.02)   # заниженный σ на калибровке
+    cal_true = cal_pred + rng.normal(0, 0.02, (N, T))
+    test_pred = np.zeros((N, T)); test_std = np.full((N, T), 0.02)
+    test_true = test_pred + rng.normal(0, 0.10, (N, T))           # тест шумнее
+    cov, _ = split_conformal_coverage(cal_pred, cal_std, cal_true, np.ones((N, T)),
+                                      test_pred, test_std, test_true, np.ones((N, T)), level=0.90)
+    assert cov < 0.5   # недопокрытие, потому что q из cal не знает про шум теста (не transductive)

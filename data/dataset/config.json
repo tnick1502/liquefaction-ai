@@ -33,5 +33,8 @@
   "prefix_strict_preonset": true,
   "prefix_onset_threshold": 0.95,
   "prefix_onset_margin": 1,
-  "prefix_min_len": 3
+  "prefix_min_len": 3,
+  "prefix_mode": "landmark",
+  "prefix_fixed_k": 6,
+  "prefix_landmark_cycles": 20.0
 }

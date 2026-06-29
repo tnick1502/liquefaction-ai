@@ -24,7 +24,8 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll, masked_mse,
+from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, energy_crps, gaussian_nll,
+                                             gaussian_mixture_nll, masked_mse,
                                              masked_censored_nliq_loss, monotone_clip,
                                              observed_aux_loss, soft_auc_loss)
 
@@ -393,6 +394,9 @@ class DPIFlow(nn.Module):
         use_monotone_clip: bool = True,
         use_discriminative_risk: bool = True,
         use_censored_nliq: bool = True,
+        mc_train_samples: int = 0,
+        mc_crps_weight: float = 0.0,
+        mc_predict_samples: int = 0,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -419,6 +423,12 @@ class DPIFlow(nn.Module):
         self.use_monotone_clip = use_monotone_clip            # монотонная проекция PPR (физика)
         self.use_discriminative_risk = use_discriminative_risk  # дискрим. risk-голова + soft-AUC
         self.use_censored_nliq = use_censored_nliq            # цензур-aware loss N_liq (vs обычный MSE)
+        # MC-микстура предиктива по θ∼flow (#3): обучение траектории как смеси (mixture-NLL +
+        # опц. energy-CRPS) калибрует РАЗБРОС flow-постериора под предиктивную ошибку. 0 → выкл
+        # (поведение по умолчанию не меняется; одиночный gaussian_nll).
+        self.mc_train_samples = int(mc_train_samples)        # сэмплов θ в обучающем mixture-лоссе
+        self.mc_crps_weight = float(mc_crps_weight)          # вес energy-CRPS поверх mixture-NLL
+        self.mc_predict_samples = int(mc_predict_samples)    # сэмплов θ в eval-предиктиве (predictive)
         # Принудительное стохастическое сэмплирование θ на инференсе (для MC-пропагации
         # неопределённости ЧЕРЕЗ conditional flow, а не deterministic posterior mean).
         self._force_sample = False
@@ -679,7 +689,26 @@ class DPIFlow(nn.Module):
         :return: словарь выходов с добавленным ключом ``loss``
         """
         outputs = self.forward_batch(batch)
-        traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
+        # Траекторный лосс. По умолчанию — одиночный gaussian_nll (posterior mean). При
+        # mc_train_samples>0 — proper NLL ГАУССОВОЙ СМЕСИ по S сэмплам θ из flow (+ опц. energy-CRPS):
+        # это привязывает разброс flow-постериора к предиктивной ошибке, иначе поток не калибруется.
+        if self.mc_train_samples > 0 and self.probabilistic:
+            mus, logvars = [], []
+            prev = self._force_sample
+            self._force_sample = True
+            try:
+                for _ in range(self.mc_train_samples):
+                    o = self.forward_batch(batch)
+                    mus.append(o["traj_mean"]); logvars.append(o["traj_logvar"])
+            finally:
+                self._force_sample = prev
+            mc_means = torch.stack(mus, 0); mc_logvars = torch.stack(logvars, 0)   # (S, B, T)
+            traj_loss = gaussian_mixture_nll(mc_means, mc_logvars, batch["r_obs"], batch["mask"])
+            if self.mc_crps_weight > 0.0:
+                samples = mc_means + torch.exp(0.5 * mc_logvars) * torch.randn_like(mc_means)
+                traj_loss = traj_loss + self.mc_crps_weight * energy_crps(samples, batch["r_obs"], batch["mask"])
+        else:
+            traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         if self.use_censored_nliq:
             nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
                                                   batch["label"], batch.get("n_liq_observed"))
@@ -689,9 +718,17 @@ class DPIFlow(nn.Module):
             obsm = batch.get("n_liq_observed")
             obsm = torch.ones_like(batch["n_liq_norm"]) if obsm is None else obsm
             nliq_loss = (((outputs["nliq_norm"] - batch["n_liq_norm"]) ** 2) * obsm).sum() / obsm.sum().clamp_min(1.0)
-        risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        # Риск-лосс ТОЛЬКО по образцам с наблюдаемым исходом (liquefied + demonstrably-stabilized);
+        # незавершённые non-liq (n_liq_observed==0) имеют неизвестный исход → ложный негатив.
+        _robs = batch.get("n_liq_observed")
+        if _robs is not None and (_robs > 0.5).any():
+            _rm = _robs > 0.5
+            _rlogit, _rlabel = outputs["risk_logit"][_rm], batch["label"][_rm]
+        else:
+            _rlogit, _rlabel = outputs["risk_logit"], batch["label"]
+        risk_loss = F.binary_cross_entropy_with_logits(_rlogit, _rlabel)
         # Абляция «w/o discriminative risk / soft-AUC»: убираем прямую оптимизацию AUROC.
-        rank_loss = (soft_auc_loss(outputs["risk_logit"], batch["label"])
+        rank_loss = (soft_auc_loss(_rlogit, _rlabel)
                      if self.use_discriminative_risk
                      else torch.zeros((), device=outputs["traj_mean"].device))
         # Саморегуляризаторы (без участия истинных латентных состояний)

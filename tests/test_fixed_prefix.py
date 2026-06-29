@@ -43,5 +43,19 @@ def test_preonset_prefix_length_depends_on_onset():
 
 def test_config_exposes_fixed_prefix_protocol():
     cfg = get_default_config()
-    assert cfg.prefix_mode == "preonset"          # основной протокол по умолчанию
+    assert cfg.prefix_mode == "landmark"          # primary (leakage-free onset forecasting)
     assert isinstance(cfg.prefix_fixed_k, int) and cfg.prefix_fixed_k > 0
+    assert cfg.prefix_landmark_cycles > 0
+
+
+def test_landmark_prefix_is_physical_and_outcome_independent():
+    import numpy as np
+    from liquefaction_ai.data.real_adapter import landmark_prefix_mask
+    seq = 30
+    # два опыта с РАЗНЫМИ сетками циклов, но одинаковым физическим landmark N0=20
+    cyc = np.vstack([np.linspace(1, 100, seq), np.linspace(1, 3000, seq)]).astype(np.float32)
+    vm = np.ones((2, seq), dtype=np.float32)
+    pm = landmark_prefix_mask(cyc, vm, landmark_cycles=20.0)
+    # в префиксе только циклы <= 20 (одинаковый физический горизонт, разное число шагов)
+    assert (cyc[pm > 0] <= 20.0 + 1e-6).all()
+    assert pm[0].sum() != pm[1].sum()             # разное число шагов при одном физ. окне — это норм

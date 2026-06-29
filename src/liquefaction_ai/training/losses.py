@@ -14,7 +14,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "clone_state_dict",
+__all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "gaussian_mixture_nll",
+           "masked_bce_with_logits", "energy_crps", "clone_state_dict",
            "observed_aux_loss", "soft_auc_loss", "monotone_clip", "beta_nll", "censored_nliq_loss",
            "masked_censored_nliq_loss"]
 
@@ -191,6 +192,77 @@ def gaussian_nll(mean: torch.Tensor, logvar: torch.Tensor, target: torch.Tensor,
     logvar = torch.clamp(logvar, min=-6.0, max=3.0)
     inv_var = torch.exp(-logvar)
     return masked_mean(0.5 * (logvar + (target - mean) ** 2 * inv_var), mask)
+
+
+def masked_bce_with_logits(logit: torch.Tensor, label: torch.Tensor,
+                           observed: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """
+    BCE риск-классификации ТОЛЬКО по образцам с НАБЛЮДАЕМЫМ исходом.
+
+    Незавершённые non-liq (``observed==0``) имеют неизвестный исход — учить их как истинный
+    отрицательный (label=0) было бы ложным негативом (≈⅕ датасета). Маскируем единым образом для
+    ВСЕХ моделей (proposed и baselines), иначе leaderboard методологически нечестен: метрики
+    исключают эти образцы, а обучение baseline'ов — нет. ``observed=None`` → обычный BCE.
+
+    :param logit: логиты риска, форма (N,)
+    :param label: бинарные метки разжижения, форма (N,)
+    :param observed: маска наблюдаемости исхода (``n_liq_observed``); None → без маски
+    :return: скалярный BCE (0, если в батче нет наблюдаемых исходов)
+    """
+    if observed is not None:
+        m = observed > 0.5
+        if bool(m.any()):
+            return F.binary_cross_entropy_with_logits(logit[m], label[m])
+        return logit.sum() * 0.0
+    return F.binary_cross_entropy_with_logits(logit, label)
+
+
+def gaussian_mixture_nll(means: torch.Tensor, logvars: torch.Tensor,
+                         target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """
+    NLL равновесной гауссовой смеси — proper density предиктивного распределения.
+
+    Предиктив DPI-Flow как смесь по S сэмплам θ из conditional flow:
+        p(y) = (1/S) Σ_s N(y; μ_s, σ_s²),
+        NLL  = − masked_mean[ log p(y) ].
+    Логарифм считается устойчиво через ``logsumexp`` по компонентам. В отличие от одиночного
+    :func:`gaussian_nll`, минимизация ЭТОГО лосса привязывает РАЗБРОС компонент (= неопределённость
+    flow-постериора над θ) к фактической предиктивной ошибке — иначе разброс flow не калибруется и
+    поток не даёт выигрыша по NLL/CRPS/покрытию.
+
+    :param means: средние компонент μ_s, форма (S, B, T)
+    :param logvars: логдисперсии компонент log σ_s², форма (S, B, T)
+    :param target: наблюдаемые значения, форма (B, T)
+    :param mask: бинарная маска валидности, форма (B, T)
+    :return: скалярный NLL смеси
+    """
+    import math
+    logvars = torch.clamp(logvars, min=-6.0, max=3.0)
+    s = means.shape[0]
+    t = target.unsqueeze(0)
+    comp_logp = -0.5 * (math.log(2.0 * math.pi) + logvars
+                        + (t - means) ** 2 * torch.exp(-logvars))      # (S, B, T)
+    logp = torch.logsumexp(comp_logp, dim=0) - math.log(float(s))      # (B, T)
+    return masked_mean(-logp, mask)
+
+
+def energy_crps(samples: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """
+    Маскированная sample-оценка CRPS (энергетический скор, β=1) — proper scoring остроты.
+
+        CRPS ≈ mean_s |y_s − y| − ½·mean_{s,s'} |y_s − y_s'|,
+    где ``y_s`` — сэмплы предиктива (μ_s + σ_s·ε). Для детерминированного прогноза (все сэмплы
+    равны) сводится к |ŷ − y| (MAE). Дифференцируема; награждает калиброванную остроту смеси.
+
+    :param samples: сэмплы предиктива, форма (S, B, T)
+    :param target: наблюдаемые значения, форма (B, T)
+    :param mask: бинарная маска валидности, форма (B, T)
+    :return: скалярный CRPS
+    """
+    t = target.unsqueeze(0)
+    term1 = torch.abs(samples - t).mean(dim=0)                                  # (B, T)
+    diff = torch.abs(samples.unsqueeze(0) - samples.unsqueeze(1)).mean(dim=(0, 1))  # (B, T)
+    return masked_mean(term1 - 0.5 * diff, mask)
 
 
 def observed_aux_loss(

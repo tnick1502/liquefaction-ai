@@ -255,6 +255,30 @@ def strict_pre_onset_prefix_mask(
     return mask.astype(np.float32)
 
 
+def landmark_prefix_mask(cycles: np.ndarray, valid_mask: np.ndarray, landmark_cycles: float,
+                         prefix_len: Optional[int] = None) -> np.ndarray:
+    """
+    Префикс-маска по ФИЗИЧЕСКОМУ landmark: наблюдаемы шаги с числом циклов ``≤ landmark_cycles``,
+    но НЕ больше первых ``prefix_len`` шагов (архитектурное окно префикса).
+
+    В отличие от окна по индексам сетки (``fixed_k``), окно одинаково в ФИЗИЧЕСКИХ циклах и не
+    зависит от исхода. Ограничение по ``prefix_len`` гарантирует, что ВСЕ ветви модели (prefix_obs,
+    seq-вход, prefix_summary) видят один и тот же префикс ≤ prefix_len точек (иначе prefix_summary
+    использовал бы до 20 точек, а seq-вход — только 12), и что ``prefix_coverage = count/prefix_len ≤ 1``.
+
+    :param cycles: сетка числа циклов на образец, форма (n, seq_len)
+    :param valid_mask: маска валидной длины, форма (n, seq_len)
+    :param landmark_cycles: физический горизонт landmark N₀ (циклы)
+    :param prefix_len: верхняя граница числа шагов префикса (архитектурная); None — без ограничения
+    :return: бинарная маска префикса, форма (n, seq_len), float32
+    """
+    m = (np.asarray(cycles) <= float(landmark_cycles)) & (valid_mask > 0)
+    if prefix_len is not None:
+        step_idx = np.arange(m.shape[1])[None, :]
+        m = m & (step_idx < int(prefix_len))      # не больше первых prefix_len шагов
+    return m.astype(np.float32)
+
+
 def build_observed_prefix(
     r_obs: np.ndarray,
     valid_mask: np.ndarray,
@@ -264,6 +288,8 @@ def build_observed_prefix(
     onset_threshold: float = 0.95,
     margin: int = 1,
     min_len: int = 3,
+    landmark_cycles: Optional[float] = None,
+    cycles: Optional[np.ndarray] = None,
 ):
     """
     Сформировать наблюдаемый префикс из измеренной траектории (без добавления шума).
@@ -280,10 +306,15 @@ def build_observed_prefix(
     :param min_len: минимальная длина префикса (если не пересекает onset)
     :return: словарь с ``prefix_obs`` и ``prefix_mask``
     """
-    prefix_mask = strict_pre_onset_prefix_mask(
-        r_obs, valid_mask, prefix_len, strict=strict_preonset,
-        onset_threshold=onset_threshold, margin=margin, min_len=min_len,
-    )
+    if landmark_cycles is not None and cycles is not None:
+        # #3 landmark-протокол: окно по физическим циклам ≤ N₀, capped по prefix_len (одинаковый
+        # префикс во всех ветвях модели; prefix_coverage≤1).
+        prefix_mask = landmark_prefix_mask(cycles, valid_mask, landmark_cycles, prefix_len=prefix_len)
+    else:
+        prefix_mask = strict_pre_onset_prefix_mask(
+            r_obs, valid_mask, prefix_len, strict=strict_preonset,
+            onset_threshold=onset_threshold, margin=margin, min_len=min_len,
+        )
     prefix_obs = (r_obs * prefix_mask).astype(np.float32)
     return {"prefix_obs": prefix_obs, "prefix_mask": prefix_mask}
 
@@ -355,16 +386,21 @@ def build_population_from_experiments(
     ensure_analysis_columns(soil_df, load_df, crr_obs_mask)
 
     delta_cycles = np.diff(np.concatenate([np.zeros((n, 1)), cycles], axis=1), axis=1).astype(np.float32)
-    # Режим "fixed_k": фиксированное окно первых K шагов для ВСЕХ опытов (outcome-independent,
-    # leakage-free протокол). Иначе — preonset-обрезка (длина зависит от onset).
-    _fixed_k = getattr(config, "prefix_mode", "preonset") == "fixed_k"
+    # Протокол префикса. "landmark" (рекоменд., leakage-free): окно по ФИЗИЧЕСКИМ циклам ≤ N₀ для
+    # всех опытов. "fixed_k": фиксированное окно первых K ШАГОВ сетки. "preonset": обрезка до onset
+    # (длина зависит от исхода). Все три outcome-independent по входу, кроме preonset.
+    _mode = getattr(config, "prefix_mode", "preonset")
+    _fixed_k = _mode == "fixed_k"
+    _landmark = _mode == "landmark"
     _pref_window = int(getattr(config, "prefix_fixed_k", 6)) if _fixed_k else config.prefix_len
     observations = build_observed_prefix(
         r_measured.astype(np.float32), valid_mask.astype(np.float32), _pref_window,
-        strict_preonset=(False if _fixed_k else getattr(config, "prefix_strict_preonset", True)),
+        strict_preonset=(False if (_fixed_k or _landmark) else getattr(config, "prefix_strict_preonset", True)),
         onset_threshold=getattr(config, "prefix_onset_threshold", config.liq_threshold),
         margin=getattr(config, "prefix_onset_margin", 1),
         min_len=getattr(config, "prefix_min_len", 3),
+        landmark_cycles=(float(getattr(config, "prefix_landmark_cycles", 20.0)) if _landmark else None),
+        cycles=(cycles.astype(np.float32) if _landmark else None),
     )
     features = build_feature_matrices(soil_df, load_df, cycles.astype(np.float32), delta_cycles,
                                       csr.astype(np.float32), observations, config.prefix_len)

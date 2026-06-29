@@ -11,8 +11,8 @@
     "probabilistic": true,
     "use_analytical_layer": true,
     "liq_threshold": 0.95,
-    "hidden_dim": 128,
-    "calibration_steps": 2,
+    "hidden_dim": 160,
+    "calibration_steps": 1,
     "calibration_lr": 0.1,
     "use_traj_residual": true
   },
@@ -38,15 +38,15 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 128,
-      "calibration_steps": 2,
+      "hidden_dim": 160,
+      "calibration_steps": 1,
       "calibration_lr": 0.1,
       "use_traj_residual": true
     }
   },
-  "epochs": 6,
+  "epochs": 76,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 1.3
+  "calib_scale": 1.55
 }

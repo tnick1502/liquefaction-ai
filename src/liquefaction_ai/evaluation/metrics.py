@@ -269,7 +269,7 @@ def collect_outputs(
     _py_state = _random.getstate()
     set_global_seed(config.seed)
     model.eval()
-    mc = int(getattr(config, "mc_samples_eval", 1) or 1)
+    mc = max(int(getattr(config, "mc_samples_eval", 1) or 1), int(getattr(model, "mc_predict_samples", 0) or 0))
     use_mc = mc > 1 and hasattr(model, "predictive")
     collected: Dict[str, List[torch.Tensor]] = {}
     try:
@@ -325,50 +325,39 @@ def fit_interval_scale(model, val_split: Dict[str, object], config: ExperimentCo
     return float(best)
 
 
-def object_conformal_coverage(pred: np.ndarray, std: np.ndarray, true: np.ndarray,
-                              mask: np.ndarray, objects: np.ndarray,
-                              level: float = 0.90) -> Tuple[float, float]:
+def split_conformal_coverage(cal_pred: np.ndarray, cal_std: np.ndarray, cal_true: np.ndarray,
+                             cal_mask: np.ndarray, test_pred: np.ndarray, test_std: np.ndarray,
+                             test_true: np.ndarray, test_mask: np.ndarray,
+                             level: float = 0.90) -> Tuple[float, float]:
     """
-    Object-held-out (CV+) split-conformal покрытие интервалов PPR.
+    Inductive split-conformal покрытие интервалов PPR (deployable).
 
-    Гауссова калибровка масштаба на val систематически НЕДОПОКРЫВАЕТ на невиданных площадках:
-    нормировочный std оценён на одних объектах, а покрытие меряется на других (site-level shift) —
-    отсюда Coverage@90 ≈ 0.80 вместо номинала. Здесь конформный квантиль нормированных остатков
-    ``|y−ŷ|/σ`` для каждого объекта берётся по ОСТАЛЬНЫМ объектам (leave-one-object-out), что
-    делает калибровку честной относительно site-shift и поднимает покрытие к номиналу.
+    Конформный квантиль нормированных остатков ``|y−ŷ|/σ`` считается на ОТДЕЛЬНОМ калибровочном
+    наборе (``cal_*``), НЕ пересекающемся с тестом, и применяется к тесту. Так это работает в
+    деплое: калибровка — на отложенных площадках (val или другие CV-фолды), оценка — на новых.
 
-    :param pred: предсказанная траектория PPR, форма (N, T)
-    :param std: предсказанный std, форма (N, T)
-    :param true: наблюдаемая PPR, форма (N, T)
-    :param mask: маска валидных шагов, форма (N, T)
-    :param objects: метка объекта/площадки на образец, форма (N,)
+    ВАЖНО: калибровочный набор обязан быть disjoint с тестом. Калибровать квантиль по истинным
+    ошибкам самих тестовых объектов нельзя — это transductive утечка ответов теста.
+
+    ОГОВОРКА: это POINTWISE marginal покрытие — точки времени трактуются как независимые наблюдения
+    (квантиль по пулу всех |y−ŷ|/σ). Это НЕ simultaneous trajectory coverage (вероятность, что ВСЯ
+    кривая внутри полосы) и не учитывает временную корреляцию.
+
+    :param cal_*: предсказание/σ/истина/маска КАЛИБРОВОЧНОГО набора (отложенные объекты)
+    :param test_*: то же для теста
     :param level: целевой уровень покрытия
-    :return: (покрытие, средняя ширина интервала); (nan, nan) если объектов < 3
+    :return: (покрытие на тесте, средняя ширина интервала)
     """
-    objects = np.asarray(objects)
-    uo = np.unique(objects)
-    if len(uo) < 3:
+    rc = (np.abs(cal_true - cal_pred) / np.maximum(cal_std, 1e-6))[cal_mask > 0]
+    if rc.size == 0 or test_mask.sum() == 0:
         return float("nan"), float("nan")
-    resid = np.abs(true - pred) / np.maximum(std, 1e-6)
-    cov_num = width_num = den = 0.0
-    for ho in uo:
-        tr = objects != ho
-        rtr = resid[tr][mask[tr] > 0]
-        if rtr.size == 0:
-            continue
-        # finite-sample поправка квантиля (split-conformal): ceil((n+1)·level)/n
-        n = rtr.size
-        q = float(np.quantile(rtr, min(1.0, np.ceil((n + 1) * level) / n)))
-        te = objects == ho
-        lo = pred[te] - q * std[te]
-        hi = pred[te] + q * std[te]
-        mte = mask[te]
-        cov_num += float(np.sum(((true[te] >= lo) & (true[te] <= hi)) * mte))
-        width_num += float(np.sum((hi - lo) * mte))
-        den += float(mte.sum())
-    if den == 0:
-        return float("nan"), float("nan")
-    return cov_num / den, width_num / den
+    n = rc.size
+    q = float(np.quantile(rc, min(1.0, np.ceil((n + 1) * level) / n)))   # finite-sample поправка
+    lo = test_pred - q * test_std
+    hi = test_pred + q * test_std
+    cov = float(np.sum(((test_true >= lo) & (test_true <= hi)) * test_mask) / test_mask.sum())
+    width = float(np.sum((hi - lo) * test_mask) / test_mask.sum())
+    return cov, width
 
 
 def resolve_nliq_prediction(outputs: Dict[str, np.ndarray], max_cycle_reference: float) -> np.ndarray:
@@ -569,11 +558,21 @@ def compute_metrics(
             metrics[_k] = float("nan")
         sample_df["onset_timing_bias_cyc"] = np.nan
 
-    auroc, auprc, brier = safe_binary_metrics(y_true, y_prob)
+    # РИСК-метрики считаются только на образцах с НАБЛЮДАЕМЫМ исходом (obs): liquefied (label=1) и
+    # demonstrably-stabilized non-liq (label=0, terminal observable). Незавершённые non-liq
+    # (n_liq_observed==0) имеют НЕИЗВЕСТНЫЙ исход — включать их как label=0 было бы ложным негативом
+    # (≈⅕ датасета). Маскируем AUROC/AUPRC/Brier/ECE той же маской obs, что и N_liq.
+    if obs.any():
+        yt_r, yp_r = y_true[obs], y_prob[obs]
+        auroc, auprc, brier = safe_binary_metrics(yt_r, yp_r)
+        ece = expected_calibration_error(yt_r, yp_r)
+    else:
+        auroc = auprc = brier = ece = float("nan")
     metrics["AUROC"] = auroc
     metrics["AUPRC"] = auprc
     metrics["Brier"] = brier
-    metrics["ECE"] = expected_calibration_error(y_true, y_prob)
+    metrics["ECE"] = ece
+    metrics["N_risk_observed"] = int(obs.sum())
 
     if "traj_mean" in outputs:
         pred = outputs["traj_mean"]
@@ -617,9 +616,9 @@ def compute_metrics(
         horizon = (mask * idxg).max(axis=1, keepdims=True)            # последний валидный индекс/образец
         far_mask = continuation_mask * (idxg >= 0.5 * horizon)
         far_denom = np.maximum(far_mask.sum(), 1.0)
-        metrics["Traj_RMSE_extrap"] = float(np.sqrt(np.sum(((pred - true) ** 2) * far_mask) / far_denom))
+        metrics["Traj_RMSE_late"] = float(np.sqrt(np.sum(((pred - true) ** 2) * far_mask) / far_denom))
         sample_far_count = np.maximum(far_mask.sum(axis=1), 1.0)
-        sample_df["traj_rmse_extrap"] = np.sqrt(
+        sample_df["traj_rmse_late"] = np.sqrt(
             np.sum(((pred - true) ** 2) * far_mask, axis=1) / sample_far_count
         )
 
@@ -690,13 +689,13 @@ def compute_metrics(
                     sample_df["coverage90"] = inb.sum(axis=1) / np.maximum(mask.sum(axis=1), 1.0)
             # Сводная ошибка калибровки интервалов (среднее |покрытие − номинал| по уровням)
             metrics["Calibration_Error"] = float(np.mean(cov_gaps))
-            # Object-held-out (CV+) conformal покрытие@90 — честная калибровка под site-shift
-            # (квантиль по ОСТАЛЬНЫМ площадкам); снимает систематическое недопокрытие val-калибровки.
-            if "object" in meta_df.columns:
-                oc_cov, oc_w = object_conformal_coverage(
-                    pred, std, true, mask, meta_df["object"].to_numpy(), level=0.90)
-                metrics["Coverage_90_objconf"] = oc_cov
-                metrics["Interval_Width_90_objconf"] = oc_w
+            # ПРИМЕЧАНИЕ: deployable conformal-покрытие требует ОТДЕЛЬНОГО калибровочного набора
+            # (disjoint с тестом) — функция split_conformal_coverage. Внутри compute_metrics(test)
+            # такого набора нет, поэтому здесь его НЕ считаем (иначе transductive утечка).
+            # Deployable вариант (split_conformal_coverage) ВЫЗЫВАЕТСЯ в CV: cross_validation.evaluate_fold
+            # калибрует квантиль на VAL-объектах фолда и применяет к test → метрика Coverage_90_splitconf
+            # (object-held-out, не transductive). Это POINTWISE marginal покрытие (точки времени
+            # независимы), НЕ simultaneous trajectory coverage.
             # Гауссовская NLL — собственно правило (proper scoring) для вероятностного прогноза
             nll = 0.5 * (np.log(2 * np.pi * std ** 2) + ((true - pred) ** 2) / (std ** 2))
             metrics["Traj_NLL"] = float(np.sum(nll * mask) / np.maximum(mask.sum(), 1.0))

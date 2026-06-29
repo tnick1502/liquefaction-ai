@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from liquefaction_ai.training.losses import masked_censored_nliq_loss
+from liquefaction_ai.training.losses import masked_bce_with_logits, masked_censored_nliq_loss
 
 __all__ = ["FTTransformer", "CatBoostBaseline"]
 
@@ -71,7 +71,7 @@ class FTTransformer(nn.Module):
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """BCE-риск + Smooth-L1 по нормированному N_liq."""
         outputs = self.forward_batch(batch)
-        risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
         nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
         outputs["loss"] = risk_loss + 0.45 * nliq_loss
         return outputs
@@ -120,15 +120,13 @@ class CatBoostBaseline:
         yv_nliq = val_split["n_liq_norm"].detach().cpu().numpy()
         common = dict(iterations=self.iterations, depth=self.depth, learning_rate=self.learning_rate,
                       random_seed=42, verbose=0, allow_writing_files=False)
-        self.clf = CatBoostClassifier(loss_function="Logloss", **common)
-        self.clf.fit(Xtr, ytr_risk, eval_set=(Xv, yv_risk))
-        # Тот же цензур-протокол, что у остальных моделей: образцы без наблюдаемого терминала
-        # N_liq (3-й режим — нет разжижения и нет стабилизации) исключаются из регрессии,
-        # чтобы сравнение с физическими моделями оставалось честным. CatBoost RMSE не выражает
-        # одностороннюю (Tobit) цензуру стабилизации, поэтому применяем только маску наблюдаемости.
+        # Маска наблюдаемости исхода: незавершённые non-liq исключаются из обучения И риск-классификатора,
+        # И N_liq-регрессии — единый цензур-протокол, что у proposed-моделей (иначе baseline нечестен).
         otr = train_split.get("n_liq_observed"); ov = val_split.get("n_liq_observed")
         mtr = (otr.detach().cpu().numpy() > 0.5) if otr is not None else np.ones(len(ytr_nliq), bool)
         mv = (ov.detach().cpu().numpy() > 0.5) if ov is not None else np.ones(len(yv_nliq), bool)
+        self.clf = CatBoostClassifier(loss_function="Logloss", **common)
+        self.clf.fit(Xtr[mtr], ytr_risk[mtr], eval_set=(Xv[mv], yv_risk[mv]))   # риск ТОЛЬКО по наблюдаемым
         self.reg = CatBoostRegressor(loss_function="RMSE", **common)
         self.reg.fit(Xtr[mtr], ytr_nliq[mtr], eval_set=(Xv[mv], yv_nliq[mv]))
         return self

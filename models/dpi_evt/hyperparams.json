@@ -13,7 +13,7 @@
     "nliq_from_curve": true,
     "liq_threshold": 0.95,
     "use_traj_residual": false,
-    "hidden_dim": 192,
+    "hidden_dim": 160,
     "crr_mode": "decoupled",
     "calibration_steps": 1
   },
@@ -36,11 +36,11 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 192,
+      "hidden_dim": 160,
       "crr_mode": "decoupled",
       "calibration_steps": 1
     }
   },
-  "epochs": 200,
-  "calib_scale": 1.55
+  "epochs": 32,
+  "calib_scale": 0.5
 }

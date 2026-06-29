@@ -188,7 +188,6 @@ HEADLINE_ORDER = [
     ("Traj_RMSE_continuation_worst", "PPR RMSE worst-state ↓"),
     ("N_liq_logMAE", "N_liq log-MAE ↓ (censored-aware)"),
     ("N_liq_logMAE_liq", "N_liq log-MAE ↓ (liquefied-only)"),
-    ("Onset_EarlyWarning_Rate", "Early-warning rate ↑"),
     ("CRR_RMSE", "CRR RMSE ↓ (DPI family)"),
     ("Physics_Violation_Rate", "Physics violations ↓"),
     ("AUROC", "AUROC ↑ (reference only)"),
@@ -216,7 +215,10 @@ def headline_table(summary_df: pd.DataFrame, cluster_df: Optional[pd.DataFrame] 
             v = r[mcol]; ck = _CLUSTER_CI_MAP.get(key)
             if cl is not None and ck is not None and model in cl.index and f"{ck}_lo" in cl.columns \
                     and pd.notna(cl.loc[model, f"{ck}_lo"]):
-                rec[label] = f"{v:.3f} [{cl.loc[model, f'{ck}_lo']:.3f}, {cl.loc[model, f'{ck}_hi']:.3f}]"
+                # ТОЧКА и CI — из ОДНОГО оценщика (object-cluster bootstrap), иначе точка может
+                # оказаться вне интервала (как Transformer 0.050 [0.022, 0.047]). Берём bootstrap-точку.
+                pt = cl.loc[model, ck] if ck in cl.columns and pd.notna(cl.loc[model, ck]) else v
+                rec[label] = f"{pt:.3f} [{cl.loc[model, f'{ck}_lo']:.3f}, {cl.loc[model, f'{ck}_hi']:.3f}]"
             else:
                 rec[label] = f"{v:.3f}"
         rows.append(rec)

@@ -26,7 +26,8 @@ import numpy as np
 import pandas as pd
 
 from liquefaction_ai.config import ExperimentConfig, LIQ_THRESHOLD
-from liquefaction_ai.data.ppr_envelope import extract_upper_envelope, smooth_ppr_trajectory
+from liquefaction_ai.data.ppr_envelope import (extract_upper_envelope, smooth_ppr_trajectory,
+                                               landmark_aware_cycles)
 from liquefaction_ai.data.real_adapter import build_population_from_experiments
 
 
@@ -137,7 +138,8 @@ def dr_proxy(e) -> float:
 
 # ============================ Извлечение одного образца ============================
 
-def extract_test(data_obj, handler_obj, test_type: str, seq_len: int):
+def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
+                 landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None):
     """
     Извлечь из одного образца строки свойств/нагрузки и массивы PPR(N).
 
@@ -169,20 +171,42 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int):
     q_grid = _peak_on_grid(cyc, dev, grid, pic) if dev is not None else np.zeros(seq_len, np.float32)
     eps_grid = _peak_on_grid(cyc, eps_sig, grid, pic) if eps_sig is not None else np.zeros(seq_len, np.float32)
 
+    # #6 общий early-cycle grid (landmark): пересэмплируем PPR/q/ε на сетку с ОДИНАКОВЫМ ранним
+    # разрешением (первые k узлов = geomspace(1, N₀, k) для всех опытов), чтобы объём наблюдаемой
+    # ранней динамики не зависел от N_max/сетки. mask — валиден до последнего наблюдённого цикла.
+    if landmark_n0 is not None:
+        last_obs = float(grid[mask > 0].max()) if np.any(mask > 0) else float(grid[-1])
+        lg = landmark_aware_cycles(last_obs, seq_len, float(landmark_n0), int(landmark_k or 12))
+        r = np.interp(lg, grid, r).astype(np.float32)
+        q_grid = np.interp(lg, grid, q_grid).astype(np.float32)
+        eps_grid = np.interp(lg, grid, eps_grid).astype(np.float32)
+        mask = (lg <= last_obs + 1e-6).astype(np.float32)
+        grid = lg.astype(np.float32)
+
     # нагрузка
     sigma_1 = gv(tp, "sigma_1", 100.0) or 100.0
     t = gv(tp, "t", None)
     csr = float(t) / float(sigma_1) if t else 0.2
     n_total = max(int(np.floor(np.nanmax(cyc))), 1)
-    cycles_count = gv(tp, "cycles_count", n_total) or n_total
-    n_max = float(max(cycles_count, n_total))
+    # #6 N_max — ПЛАНОВЫЙ горизонт нагружения, заданный ДО опыта (число циклов плана), а НЕ
+    # фактически достигнутая длина: у разжижившихся опыт останавливают на onset, поэтому achieved≈N_liq
+    # и max(planned, achieved) утекал бы в горизонт (corr log(N_max),log(N_liq)≈0.98). Берём planned
+    # cycles_count; если его нет — горизонт неизвестен a priori, помечаем для исключения из N_max-нормировки.
+    cycles_count = gv(tp, "cycles_count", None)
+    n_max_planned = float(cycles_count) if (cycles_count and float(cycles_count) > 0) else None
+    n_max = n_max_planned if n_max_planned is not None else float(n_total)
 
-    # разжижение / N_liq (порог события — единый LIQ_THRESHOLD)
-    fail = gv(tr, "fail_cycle", None) if tr is not None else None
-    if fail in (None, 0):
-        fail = gv(tp, "n_fail", None)
-    liq = 1 if (peak >= LIQ_THRESHOLD or fail not in (None, 0)) else 0
-    n_liq = float(fail) if (liq and fail not in (None, 0)) else float(n_total)
+    # #7 Единое определение события: ПЕРВОЕ пересечение сглаженной ru≥LIQ_THRESHOLD (0.95).
+    # fail_cycle лаборатории НЕ используется как независимый триггер (он расходился с порогом:
+    # медиана |N_liq−onset|≈14 циклов, 79/640 «положительных» порог не пересекали). N_liq — цикл
+    # пересечения; если пересечения нет — событие не наступило (право-цензура на плановый горизонт).
+    _cross = np.where((np.asarray(r) >= LIQ_THRESHOLD) & (np.asarray(mask) > 0))[0]
+    if _cross.size > 0:
+        liq = 1
+        n_liq = float(grid[int(_cross[0])])
+    else:
+        liq = 0
+        n_liq = float(n_max)
 
     # свойства грунта
     tg = int(gv(phys, "type_ground", 7) or 7)
@@ -242,7 +266,7 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int):
 
     load = dict(
         CSR_base=csr, frequency=float(gv(tp, "frequency", 0.5) or 0.5),
-        amp_scale=1.0, N_max=n_max,
+        amp_scale=1.0, N_max=n_max, N_max_is_planned=(n_max_planned is not None),
         nonstationarity=0.30 if test_type == "Штормовое разжижение" else 0.05,
         load_mode=TYPE_TO_MODE.get(test_type, "seismic"),
     )
@@ -263,7 +287,8 @@ def find_object_pickles(obj_dir: str) -> Tuple[Optional[str], Optional[str]]:
     return (dp[0], hp[0]) if dp and hp else (None, None)
 
 
-def load_object(obj_dir: str, test_type: str, seq_len: int) -> List[Tuple[str, tuple]]:
+def load_object(obj_dir: str, test_type: str, seq_len: int,
+                landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None) -> List[Tuple[str, tuple]]:
     """Извлечь все образцы одного объекта → список ``(ключ, запись extract_test)``."""
     dpath, hpath = find_object_pickles(obj_dir)
     if not dpath:
@@ -274,7 +299,7 @@ def load_object(obj_dir: str, test_type: str, seq_len: int) -> List[Tuple[str, t
     for key in D:
         if key not in H:
             continue
-        rec = extract_test(D[key], H[key], test_type, seq_len)
+        rec = extract_test(D[key], H[key], test_type, seq_len, landmark_n0=landmark_n0, landmark_k=landmark_k)
         if rec is not None:
             out.append((key, rec))
     return out
@@ -433,8 +458,11 @@ def build_real_objects_population(
             objects = discover_objects(str(root / test_type))
             if max_objects:
                 objects = objects[:max_objects]
+            _lm = getattr(config, "prefix_mode", "preonset") == "landmark"
+            _lm_n0 = float(getattr(config, "prefix_landmark_cycles", 20.0)) if _lm else None
+            _lm_k = int(getattr(config, "prefix_len", 12)) if _lm else None
             for oname, opath in objects:
-                recs = load_object(opath, test_type, seq_len)
+                recs = load_object(opath, test_type, seq_len, landmark_n0=_lm_n0, landmark_k=_lm_k)
                 otag = f"{rtag} · {test_type}/{oname}" if multi else f"{test_type}/{oname}"
                 for _key, (soil, load, arr, liq, nl) in recs:
                     soil_rows.append(soil); load_rows.append(load)
@@ -444,6 +472,52 @@ def build_real_objects_population(
 
     if not soil_rows:
         raise ValueError("Объекты не найдены — проверьте source_specs (путь к «Облако разжижения»).")
+
+    # #6: импутация ПЛАНОВОГО горизонта N_max там, где cycles_count отсутствовал. НЕ использовать
+    # achieved-длину (у liquefied это onset → утечка). Берём медиану планового N_max по тому же
+    # ОБЪЕКТУ (один протокол нагружения площадки), глобальный fallback — медиана всех плановых.
+    from collections import defaultdict as _dd
+    _planned_all = [float(r["N_max"]) for r in load_rows if r.get("N_max_is_planned")]
+    _glob = float(np.median(_planned_all)) if _planned_all else float(config.max_cycle_reference)
+    _obj_planned = _dd(list)
+    for r, tag in zip(load_rows, TAG):
+        if r.get("N_max_is_planned"):
+            _obj_planned[tag].append(float(r["N_max"]))
+    for i, (r, tag) in enumerate(zip(load_rows, TAG)):
+        if not r.get("N_max_is_planned"):
+            # ЧИСТО плановая оценка (медиана объекта / глобальная). НЕ берём max(.., N_liq): это
+            # вернуло бы исход в признак (target dependence). N_max остаётся a-priori-величиной.
+            imp = float(np.median(_obj_planned[tag])) if _obj_planned.get(tag) else _glob
+            r["N_max"] = imp
+            if LB[i] == 0:                               # non-liq: право-цензура на плановый горизонт
+                NL[i] = imp
+    _n_imputed = int(sum(1 for r in load_rows if not r.get("N_max_is_planned")))
+    if _n_imputed:
+        print(f"[N_max] планового cycles_count нет у {_n_imputed} опытов → импутация медианой объекта "
+              f"(без max(N_liq); planned остаётся a-priori).")
+    for r in load_rows:
+        r.pop("N_max_is_planned", None)                  # служебный флаг — не в признаки
+
+    # #7/#9: ЕДИНОЕ определение события «разжижение BY горизонта» уже НА СБОРКЕ — чтобы meta.parquet,
+    # EDA, стратификация фолдов и CRR-сборка использовали ТО ЖЕ определение, что обучение/метрики
+    # (раньше поздние события были label=1 в meta и становились отрицательными только в splits).
+    _H = float(config.max_cycle_reference)
+    for i in range(len(LB)):
+        if LB[i] > 0.5 and NL[i] > _H:
+            LB[i] = 0.0                                   # разжижение после горизонта → не-событие
+            NL[i] = _H                                    # право-цензура на горизонт
+
+    # #3 landmark risk set: для protocol="landmark" исключаем опыты, разжижившиеся ДО физического
+    # landmark-цикла N₀ (их нельзя прогнозировать из префикса ≤N₀ — событие уже произошло на момент
+    # обусловливания). Так артефакт сразу содержит только risk set, и сплиты/CV-фолды консистентны.
+    if getattr(config, "prefix_mode", "preonset") == "landmark":
+        _N0 = float(getattr(config, "prefix_landmark_cycles", 20.0))
+        _keep = [i for i in range(len(LB)) if not (LB[i] > 0.5 and NL[i] <= _N0)]
+        if len(_keep) < len(LB):
+            soil_rows = [soil_rows[i] for i in _keep]; load_rows = [load_rows[i] for i in _keep]
+            CY = [CY[i] for i in _keep]; CS = [CS[i] for i in _keep]; RM = [RM[i] for i in _keep]
+            VM = [VM[i] for i in _keep]; QM = [QM[i] for i in _keep]; EM = [EM[i] for i in _keep]
+            LB = [LB[i] for i in _keep]; NL = [NL[i] for i in _keep]; TAG = [TAG[i] for i in _keep]
 
     soil_df = pd.DataFrame(soil_rows); load_df = pd.DataFrame(load_rows)
     cycles = np.array(CY); csr = np.array(CS)

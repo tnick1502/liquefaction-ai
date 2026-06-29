@@ -27,7 +27,8 @@ import torch.nn.functional as F
 from liquefaction_ai.models.dpi_flow import ConditionalCouplingFlow, flow_kl_per_dim
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
 from liquefaction_ai.models.heads import physics_summary
-from liquefaction_ai.training.losses import (gaussian_nll, masked_censored_nliq_loss, masked_mean,
+from liquefaction_ai.training.losses import (energy_crps, gaussian_nll, gaussian_mixture_nll,
+                                             masked_censored_nliq_loss, masked_mean,
                                              masked_mse, monotone_clip, soft_auc_loss)
 
 __all__ = ["DPIEvtNet"]
@@ -41,7 +42,9 @@ class DPIEvtNet(EVTNeuralSSM):
                  use_flow: bool = True, crr_from_damage: bool = True, crr_mode: str = None,
                  nliq_from_curve: bool = True, calibration_steps: int = 0, calibration_lr: float = 0.05,
                  use_traj_residual: bool = False, liq_threshold: float = 0.95,
-                 use_observed_aux_loss: bool = True, **kwargs):
+                 use_observed_aux_loss: bool = True,
+                 mc_train_samples: int = 0, mc_crps_weight: float = 0.0, mc_predict_samples: int = 0,
+                 **kwargs):
         """
         :param crr_mode: "damage" | "empirical" | "hybrid" | "decoupled" (см. модульную документацию)
         :param nliq_from_curve: брать N_liq из момента пересечения порога кривой PPR (а не из first-hitting)
@@ -61,6 +64,12 @@ class DPIEvtNet(EVTNeuralSSM):
         self.use_traj_residual = use_traj_residual
         self.liq_threshold = liq_threshold
         self.use_observed_aux_loss = use_observed_aux_loss
+        # MC-микстура предиктива по θ (#3, симметрично DPI-Flow): opt-in калибровка разброса
+        # постериора под предиктивную ошибку (mixture-NLL + energy-CRPS). 0 → выкл (прежнее поведение).
+        self.mc_train_samples = int(mc_train_samples)
+        self.mc_crps_weight = float(mc_crps_weight)
+        self.mc_predict_samples = int(mc_predict_samples)
+        self._force_sample = False
         self.logvar_head = nn.Linear(hidden_dim, 33)
         # Conditional RealNVP с latent-зависимым coupling и log-det (вместо диагонального flow).
         self.flow = ConditionalCouplingFlow(33, hidden_dim, n_layers=4, hidden=64)
@@ -75,7 +84,8 @@ class DPIEvtNet(EVTNeuralSSM):
         mu = self.param_head(encoded)
         raw_logvar = torch.clamp(self.logvar_head(encoded), min=-5.0, max=3.0)
         if self.probabilistic:
-            eps = torch.randn_like(mu) if self.training else torch.zeros_like(mu)
+            stochastic = self.training or self._force_sample   # _force_sample → MC-сэмплы на инференсе
+            eps = torch.randn_like(mu) if stochastic else torch.zeros_like(mu)
             latent = mu + torch.exp(0.5 * raw_logvar) * eps
         else:
             latent = mu
@@ -242,12 +252,78 @@ class DPIEvtNet(EVTNeuralSSM):
             "crr_consistency": crr_cons, "cross_pdf": cross_pdf, "cross_mass": cross_mass,
         }
 
+    def predictive(self, batch: Dict[str, torch.Tensor], mc_samples: int = 8) -> Dict[str, torch.Tensor]:
+        """
+        MC-предиктив: K стохастических проходов с сэмплированием θ (через flow/гауссов постериор).
+
+        Дисперсия траектории = aleatoric (среднее exp(logvar) по сэмплам) + epistemic (разброс
+        средних между сэмплами θ). Если модель не вероятностная или mc_samples<=1 — forward_batch.
+        """
+        if not self.probabilistic or mc_samples <= 1:
+            return self.forward_batch(batch)
+        prev = self._force_sample
+        self._force_sample = True
+        try:
+            means, alea, risks, nliqs, crrs, last = [], [], [], [], [], None
+            for _ in range(int(mc_samples)):
+                o = self.forward_batch(batch)
+                means.append(o["traj_mean"]); alea.append(torch.exp(o["traj_logvar"]))
+                risks.append(o["risk_prob"])
+                if "nliq_norm" in o:
+                    nliqs.append(o["nliq_norm"])
+                if "crr" in o and torch.is_tensor(o["crr"]):
+                    crrs.append(o["crr"])
+                last = o
+        finally:
+            self._force_sample = prev
+        M = torch.stack(means, 0)
+        pred_var = torch.stack(alea, 0).mean(0) + M.var(0, unbiased=False)
+        out = dict(last)
+        out["traj_mean"] = M.mean(0)
+        out["traj_logvar"] = torch.log(pred_var.clamp_min(1e-12))
+        out["traj_epistemic_var"] = M.var(0, unbiased=False)
+        rp = torch.stack(risks, 0).mean(0).clamp(1e-6, 1 - 1e-6)
+        out["risk_prob"] = rp
+        out["risk_logit"] = torch.log(rp) - torch.log1p(-rp)
+        if crrs:
+            out["crr"] = torch.stack(crrs, 0).mean(0)
+        if nliqs:
+            nn_ = torch.stack(nliqs, 0).mean(0)
+            out["nliq_norm"] = nn_
+            mcr = torch.as_tensor(self.max_cycle_reference, device=nn_.device, dtype=nn_.dtype)
+            out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
+        return out
+
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         from liquefaction_ai.training.losses import observed_aux_loss
         out = self.forward_batch(batch)
-        traj_loss = gaussian_nll(out["traj_mean"], out["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = F.binary_cross_entropy_with_logits(out["risk_logit"], batch["label"])
-        rank_loss = soft_auc_loss(out["risk_logit"], batch["label"])
+        # Траекторный лосс: одиночный gaussian_nll по умолчанию; при mc_train_samples>0 — proper
+        # NLL гауссовой смеси по S сэмплам θ (+ опц. energy-CRPS), что калибрует разброс постериора.
+        if self.mc_train_samples > 0 and self.probabilistic:
+            mus, logvars = [], []
+            prev = self._force_sample
+            self._force_sample = True
+            try:
+                for _ in range(self.mc_train_samples):
+                    o = self.forward_batch(batch)
+                    mus.append(o["traj_mean"]); logvars.append(o["traj_logvar"])
+            finally:
+                self._force_sample = prev
+            mc_means = torch.stack(mus, 0); mc_logvars = torch.stack(logvars, 0)
+            traj_loss = gaussian_mixture_nll(mc_means, mc_logvars, batch["r_obs"], batch["mask"])
+            if self.mc_crps_weight > 0.0:
+                samples = mc_means + torch.exp(0.5 * mc_logvars) * torch.randn_like(mc_means)
+                traj_loss = traj_loss + self.mc_crps_weight * energy_crps(samples, batch["r_obs"], batch["mask"])
+        else:
+            traj_loss = gaussian_nll(out["traj_mean"], out["traj_logvar"], batch["r_obs"], batch["mask"])
+        # Риск-лосс только по образцам с наблюдаемым исходом (исключаем незавершённые non-liq).
+        _robs = batch.get("n_liq_observed")
+        if _robs is not None and (_robs > 0.5).any():
+            _rm = _robs > 0.5; _rlogit, _rlabel = out["risk_logit"][_rm], batch["label"][_rm]
+        else:
+            _rlogit, _rlabel = out["risk_logit"], batch["label"]
+        risk_loss = F.binary_cross_entropy_with_logits(_rlogit, _rlabel)
+        rank_loss = soft_auc_loss(_rlogit, _rlabel)
         nliq_loss = masked_censored_nliq_loss(out["nliq_norm"], batch["n_liq_norm"],
                                               batch["label"], batch.get("n_liq_observed"))
         switch_reg = torch.abs(out["g"][:, 1:] - out["g"][:, :-1]).mean()

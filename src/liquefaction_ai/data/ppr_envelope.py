@@ -159,6 +159,31 @@ def resample_to_grid(
     return grid, vals, mask
 
 
+def landmark_aware_cycles(last_cycle: float, seq_len: int, landmark_cycles: float,
+                          k_early: int) -> np.ndarray:
+    """
+    Сетка циклов с ОБЩИМ ранним разрешением (для landmark-протокола, #6).
+
+    Первые ``k_early`` узлов — одинаковые для ВСЕХ опытов физические циклы
+    ``geomspace(1, N₀, k_early)`` (одинаковое раннее разрешение независимо от ``N_max``);
+    остальные — ``geomspace(N₀, last_cycle)``. Так устраняется проблема, когда у одних опытов
+    до N₀ одна grid-точка, а у других — двадцать (сетка зависела от ``N_max``).
+
+    :param last_cycle: последний цикл опыта (для поздней части сетки)
+    :param seq_len: длина сетки
+    :param landmark_cycles: физический landmark N₀
+    :param k_early: число общих ранних узлов (обычно ``prefix_len``)
+    :return: монотонная сетка циклов, форма (seq_len,)
+    """
+    n0 = max(float(landmark_cycles), 1.001)
+    k = int(min(max(k_early, 2), seq_len - 1))
+    early = np.geomspace(1.0, n0, k)
+    last = max(float(last_cycle), n0 * 1.01)
+    late = np.geomspace(n0, last, seq_len - k + 1)[1:]   # без дубля узла N₀
+    grid = np.concatenate([early, late]).astype(np.float32)
+    return np.maximum.accumulate(grid)
+
+
 def smooth_ppr_trajectory(
     raw_cycles: np.ndarray,
     raw_ppr: np.ndarray,

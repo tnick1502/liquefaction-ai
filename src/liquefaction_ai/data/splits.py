@@ -86,8 +86,12 @@ def _terminal_observability(
             continue
         k = max(3, int(tail_frac * idx.size))
         tail = idx[-k:]
-        rise = float(r_obs[i, tail[-1]] - r_obs[i, tail[0]])
-        if rise >= rise_eps:                          # нет разжижения и нет стабилизации
+        tv = r_obs[i, tail]
+        rise = float(tv[-1] - tv[0])                   # чистый прирост хвоста
+        rng = float(np.nanmax(tv) - np.nanmin(tv))     # размах хвоста (ловит осцилляции/rise-then-fall)
+        # Стабилизация (терминал наблюдаем) = ПЛАТО: и малый чистый прирост, И малый размах.
+        # Иначе (растёт / осциллирует / поднялась-упала) терминал неизвестен → исключаем.
+        if rise >= rise_eps or rng >= 2.0 * rise_eps:
             observed[i] = 0.0
     return observed
 
@@ -490,9 +494,14 @@ def prepare_benchmark_dataset(
     static_scaled = static_scaler.transform(static_raw).astype(np.float32)
     prefix_scaled = prefix_scaler.transform(prefix_raw).astype(np.float32)
     seq_scaled = ((seq_raw - seq_mean[None, None, :]) / seq_std[None, None, :]).astype(np.float32)
-    # N_liq обучается и оценивается на практическом горизонте max_cycle_reference:
-    # после него разжижение считается инженерно ненаступившим, поэтому правую цензуру
-    # и редкие поздние события капируем на этот горизонт.
+    # #9 ЕДИНОЕ определение события: «разжижение BY горизонта max_cycle_reference (3000)».
+    # Разжижение ПОСЛЕ горизонта = не-событие в окне наблюдения → label:=0 и ПРАВО-ЦЕНЗУРА на горизонт
+    # (мы точно знаем, что к 3000 события не было). Так горизонт применяется согласованно к метке И к N_liq
+    # (раньше поздние события держали label=1, а N_liq принудительно =3000 — противоречие).
+    liq_label = liq_label.copy().astype(np.float32)
+    _late_event = (n_liq_true > config.max_cycle_reference) & (liq_label > 0.5)
+    liq_label[_late_event] = 0.0
+    # N_liq на горизонте: событие — точный цикл; не-событие — право-цензура на горизонт.
     n_liq_target = np.minimum(n_liq_true, config.max_cycle_reference).astype(np.float32)
     n_liq_norm = (np.log1p(n_liq_target) / np.log1p(config.max_cycle_reference)).astype(np.float32)
 
@@ -506,6 +515,9 @@ def prepare_benchmark_dataset(
         r_obs, valid_mask, liq_label, cycles=cycles,
         min_complete_cycles=getattr(config, "min_nonliq_complete_cycles", 500.0),
     )
+    # #9: поздние события (разжижение после горизонта) — корректная право-цензура на горизонт:
+    # к 3000 точно не разжижились → терминал наблюдаем (observed:=1), даже если хвост в окне ещё растёт.
+    n_liq_observed[_late_event] = 1.0
 
     benchmark_arrays = {
         "static": static_scaled,

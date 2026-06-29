@@ -379,8 +379,14 @@ class EVTNeuralSSM(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = F.binary_cross_entropy_with_logits(outputs["risk_logit"], batch["label"])
-        rank_loss = soft_auc_loss(outputs["risk_logit"], batch["label"])  # прямая оптимизация AUROC
+        # Риск-лосс только по образцам с наблюдаемым исходом (исключаем незавершённые non-liq).
+        _robs = batch.get("n_liq_observed")
+        if _robs is not None and (_robs > 0.5).any():
+            _rm = _robs > 0.5; _rlogit, _rlabel = outputs["risk_logit"][_rm], batch["label"][_rm]
+        else:
+            _rlogit, _rlabel = outputs["risk_logit"], batch["label"]
+        risk_loss = F.binary_cross_entropy_with_logits(_rlogit, _rlabel)
+        rank_loss = soft_auc_loss(_rlogit, _rlabel)  # прямая оптимизация AUROC
         nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
                                               batch["label"], batch.get("n_liq_observed"))
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
