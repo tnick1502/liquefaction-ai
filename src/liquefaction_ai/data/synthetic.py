@@ -689,9 +689,12 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     csr = build_csr_history(load_df, cycles, config.max_csr_clip)
     hidden = build_hidden_parameters(soil_df, load_df, cycles, rng)
     z_true, r_true, g_true = integrate_physics(hidden, csr, cycles, delta_cycles)
+    # Режим fixed_k → outcome-independent окно (strict=False); сам prefix_len сохраняем,
+    # чтобы не менять формы внутренних массивов синтетики.
+    _fixed_k = getattr(config, "prefix_mode", "preonset") == "fixed_k"
     observations = build_observations(
         soil_df, load_df, hidden, z_true, r_true, g_true, cycles, rng, config.prefix_len,
-        strict_preonset=getattr(config, "prefix_strict_preonset", True),
+        strict_preonset=(False if _fixed_k else getattr(config, "prefix_strict_preonset", True)),
         onset_margin=getattr(config, "prefix_onset_margin", 1),
         prefix_min_len=getattr(config, "prefix_min_len", 3),
     )

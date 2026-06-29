@@ -125,6 +125,11 @@ class ExperimentConfig:
     prefix_onset_threshold: float = LIQ_THRESHOLD   # порог ru, определяющий onset (тот же, что у события)
     prefix_onset_margin: int = 1            # доп. буфер шагов: последний шаг префикса < onset_idx − margin
     prefix_min_len: int = 3                 # минимальная длина префикса, НО только если не пересекает onset
+    # --- Протокол префикса. "preonset" — основной (анти-утечка, длина зависит от onset → outcome-dependent).
+    #     "fixed_k" — отдельный leakage-free протокол: ФИКСИРОВАННОЕ окно первых prefix_fixed_k шагов для
+    #     ВСЕХ опытов, не зависящее от исхода; K выбран малым, чтобы разжижение почти не попадало в окно.
+    prefix_mode: str = "preonset"           # "preonset" | "fixed_k"
+    prefix_fixed_k: int = 6                 # длина фиксированного префикса (шагов) для prefix_mode="fixed_k"
 
 
 def get_default_config() -> ExperimentConfig:

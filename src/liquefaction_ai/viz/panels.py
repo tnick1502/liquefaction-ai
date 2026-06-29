@@ -252,3 +252,57 @@ def model_leaderboard_panel(
 
     fig.suptitle(title, y=0.99, fontsize=15)
     return save_figure(figw, fig_id, save)
+
+
+def admissible_pareto_panel(
+    leaderboard,
+    x_col: str = "Physics_Violation_Rate",
+    y_col: str = "N_liq_logMAE",
+    highlight: str = "DPI-Flow",
+    title: str = "Admissible onset Pareto: physics violations vs onset error",
+    save: bool = False,
+    fig_id: str = "3_7_admissible_pareto",
+) -> MplFig:
+    """
+    Pareto-фигура «допустимость ↔ onset»: по X — доля физических нарушений (↓), по Y — ошибка
+    censored N_liq (↓). Левый-нижний угол = физически допустимые И точные по onset модели.
+
+    Показывает центральный claim #1: DPI-Flow — на admissible-фронте (нулевые/около-нулевые
+    нарушения + лучший onset). Модели с лучшим RMSE, но высокими нарушениями (RealNVP/Transformer)
+    оказываются справа и недопустимы.
+
+    :param leaderboard: таблица метрик по моделям (DataFrame с колонкой ``model``)
+    :param x_col: колонка оси X (доля нарушений)
+    :param y_col: колонка оси Y (ошибка onset)
+    :param highlight: модель для выделения
+    :param title: заголовок
+    :param save: сохранять ли фигуру
+    :param fig_id: имя файла при сохранении
+    :return: обёртка фигуры :class:`MplFig`
+    """
+    df = leaderboard.dropna(subset=[x_col, y_col]).copy()
+    figw, fig = new_figure((7.2, 5.4))
+    ax = fig.add_subplot(111)
+    xs = df[x_col].to_numpy(); ys = df[y_col].to_numpy(); names = df["model"].astype(str).to_numpy()
+
+    # Pareto-фронт (минимизация обеих осей)
+    order = np.argsort(xs)
+    front, best_y = [], np.inf
+    for i in order:
+        if ys[i] <= best_y + 1e-12:
+            front.append(i); best_y = ys[i]
+    front = sorted(front, key=lambda i: xs[i])
+    ax.plot(xs[front], ys[front], "--", color=GRID, linewidth=1.3, zorder=1, label="admissible Pareto front")
+
+    for x, y, nm in zip(xs, ys, names):
+        is_hl = nm == highlight
+        ax.scatter(x, y, s=120 if is_hl else 55,
+                   color=QUALITATIVE[2] if is_hl else QUALITATIVE[7],
+                   edgecolor="white", linewidth=0.8, zorder=3)
+        ax.annotate(nm, (x, y), fontsize=8.5 if is_hl else 7.5,
+                    xytext=(5, 4), textcoords="offset points",
+                    fontweight="bold" if is_hl else "normal", color=INK)
+    ax.set_xlabel(f"{x_col.replace('_', ' ')} ↓ (inadmissible →)")
+    ax.set_ylabel(f"{y_col.replace('_', ' ')} ↓ (worse onset ↑)")
+    ax.set_title(title); ax.legend(fontsize=8.5, loc="upper right"); _clean(ax)
+    return save_figure(figw, fig_id, save)

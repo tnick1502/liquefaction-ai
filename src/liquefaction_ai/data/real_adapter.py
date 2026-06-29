@@ -355,9 +355,13 @@ def build_population_from_experiments(
     ensure_analysis_columns(soil_df, load_df, crr_obs_mask)
 
     delta_cycles = np.diff(np.concatenate([np.zeros((n, 1)), cycles], axis=1), axis=1).astype(np.float32)
+    # Режим "fixed_k": фиксированное окно первых K шагов для ВСЕХ опытов (outcome-independent,
+    # leakage-free протокол). Иначе — preonset-обрезка (длина зависит от onset).
+    _fixed_k = getattr(config, "prefix_mode", "preonset") == "fixed_k"
+    _pref_window = int(getattr(config, "prefix_fixed_k", 6)) if _fixed_k else config.prefix_len
     observations = build_observed_prefix(
-        r_measured.astype(np.float32), valid_mask.astype(np.float32), config.prefix_len,
-        strict_preonset=getattr(config, "prefix_strict_preonset", True),
+        r_measured.astype(np.float32), valid_mask.astype(np.float32), _pref_window,
+        strict_preonset=(False if _fixed_k else getattr(config, "prefix_strict_preonset", True)),
         onset_threshold=getattr(config, "prefix_onset_threshold", config.liq_threshold),
         margin=getattr(config, "prefix_onset_margin", 1),
         min_len=getattr(config, "prefix_min_len", 3),

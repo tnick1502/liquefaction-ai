@@ -50,7 +50,7 @@ VARIANTS = [
     ("no_aux",             {"use_observed_aux_loss": False}, True, [], "no_aux"),
 ]
 
-METRIC_KEYS = ["N_liq_logMAE", "N_liq_logMAE_liq", "Traj_RMSE", "Traj_RMSE_continuation",
+METRIC_KEYS = ["N_liq_logMAE", "N_liq_logMAE_liq", "Traj_RMSE", "Traj_RMSE_continuation", "Traj_RMSE_extrap",
                "Traj_RMSE_liq", "Traj_RMSE_stab", "Traj_RMSE_nostab",
                "Traj_RMSE_balanced", "Traj_RMSE_worst",
                "AUPRC", "AUROC", "Brier", "ECE", "Coverage_90",

@@ -325,6 +325,52 @@ def fit_interval_scale(model, val_split: Dict[str, object], config: ExperimentCo
     return float(best)
 
 
+def object_conformal_coverage(pred: np.ndarray, std: np.ndarray, true: np.ndarray,
+                              mask: np.ndarray, objects: np.ndarray,
+                              level: float = 0.90) -> Tuple[float, float]:
+    """
+    Object-held-out (CV+) split-conformal покрытие интервалов PPR.
+
+    Гауссова калибровка масштаба на val систематически НЕДОПОКРЫВАЕТ на невиданных площадках:
+    нормировочный std оценён на одних объектах, а покрытие меряется на других (site-level shift) —
+    отсюда Coverage@90 ≈ 0.80 вместо номинала. Здесь конформный квантиль нормированных остатков
+    ``|y−ŷ|/σ`` для каждого объекта берётся по ОСТАЛЬНЫМ объектам (leave-one-object-out), что
+    делает калибровку честной относительно site-shift и поднимает покрытие к номиналу.
+
+    :param pred: предсказанная траектория PPR, форма (N, T)
+    :param std: предсказанный std, форма (N, T)
+    :param true: наблюдаемая PPR, форма (N, T)
+    :param mask: маска валидных шагов, форма (N, T)
+    :param objects: метка объекта/площадки на образец, форма (N,)
+    :param level: целевой уровень покрытия
+    :return: (покрытие, средняя ширина интервала); (nan, nan) если объектов < 3
+    """
+    objects = np.asarray(objects)
+    uo = np.unique(objects)
+    if len(uo) < 3:
+        return float("nan"), float("nan")
+    resid = np.abs(true - pred) / np.maximum(std, 1e-6)
+    cov_num = width_num = den = 0.0
+    for ho in uo:
+        tr = objects != ho
+        rtr = resid[tr][mask[tr] > 0]
+        if rtr.size == 0:
+            continue
+        # finite-sample поправка квантиля (split-conformal): ceil((n+1)·level)/n
+        n = rtr.size
+        q = float(np.quantile(rtr, min(1.0, np.ceil((n + 1) * level) / n)))
+        te = objects == ho
+        lo = pred[te] - q * std[te]
+        hi = pred[te] + q * std[te]
+        mte = mask[te]
+        cov_num += float(np.sum(((true[te] >= lo) & (true[te] <= hi)) * mte))
+        width_num += float(np.sum((hi - lo) * mte))
+        den += float(mte.sum())
+    if den == 0:
+        return float("nan"), float("nan")
+    return cov_num / den, width_num / den
+
+
 def resolve_nliq_prediction(outputs: Dict[str, np.ndarray], max_cycle_reference: float) -> np.ndarray:
     """
     Извлечь предсказание числа циклов до разжижения N_liq из выходов модели.
@@ -564,6 +610,18 @@ def compute_metrics(
         sample_df["traj_rmse_continuation"] = np.sqrt(
             np.sum(((pred - true) ** 2) * continuation_mask, axis=1) / sample_cont_count
         )
+        # Экстраполяция: RMSE на ДАЛЬНЕЙ половине горизонта (далеко за окном префикса), где
+        # аналитический ODE-слой продолжает физику, а cummax-blackbox экстраполирует плохо.
+        # Это разделяет «physics vs cummax» там, где RMSE-по-всему-горизонту их не различает.
+        idxg = np.arange(true.shape[1])[None, :]
+        horizon = (mask * idxg).max(axis=1, keepdims=True)            # последний валидный индекс/образец
+        far_mask = continuation_mask * (idxg >= 0.5 * horizon)
+        far_denom = np.maximum(far_mask.sum(), 1.0)
+        metrics["Traj_RMSE_extrap"] = float(np.sqrt(np.sum(((pred - true) ** 2) * far_mask) / far_denom))
+        sample_far_count = np.maximum(far_mask.sum(axis=1), 1.0)
+        sample_df["traj_rmse_extrap"] = np.sqrt(
+            np.sum(((pred - true) ** 2) * far_mask, axis=1) / sample_far_count
+        )
 
         # --- Траекторная ошибка по трём СОСТОЯНИЯМ ОПЫТА (а не по типу воздействия) ---
         # Состояния: разжижение (liq_label==1); нет разжижения + стабилизация (obs==1);
@@ -632,6 +690,13 @@ def compute_metrics(
                     sample_df["coverage90"] = inb.sum(axis=1) / np.maximum(mask.sum(axis=1), 1.0)
             # Сводная ошибка калибровки интервалов (среднее |покрытие − номинал| по уровням)
             metrics["Calibration_Error"] = float(np.mean(cov_gaps))
+            # Object-held-out (CV+) conformal покрытие@90 — честная калибровка под site-shift
+            # (квантиль по ОСТАЛЬНЫМ площадкам); снимает систематическое недопокрытие val-калибровки.
+            if "object" in meta_df.columns:
+                oc_cov, oc_w = object_conformal_coverage(
+                    pred, std, true, mask, meta_df["object"].to_numpy(), level=0.90)
+                metrics["Coverage_90_objconf"] = oc_cov
+                metrics["Interval_Width_90_objconf"] = oc_w
             # Гауссовская NLL — собственно правило (proper scoring) для вероятностного прогноза
             nll = 0.5 * (np.log(2 * np.pi * std ** 2) + ((true - pred) ** 2) / (std ** 2))
             metrics["Traj_NLL"] = float(np.sum(nll * mask) / np.maximum(mask.sum(), 1.0))

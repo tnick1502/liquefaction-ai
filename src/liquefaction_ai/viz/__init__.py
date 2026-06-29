@@ -11,6 +11,7 @@ from liquefaction_ai.viz.panels import (
     crr_physics_panel,
     data_overview_panel,
     model_leaderboard_panel,
+    admissible_pareto_panel,
 )
 from liquefaction_ai.viz.figure_io import (
     MplFig,
@@ -91,4 +92,5 @@ __all__ = [
     "data_overview_panel",
     "crr_physics_panel",
     "model_leaderboard_panel",
+    "admissible_pareto_panel",
 ]
