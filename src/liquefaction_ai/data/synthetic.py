@@ -68,7 +68,9 @@ def normalize_range(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return np.clip((x - lo) / max(hi - lo, 1e-8), 0.0, 1.0)
 
 
-def build_log_dense_cycles(n_max: np.ndarray, seq_len: int) -> Tuple[np.ndarray, np.ndarray]:
+def build_log_dense_cycles(n_max: np.ndarray, seq_len: int,
+                           landmark_n0: Optional[float] = None,
+                           landmark_k: int = 12) -> Tuple[np.ndarray, np.ndarray]:
     """
     Построить логарифмически сгущённую сетку числа циклов и её приращения.
 
@@ -76,15 +78,21 @@ def build_log_dense_cycles(n_max: np.ndarray, seq_len: int) -> Tuple[np.ndarray,
     геометрической базовой шкалы, затем масштабируются до индивидуального ``N_max``
     каждого сценария. Монотонность по оси циклов обеспечивается накопительным максимумом.
 
+    Поведение сетки задаётся ЯВНЫМИ аргументами (а не глобальным состоянием): при
+    ``landmark_n0 is not None`` строится общий early-cycle grid (#6) — первые ``landmark_k``
+    узлов одинаковы для всех опытов.
+
     :param n_max: массив максимальных значений N по сценариям, форма (n,)
     :param seq_len: число узлов сетки по циклам
+    :param landmark_n0: физический landmark N₀ для общего раннего разрешения (None — обычная сетка)
+    :param landmark_k: число общих ранних узлов (при landmark-режиме)
     :return: кортеж (cycles, delta_cycles), оба формы (n, seq_len); ``delta_cycles``
              — приращения ΔN между соседними узлами (для численного интегрирования)
     """
-    if _LANDMARK_GRID["n0"] is not None:
-        # #6 общий early-cycle grid: первые k узлов = geomspace(1, N₀, k) ОДИНАКОВЫ для всех опытов,
+    if landmark_n0 is not None:
+        # общий early-cycle grid: первые k узлов = geomspace(1, N₀, k) ОДИНАКОВЫ для всех опытов,
         # остальные — geomspace(N₀, N_max_i) (поздняя часть зависит от опыта). Векторизовано.
-        n0 = max(float(_LANDMARK_GRID["n0"]), 1.001); k = int(min(max(_LANDMARK_GRID["k"], 2), seq_len - 1))
+        n0 = max(float(landmark_n0), 1.001); k = int(min(max(landmark_k, 2), seq_len - 1))
         early = np.geomspace(1.0, n0, k)
         logn0 = np.log(n0); lognm = np.log(np.maximum(n_max, n0 * 1.01))
         frac = np.linspace(0.0, 1.0, seq_len - k + 1)[1:]
@@ -97,10 +105,6 @@ def build_log_dense_cycles(n_max: np.ndarray, seq_len: int) -> Tuple[np.ndarray,
     cycles = np.maximum.accumulate(cycles, axis=1)
     delta_cycles = np.diff(np.concatenate([np.zeros((n_max.shape[0], 1)), cycles], axis=1), axis=1)
     return cycles.astype(np.float32), delta_cycles.astype(np.float32)
-
-
-# Конфигурация landmark-сетки для build_log_dense_cycles (устанавливается generate_population).
-_LANDMARK_GRID = {"n0": None, "k": 12}
 
 
 
@@ -401,7 +405,7 @@ def integrate_physics(
     for step in range(seq_len - 1):
         crr_step = hidden["crr_mix"][:, step]
         ratio = csr[:, step] / (crr_step + eps)
-        phi = np.log1p(np.exp(6.0 * (ratio - 0.92))) / 6.0
+        phi = np.logaddexp(0.0, 6.0 * (ratio - 0.92)) / 6.0   # устойчивый softplus (без overflow)
         g[:, step] = expit(hidden["kappa"] * (z[:, step] - hidden["z0"]))
 
         dz = (
@@ -492,7 +496,7 @@ def build_observations(
     # чтобы вход не содержал момент разжижения. Старое поведение — первые prefix_len шагов.
     from liquefaction_ai.data.real_adapter import strict_pre_onset_prefix_mask, landmark_prefix_mask
     if landmark_cycles is not None:
-        # #3 landmark: окно по физическим циклам ≤ N₀, capped по prefix_len (как у real-адаптера).
+        # landmark: окно по физическим циклам ≤ N₀, capped по prefix_len (как у real-адаптера).
         prefix_mask = landmark_prefix_mask(cycles, valid_mask, landmark_cycles, prefix_len=prefix_len)
     else:
         prefix_mask = strict_pre_onset_prefix_mask(
@@ -505,10 +509,15 @@ def build_observations(
     # канонический порог LIQ_THRESHOLD (тот же, что у наблюдаемого триггера g_obs, у моделей и в
     # реальных данных). Латентный триггер g_true намеренно не участвует в определении события —
     # иначе метка, N_liq и наблюдаемая супервизия описывали бы разные события.
-    liq_mask = r_true >= LIQ_THRESHOLD
+    # Как и для реального опыта, событие считается наблюдённым только внутри фактически доступного
+    # окна. Будущая синтетическая траектория за valid_mask не должна превращать цензурированный опыт
+    # в точное событие.
+    liq_mask = (r_true >= LIQ_THRESHOLD) & (valid_mask > 0)
     hit_any = liq_mask.any(axis=1)
     first_idx = liq_mask.argmax(axis=1)
-    n_liq = np.where(hit_any, cycles[np.arange(n), first_idx], load_df["N_max"].to_numpy()).astype(np.float32)
+    last_idx = np.maximum(valid_mask.sum(axis=1).astype(int) - 1, 0)
+    censor_cycle = cycles[np.arange(n), last_idx]
+    n_liq = np.where(hit_any, cycles[np.arange(n), first_idx], censor_cycle).astype(np.float32)
     liq_label = hit_any.astype(np.float32)
 
     risk_score = expit(
@@ -547,6 +556,7 @@ def build_feature_matrices(
     csr: np.ndarray,
     observations: Dict[str, np.ndarray],
     prefix_len: int,
+    max_cycle_reference: float = 3000.0,
 ) -> Dict[str, object]:
     """
     Сформировать матрицы признаков для моделей: статические, префиксные, последовательностные.
@@ -606,11 +616,15 @@ def build_feature_matrices(
             "CSR_base",
             "frequency",
             "amp_scale",
-            "N_max",
+            # N_max УДАЛЁН из входов: в реальных опытах cycles_count≈last_obs (corr с N_liq≈0.96),
+            # т.е. это НЕ строго a-priori горизонт, а суррогат длительности → утечка исхода. Горизонт
+            # задачи теперь единый (max_cycle_reference) и в признаки не входит.
             "nonstationarity",
         ]
         + [f"soil_{name}" for name in SOIL_NAMES]
         + [f"mode_{name}" for name in LOAD_NAMES]
+        # missingness-индикаторы (есть только у реальных данных; у синтетики = 0, не мешают)
+        + ["miss_e", "miss_Ip", "miss_K0", "miss_vs", "miss_gran"]
     )
 
     static_features = np.column_stack(
@@ -633,10 +647,12 @@ def build_feature_matrices(
             load_df["CSR_base"].to_numpy(),
             load_df["frequency"].to_numpy(),
             load_df["amp_scale"].to_numpy(),
-            load_df["N_max"].to_numpy(),
-            load_df["nonstationarity"].to_numpy(),
+            load_df["nonstationarity"].to_numpy(),     # N_max убран (см. выше)
             soil_onehot,
             mode_onehot,
+            # missingness-индикаторы (у синтетики колонок нет → нули)
+            *[(soil_df[c].to_numpy() if c in soil_df.columns else np.zeros(n, np.float32))
+              for c in ("miss_e", "miss_Ip", "miss_K0", "miss_vs", "miss_gran")],
         ]
     ).astype(np.float32)
 
@@ -659,8 +675,12 @@ def build_feature_matrices(
         ]
     ).astype(np.float32)
 
-    log_cycle_norm = np.log1p(cycles) / np.log1p(load_df["N_max"].to_numpy()[:, None])
-    delta_cycle_norm = delta_cycles / np.maximum(load_df["N_max"].to_numpy()[:, None], 1.0)
+    # Нормировка цикловых seq-признаков на ЕДИНУЮ КОНСТАНТУ горизонта (max_cycle_reference),
+    # а НЕ на per-опытный N_max: иначе log_cycle_norm/delta_cycle_norm несут длительность опыта
+    # (≈last_obs) в каждый временной шаг. Теперь горизонт задачи одинаков для всех опытов.
+    _H = float(max_cycle_reference)
+    log_cycle_norm = np.log1p(cycles) / np.log1p(_H)
+    delta_cycle_norm = delta_cycles / max(_H, 1.0)
     seq_inputs = np.stack(
         [
             csr,
@@ -704,13 +724,12 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     soil_profile = sample_soil_profiles(config.n_scenarios, rng, type_ground_probs)
     soil_df = soil_profile["soil_df"]
     load_df = sample_loads(config.n_scenarios, rng, LOAD_MODE_SPECS, LOAD_NAMES, load_mode_probs)
-    # #6: для landmark — общий early-cycle grid (см. build_log_dense_cycles).
-    if getattr(config, "prefix_mode", "preonset") == "landmark":
-        _LANDMARK_GRID["n0"] = float(getattr(config, "prefix_landmark_cycles", 20.0))
-        _LANDMARK_GRID["k"] = int(getattr(config, "prefix_len", 12))
-    else:
-        _LANDMARK_GRID["n0"] = None
-    cycles, delta_cycles = build_log_dense_cycles(load_df["N_max"].to_numpy(), config.seq_len)
+    # #6: для landmark — общий early-cycle grid (параметры передаются ЯВНО, без global state).
+    _lm_grid = getattr(config, "prefix_mode", "preonset") == "landmark"
+    cycles, delta_cycles = build_log_dense_cycles(
+        load_df["N_max"].to_numpy(), config.seq_len,
+        landmark_n0=(float(getattr(config, "prefix_landmark_cycles", 20.0)) if _lm_grid else None),
+        landmark_k=int(getattr(config, "prefix_len", 12)))
     csr = build_csr_history(load_df, cycles, config.max_csr_clip)
     hidden = build_hidden_parameters(soil_df, load_df, cycles, rng)
     z_true, r_true, g_true = integrate_physics(hidden, csr, cycles, delta_cycles)
@@ -726,7 +745,8 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
         landmark_cycles=(float(getattr(config, "prefix_landmark_cycles", 20.0)) if _landmark else None),
     )
     features = build_feature_matrices(
-        soil_df, load_df, cycles, delta_cycles, csr, observations, config.prefix_len
+        soil_df, load_df, cycles, delta_cycles, csr, observations, config.prefix_len,
+        max_cycle_reference=float(config.max_cycle_reference)
     )
 
     meta = pd.concat([soil_df, load_df], axis=1)
@@ -749,11 +769,22 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
     crr_obs = hidden["crr_mix"].astype(np.float32)
     meta["has_measured_crr"] = crr_obs_mask.astype(int)
 
-    # #3 landmark risk set (synthetic, симметрично real-адаптеру): исключить разжижившихся ДО
-    # физического N₀ — их нельзя прогнозировать из префикса ≤N₀ (событие уже произошло).
+    cohort_filter_counts = {
+        "raw_specimens": int(len(meta)),
+        "excluded_event_before_N0": 0,
+        "excluded_censored_before_N0": 0,
+    }
+    # Landmark risk set: субъект должен оставаться под наблюдением и без события в N0.
     if _landmark:
         _N0 = float(getattr(config, "prefix_landmark_cycles", 20.0))
-        _keep = ~((observations["liq_label"] > 0.5) & (observations["n_liq_true"] <= _N0))
+        _early = observations["n_liq_true"] <= _N0
+        cohort_filter_counts["excluded_event_before_N0"] = int(
+            np.sum(_early & (observations["liq_label"] > 0.5))
+        )
+        cohort_filter_counts["excluded_censored_before_N0"] = int(
+            np.sum(_early & (observations["liq_label"] < 0.5))
+        )
+        _keep = ~_early
         if not bool(np.all(_keep)):
             meta = meta[_keep].reset_index(drop=True)
             cycles = cycles[_keep]; delta_cycles = delta_cycles[_keep]; csr = csr[_keep]
@@ -795,4 +826,5 @@ def generate_population(config: ExperimentConfig) -> Dict[str, object]:
         "seq_inputs": features["seq_inputs"].astype(np.float32),
         "seq_feature_names": features["seq_feature_names"],
         "benchmark": benchmark,
+        "cohort_filter_counts": cohort_filter_counts,
     }

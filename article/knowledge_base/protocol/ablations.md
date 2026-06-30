@@ -24,7 +24,7 @@ tags: [protocol, ablations, P1]
 
 | Абляция (рек.) | Как реализовано | Вариант в раннере |
 |---|---|---|
-| w/o conformal calibration | не вызываем `fit_interval_scale` (calib_log_scale=0) | `wo_conformal` |
+| w/o variance-scaling calibration | не вызываем `fit_interval_scale` (calib_log_scale=0); empirical held-out coverage audit считается отдельно и не объявляется formal conformal guarantee | `wo_conformal` |
 | Flow vs честный Gaussian-posterior | `use_flow=False` | `gaussian_posterior` |
 | w/o monotonicity projection | `use_monotone_clip=False` (→ bounded-clamp) | `wo_monotone` |
 | w/o discriminative risk / soft-AUC | `use_discriminative_risk=False` | `wo_risk_softauc` |

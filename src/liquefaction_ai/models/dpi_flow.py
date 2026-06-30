@@ -25,9 +25,10 @@ import torch.nn.functional as F
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, energy_crps, gaussian_nll,
-                                             gaussian_mixture_nll, masked_mse,
+                                             gaussian_mixture_nll, masked_bce_with_logits, masked_mse,
                                              masked_censored_nliq_loss, monotone_clip,
-                                             observed_aux_loss, soft_auc_loss)
+                                             monotone_residual_scale, nliq_censor_mask, observed_aux_loss,
+                                             risk_observation_mask, soft_auc_loss)
 
 __all__ = ["ConditionalAffineFlow", "ConditionalCouplingFlow", "flow_kl_per_dim",
            "AnalyticalLiquefactionLayer", "DPIFlow"]
@@ -279,13 +280,27 @@ class AnalyticalLiquefactionLayer(nn.Module):
         :param beta: крутизна сглаженного пересечения
         :return: оценка N_liq, форма (batch,)
         """
-        r_mono = torch.cummax(r, dim=1).values                        # монотонная огибающая PPR
-        p = torch.sigmoid(beta * (r_mono - threshold))                # монотонно растёт у момента пересечения
-        dp = torch.clamp(p[:, 1:] - p[:, :-1], min=0.0)
-        pdf = torch.cat([p[:, :1], dp], dim=1)                         # масса пересечения по шагам
-        resid = torch.clamp(1.0 - pdf.sum(dim=1), min=0.0)            # не пересёк → цензура на последнем цикле
-        nliq = (pdf * cycles).sum(dim=1) + resid * cycles[:, -1]
-        return nliq
+        # Forward: точное первое пересечение с линейной интерполяцией. Backward: гладкая CDF первого
+        # достижения. Straight-through конструкция сохраняет физически точное forward-значение, но
+        # даёт градиент даже когда текущая предсказанная кривая ещё не пересекла threshold.
+        r_mono = torch.cummax(r, dim=1).values
+        above = (r_mono >= threshold)
+        has = above.any(dim=1)
+        idx = torch.argmax(above.to(torch.int64), dim=1)              # первый индекс пересечения (0 если нет)
+        idx0 = torch.clamp(idx - 1, min=0)
+        ar = torch.arange(r.shape[0], device=r.device)
+        r1 = r_mono[ar, idx]; r0 = r_mono[ar, idx0]
+        c1 = cycles[ar, idx]; c0 = cycles[ar, idx0]
+        frac = torch.clamp((threshold - r0) / torch.clamp(r1 - r0, min=1e-6), 0.0, 1.0)
+        n_cross = c0 + frac * (c1 - c0)
+        hard = torch.where(has, n_cross, cycles[:, -1])
+
+        cdf = torch.sigmoid(float(beta) * (r_mono - threshold))
+        prev = torch.cat([torch.zeros_like(cdf[:, :1]), cdf[:, :-1]], dim=1)
+        event_mass = torch.clamp(cdf - prev, min=0.0)
+        residual_mass = torch.clamp(1.0 - cdf[:, -1], min=0.0, max=1.0)
+        soft = (event_mass * cycles).sum(dim=1) + residual_mass * cycles[:, -1]
+        return soft + (hard - soft).detach()
 
     def simulate(self, theta: torch.Tensor, cycles: torch.Tensor, delta_cycles: torch.Tensor, csr: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -566,11 +581,24 @@ class DPIFlow(nn.Module):
 
         if self.use_analytical_layer:
             outputs = self.ode_layer.simulate(theta, batch["cycles"], batch["delta_cycles"], batch["csr"])
-            # Малая обучаемая коррекция поверх аналитики, затем проекция на физически допустимую
+            # Обучаемая коррекция поверх аналитики — МОНОТОННО-СОХРАНЯЮЩАЯ ПО ПОСТРОЕНИЮ: residual
+            # масштабирует НЕОТРИЦАТЕЛЬНЫЕ приращения базовой ODE-кривой множителем (1+0.1·tanh)∈[0.9,1.1],
+            # т.е. меняет ТЕМП накопления PPR на ±10%, но НИКОГДА не делает кривую убывающей. Поэтому
+            # физическая монотонность гарантирована независимо от post-hoc cummax (модель не может
+            # попасть в «physically unreliable» из-за residual). _project_traj оставлен как bound-safety.
             tm = outputs["traj_mean"]
             if self.use_traj_residual:
-                tm = tm + 0.10 * torch.tanh(self.traj_residual(encoded))
+                tm = monotone_residual_scale(tm, self.traj_residual(encoded))
             outputs["traj_mean"] = self._project_traj(tm)
+            # N_liq ДОЛЖЕН соответствовать ФИНАЛЬНОЙ (post-residual + projection) траектории, а не
+            # pre-residual ODE-выходу: residual смещает кривую (медиана |ΔN_liq|≈92 цикла), поэтому
+            # пересчитываем первое пересечение порога на итоговой traj_mean. Иначе state-space прогноз
+            # самопротиворечив (N_liq не лежит на публикуемой кривой PPR).
+            _mcr = torch.as_tensor(self.max_cycle_reference, device=outputs["traj_mean"].device,
+                                   dtype=outputs["traj_mean"].dtype)
+            outputs["nliq"] = self.ode_layer.soft_first_hitting(
+                outputs["traj_mean"], outputs["g"], batch["cycles"], threshold=self.liq_threshold)
+            outputs["nliq_norm"] = torch.log1p(outputs["nliq"]) / torch.log1p(_mcr)
             summary = physics_summary(outputs["traj_mean"], outputs["z"], outputs["g"], outputs["nliq_norm"])
             # Дискриминативный риск (ранжирование) + физический prior через обучаемый гейт + калибровка
             risk_prior = 6.0 * (
@@ -711,26 +739,24 @@ class DPIFlow(nn.Module):
             traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
         if self.use_censored_nliq:
             nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
-                                                  batch["label"], batch.get("n_liq_observed"))
+                                                  batch["label"], nliq_censor_mask(batch))
         else:
             # Абляция: обычный masked-MSE по N_liq (без односторонней цензуры right-censored негативов),
             # но с той же маской наблюдаемости терминала, чтобы сравнение было честным.
-            obsm = batch.get("n_liq_observed")
+            obsm = nliq_censor_mask(batch)
             obsm = torch.ones_like(batch["n_liq_norm"]) if obsm is None else obsm
             nliq_loss = (((outputs["nliq_norm"] - batch["n_liq_norm"]) ** 2) * obsm).sum() / obsm.sum().clamp_min(1.0)
-        # Риск-лосс ТОЛЬКО по образцам с наблюдаемым исходом (liquefied + demonstrably-stabilized);
-        # незавершённые non-liq (n_liq_observed==0) имеют неизвестный исход → ложный негатив.
-        _robs = batch.get("n_liq_observed")
-        if _robs is not None and (_robs > 0.5).any():
-            _rm = _robs > 0.5
-            _rlogit, _rlabel = outputs["risk_logit"][_rm], batch["label"][_rm]
-        else:
-            _rlogit, _rlabel = outputs["risk_logit"], batch["label"]
-        risk_loss = F.binary_cross_entropy_with_logits(_rlogit, _rlabel)
+        # Риск-лосс ТОЛЬКО по образцам с наблюдаемым исходом (общий хелпер: при батче целиком из
+        # незавершённых → 0, контракт «all-unobserved returns zero»).
+        _robs = risk_observation_mask(batch)
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], _robs)
         # Абляция «w/o discriminative risk / soft-AUC»: убираем прямую оптимизацию AUROC.
-        rank_loss = (soft_auc_loss(_rlogit, _rlabel)
-                     if self.use_discriminative_risk
-                     else torch.zeros((), device=outputs["traj_mean"].device))
+        if self.use_discriminative_risk:
+            _m = (_robs > 0.5) if _robs is not None else torch.ones_like(batch["label"], dtype=torch.bool)
+            rank_loss = (soft_auc_loss(outputs["risk_logit"][_m], batch["label"][_m]) if bool(_m.any())
+                         else outputs["risk_logit"].sum() * 0.0)
+        else:
+            rank_loss = torch.zeros((), device=outputs["traj_mean"].device)
         # Саморегуляризаторы (без участия истинных латентных состояний)
         monotonicity = torch.relu(outputs["crr"][:, 1:] - outputs["crr"][:, :-1]).mean()
         boundedness = (torch.relu(outputs["traj_mean"] - 1.02) + torch.relu(-outputs["traj_mean"])).mean()

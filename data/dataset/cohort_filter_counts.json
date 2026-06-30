@@ -1,0 +1,6 @@
+{
+  "raw_specimens": 1093,
+  "raw_objects": 20,
+  "excluded_event_before_N0": 77,
+  "excluded_censored_before_N0": 190
+}

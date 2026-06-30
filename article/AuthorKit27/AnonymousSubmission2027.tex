@@ -44,18 +44,13 @@ We cast laboratory liquefaction assessment as \emph{prefix-conditioned probabili
 forecasting}: from static soil/loading descriptors and an early excess pore-pressure (PPR) prefix,
 predict the PPR continuation, liquefaction risk, and the (possibly right-censored) cycle count to onset.
 We introduce \textbf{DPI-Flow}, a physics-structured architecture that amortizes inference of physically
-constrained parameters through a \emph{conditional affine flow} and rolls them through a
+constrained parameters through a \emph{conditional coupling (RealNVP) flow} and rolls them through a
 \emph{differentiable analytical CRR/damage/PPR layer}, guaranteeing feasible monotone accumulation;
-a censoring-aware objective trains jointly on liquefied, stabilized, and unfinished tests, and a
-Monte-Carlo predictive propagates uncertainty through the flow. On \textbf{1{,}093 real cyclic tests
-across 20 sites}, under \emph{object-held-out} repeated cross-validation with object-cluster bootstrap
-confidence intervals, DPI-Flow provides the best \emph{physically admissible} Pareto balance of onset
-accuracy, post-prefix trajectory quality, calibrated uncertainty, and structural feasibility: it leads
-the admissible $\mathrm{P}^3$ ranking, attains the lowest worst-state trajectory error and the lowest
-trajectory CRPS among admissible models, near-zero physics violations, and recovers a measured
-cyclic-resistance curve. Strong unconstrained baselines (CatBoost on scalar onset; a Transformer on raw
-trajectory) win individual metrics but violate physics or omit uncertainty/CRR. We release a reproducible
-object-held-out benchmark and ablations isolating each component.
+a censoring-aware objective uses exact event times and right-censored non-events, and a Monte-Carlo
+predictive propagates uncertainty through the flow. The archive contains \textbf{1{,}093 raw tests across
+20 sites}; the strict landmark benchmark contains \textbf{790 tests across 14 sites} after excluding both
+events and censoring before the landmark. We evaluate all models with nested object-held-out cross-validation,
+object-cluster uncertainty intervals, post-prefix metrics, and explicit physical-regime stratification.
 \end{abstract}
 
 \section{Introduction}
@@ -92,8 +87,8 @@ by Monte-Carlo sampling at inference. Our contributions are: (i) a \textbf{prefi
 onset-forecasting formulation} for cyclic liquefaction tests; (ii) a \textbf{conditional parameter flow
 plus differentiable analytical layer} that guarantees feasible monotone accumulation while producing
 risk, $N_{\mathrm{liq}}$ and a CRR curve from one latent state; (iii) a \textbf{censoring-aware
-objective} that learns from liquefied (exact), stabilized (right-censored) and unfinished tests; (iv) an
-\textbf{object-held-out benchmark} on 1{,}093 real tests with strong tabular, sequence and
+objective} that separates exact events, right-censored event times, and by-horizon risk observability;
+(iv) an \textbf{object-held-out landmark benchmark} on 790 tests from a 1{,}093-test archive with strong tabular, sequence and
 physics-informed baselines and object-cluster confidence intervals; and (v) a \textbf{transparent
 uncertainty/physics evaluation}. Under honest evaluation, DPI-Flow is not best on every individual metric;
 it is the best \emph{physically admissible} Pareto balance---a more defensible and, we argue, more useful
@@ -114,11 +109,11 @@ prefix step is at or beyond the onset cycle. Without this, fast tests leak the e
 inflate onset metrics; enforcing it removed leakage in $24\%$ of liquefied specimens whose 12-step prefix
 otherwise reached $r\ge 0.95$.
 
-\paragraph{Three censoring regimes.} An observability mask $o_i\in\{0,1\}$ encodes: (1)~liquefied
-($y_i{=}1$): $N_{\mathrm{liq},i}$ observed exactly, $o_i{=}1$; (2)~stabilized non-liquefying (flat PPR
-tail past a practical horizon): $N_{\mathrm{liq},i}$ right-censored, $o_i{=}1$; (3)~unfinished
-non-liquefying: terminal unobservable, $o_i{=}0$---excluded from $N_{\mathrm{liq}}$ supervision/metrics but
-retained for trajectory learning \citep{cox72,deepsurv18}.
+\paragraph{Independent censoring and regime masks.} Exact liquefaction times and non-liquefying tests
+right-censored at their actual last observed cycle enter the event-time objective. A separate mask marks
+whether the binary event-by-$H$ label is known: events are known positives, while only tests observed to
+$H$ are known negatives. Orthogonally, trajectory dynamics define three physical regimes---liquefied,
+stabilized non-liquefying, and unfinished non-liquefying---used for stratified robustness metrics.
 
 \paragraph{Evaluation protocol.} Site/object correlation makes random splits leak. We use
 \emph{object-held-out} repeated stratified grouped $K$-fold cross-validation: every object is entirely in
@@ -136,12 +131,12 @@ trajectory, risk, event time and CRR curve.
 \paragraph{Encoder, posterior and conditional flow.} A residual encoder maps the context
 $x_i=[\,s_i,\,\bar{u}_i,\,r_{i,1:L},\,m_{i,1:L}\,]$ (static features, prefix summary $\bar u_i$, prefix
 values and observation mask) to $h_i=E_\psi(x_i)$. A Gaussian base posterior is reparameterized and pushed
-through a \emph{conditional affine flow} $T_\phi$ \citep{rezende15,realnvp17}:
+through a four-layer \emph{conditional RealNVP coupling flow} $T_\phi$ \citep{rezende15,realnvp17}:
 \begin{equation}
 z_i=\mu(h_i)+\sigma(h_i)\odot\epsilon,\quad \epsilon\sim\mathcal{N}(0,I),\quad \theta_i=T_\phi(z_i;h_i),
 \end{equation}
-where $\log\sigma^2(h_i)$ is clipped to $[-5,3]$ and each of the two flow blocks applies
-$u\mapsto u\odot e^{\,0.35\tanh(W_s h_i)}+W_t h_i$. A bounding map $\pi_i=\Theta(\theta_i)$ sends each raw
+where $\log\sigma^2(h_i)$ is clipped to $[-5,3]$ and alternating affine coupling layers condition their
+scale and shift networks on both the frozen latent coordinates and $h_i$. A bounding map $\pi_i=\Theta(\theta_i)$ sends each raw
 coordinate through a $\mathrm{sigmoid}$/$\mathrm{softmax}$ into its admissible physical range (mixture
 weights $w\in\Delta^3$, damage rate $\lambda$, exponents $m,\nu$, PPR-growth coefficients
 $\alpha,\beta,\gamma,p$ and their post-event counterparts, trigger sharpness $\kappa$, threshold $z_0$).
@@ -170,8 +165,9 @@ the trajectory is projected onto the physically admissible set,
 \label{eq:proj}
 \end{equation}
 so $\hat r$ is monotone non-decreasing and bounded \emph{by construction} under the undrained
-monotone-accumulation assumption. The event time is a differentiable soft first-hitting of the monotone
-envelope $\bar r=\mathrm{cummax}(\hat r)$ with $p_t=\sigma\!\big(\beta_0(\bar r_t-\tau)\big)$,
+monotone-accumulation assumption. The event time uses an exact forward first crossing with linear
+interpolation and a soft-CDF straight-through gradient. For the backward surrogate, the monotone
+envelope $\bar r=\mathrm{cummax}(\hat r)$ defines $p_t=\sigma\!\big(\beta_0(\bar r_t-\tau)\big)$ and
 $\delta_t=\max(p_t-p_{t-1},0)$:
 \begin{equation}
 \widehat{N}^{\mathrm{liq}}=\textstyle\sum_t \delta_t N_t+\big(1-\sum_t\delta_t\big)\,N_T .
@@ -181,7 +177,7 @@ $\delta_t=\max(p_t-p_{t-1},0)$:
 through a learnable gate $g_\pi$ (initialized at $0$): $\hat p_i=\sigma\!\big(\mathrm{MLP}(h_i)+g_\pi\,
 s^{\mathrm{phys}}_i+\mathrm{RiskHead}(h_i)\big)$. Writing the normalized log event time
 $n=\log(1{+}N)/\log(1{+}N_{\mathrm{ref}})$ and heteroscedastic variance $\hat v_{it}=\exp(\eta_t(h_i)+2s)$
-(with conformal scale $s$, below), the loss is
+(with validation-fitted variance scale $s$, below), the loss is
 \begin{align}
 \mathcal{L}=&\;\underbrace{\tfrac{1}{|\mathcal{M}|}\!\!\sum_{(i,t)\in\mathcal{M}}\!\!
 \Big[\tfrac12\log\hat v_{it}+\tfrac{(\hat r_{it}-r_{it})^2}{2\hat v_{it}}\Big]}_{\mathcal{L}_{\mathrm{traj}}\;(\text{Gaussian NLL})}
@@ -193,13 +189,15 @@ the event-time term is censoring-aware:
 \begin{equation}
 \mathcal{L}_{N_{\mathrm{liq}}}=\frac{\sum_i o_i\big[\,y_i(\hat n_i-n_i)^2+(1-y_i)\max(n_i-\hat n_i,0)^2\big]}{\sum_i o_i},
 \end{equation}
-i.e.\ exact for liquefied, one-sided for right-censored stabilized specimens, and masked ($o_i{=}0$) for
-unfinished ones \citep{cox72,dsm21}. $\mathcal{L}_{\mathrm{reg}}$ collects label-free physics
+i.e.\ exact for liquefied and one-sided for every landmark-eligible right-censored non-event
+\citep{cox72,dsm21}. $\mathcal{L}_{\mathrm{reg}}$ collects label-free physics
 regularizers (CRR monotonicity, boundedness, second-order smoothness).
 
-\paragraph{Conformal calibration.} A single scale $s$ is fit on the \emph{validation set of each outer
-fold} so that the empirical $90\%$ interval coverage matches nominal, then applied as
-$\hat v\leftarrow\hat v\,e^{2s}$ \citep{guo17,romano19}.
+\paragraph{Uncertainty calibration.} A variance scale $s$ is fit on post-prefix validation residuals of
+each outer fold and applied as $\hat v\leftarrow\hat v\,e^{2s}$. Separately, validation-object
+nonconformity quantiles are evaluated on unseen test objects with object-bootstrap intervals; because the
+validation objects also support early stopping, this is reported as empirical held-out coverage, not a
+finite-sample conformal guarantee \citep{guo17,romano19}.
 
 \paragraph{Uncertainty propagated through the flow.} At inference we draw $K$ parameter samples
 $\theta^{(k)}=T_\phi(\mu+\sigma\epsilon^{(k)};h)$ and roll each through the analytical layer, yielding
@@ -213,8 +211,10 @@ making the reported uncertainty a genuine propagation \emph{through} the conditi
 deterministic posterior-mean readout.
 
 \section{Experimental Setup}
-\paragraph{Data.} 1{,}093 real cyclic tests across 20 sites (640 liquefied, 453 non-liquefying), with a
-measured CRR curve available for a subset of sites; Vs is derived from small-strain $G_0$, grain-size and
+\paragraph{Data.} The raw archive contains 1{,}093 real cyclic tests across 20 sites. The strict landmark
+risk set contains 790 tests across 14 sites (460 liquefied, 330 non-liquefying); 97 events and 206 censored
+tests occur before the landmark and are excluded. The by-3000 risk label is known for 460 positives and
+263 negatives. A measured CRR curve is available for a subset of sites; Vs is derived from small-strain $G_0$, grain-size and
 PLAXIS classification from sieve data. Shear-wave velocity is measured directly on only a minority of
 specimens, and grain-size on roughly half; the rest require missing-value handling rather than fabricated
 defaults. Unlike open field databases \citep{brandenberg20}, the dataset is comprehensive within its
@@ -226,6 +226,8 @@ scope (the available objects of this laboratory campaign), not universal.
 (Transformer, GRU, TCN) \citep{informer21}, and probabilistic flows (Neural Spline Flow, RealNVP)
 \citep{nsf19,realnvp17}. All torch models use serious training (long schedules with cosine annealing and
 early stopping) and per-model grid search; CatBoost uses its native fit.
+Because its RMSE regressor has no censoring likelihood, CatBoost is reported for risk and exact-event
+$N_{\mathrm{liq}}$ only, not for the censored-aware event-time metric or $\mathrm{P}^3$.
 
 \paragraph{Protocol.} Repeated ($\times 3$) stratified grouped 5-fold object-held-out CV (15 folds);
 publication-grade training; $K{=}8$ Monte-Carlo predictive samples. We report means over folds with
@@ -250,7 +252,7 @@ Neural Spline Flow  & 0.985 & 0.050 & 0.061 & 0.674 & 0.063 & 0.107 & 0.142 & 0.
 GRU                 & 0.944 & 0.125 & 0.162 & 0.861 & 0.067 & 0.119 & 0.192 & 1.266 & 0.513 & 111.9 \\
 PINN (ref.)         & 0.951 & 0.110 & 0.150 & 0.823 & 0.085 & 0.154 & 0.240 & 1.192 & 0.000 & 100.0 \\
 TCN                 & 0.936 & 0.134 & 0.151 & 0.821 & 0.086 & 0.166 & 0.250 & 1.435 & 0.694 & 87.9 \\
-CatBoost            & \textit{0.996} & \textit{0.038} & 0.051 & -- & -- & -- & -- & \textit{0.214} & -- & -- \\
+CatBoost            & \textit{0.996} & \textit{0.038} & 0.051 & -- & -- & -- & -- & -- & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -258,8 +260,8 @@ CatBoost            & \textit{0.996} & \textit{0.038} & 0.051 & -- & -- & -- & -
 \section{Results}
 \paragraph{A competitive Pareto balance, not a uniform win.} Table~\ref{tab:main} and
 Figure~\ref{fig:pareto} tell a deliberately honest story. The strongest \emph{unconstrained} baselines win
-\emph{individual} metrics: CatBoost attains the best scalar onset (AUPRC $0.996$, Brier $0.038$) and the
-best $N_{\mathrm{liq}}$ log-MAE ($0.214$), but produces no trajectory, no calibrated uncertainty and no
+\emph{individual} metrics: CatBoost attains the best scalar onset (AUPRC $0.996$, Brier $0.038$), but its
+event-time regressor is exact-event-only and it produces no trajectory, calibrated uncertainty or
 CRR; a Transformer attains the best raw post-prefix trajectory error ($0.051$) but \emph{violates physics}
 (PVR $0.091$) and over-covers ($93\%$ at the $90\%$ level). Among the \emph{physically admissible} models
 (those below the $5\%$ feasibility gate of the $\mathrm{P}^3$ profile---here DPI-Flow and PINN), DPI-Flow

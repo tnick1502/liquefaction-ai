@@ -23,7 +23,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from liquefaction_ai.training.losses import masked_bce_with_logits, masked_censored_nliq_loss
+from liquefaction_ai.training.losses import (masked_bce_with_logits, masked_censored_nliq_loss,
+                                             nliq_censor_mask, risk_observation_mask)
 
 __all__ = ["FTTransformer", "CatBoostBaseline"]
 
@@ -71,8 +72,8 @@ class FTTransformer(nn.Module):
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """BCE-риск + Smooth-L1 по нормированному N_liq."""
         outputs = self.forward_batch(batch)
-        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         outputs["loss"] = risk_loss + 0.45 * nliq_loss
         return outputs
 
@@ -120,15 +121,26 @@ class CatBoostBaseline:
         yv_nliq = val_split["n_liq_norm"].detach().cpu().numpy()
         common = dict(iterations=self.iterations, depth=self.depth, learning_rate=self.learning_rate,
                       random_seed=42, verbose=0, allow_writing_files=False)
-        # Маска наблюдаемости исхода: незавершённые non-liq исключаются из обучения И риск-классификатора,
-        # И N_liq-регрессии — единый цензур-протокол, что у proposed-моделей (иначе baseline нечестен).
-        otr = train_split.get("n_liq_observed"); ov = val_split.get("n_liq_observed")
+        # Риск-классификатор: маска наблюдаемости исхода (незавершённые non-liq исключены — единый
+        # цензур-протокол с proposed-моделями).
+        otr = risk_observation_mask(train_split); ov = risk_observation_mask(val_split)
         mtr = (otr.detach().cpu().numpy() > 0.5) if otr is not None else np.ones(len(ytr_nliq), bool)
         mv = (ov.detach().cpu().numpy() > 0.5) if ov is not None else np.ones(len(yv_nliq), bool)
         self.clf = CatBoostClassifier(loss_function="Logloss", **common)
         self.clf.fit(Xtr[mtr], ytr_risk[mtr], eval_set=(Xv[mv], yv_risk[mv]))   # риск ТОЛЬКО по наблюдаемым
+        # N_liq-РЕГРЕССОР: обычный RMSE не выражает право-цензуру. Стабилизированные non-liq имеют
+        # лишь НИЖНЮЮ границу N_liq (censoring time), подавать их как ТОЧНЫЙ таргет нельзя (proposed-
+        # модели используют односторонний censored loss). Поэтому регрессор учим ТОЛЬКО на разжижившихся
+        # (label==1). В evaluation он получает только liquefied-only N_liq metric; censored-aware metric
+        # помечается N/A, чтобы не сравнивать разные estimands.
+        rtr = mtr & (ytr_risk > 0.5); rv = mv & (yv_risk > 0.5)
         self.reg = CatBoostRegressor(loss_function="RMSE", **common)
-        self.reg.fit(Xtr[mtr], ytr_nliq[mtr], eval_set=(Xv[mv], yv_nliq[mv]))
+        # fallback: если в VAL нет разжижившихся — обучаем БЕЗ eval_set (нельзя индексировать Xv
+        # train-маской rtr — это был баг с несовпадением длин). Иначе обычный val-eval.
+        if int(rv.sum()) == 0:
+            self.reg.fit(Xtr[rtr], ytr_nliq[rtr])
+        else:
+            self.reg.fit(Xtr[rtr], ytr_nliq[rtr], eval_set=(Xv[rv], yv_nliq[rv]))
         return self
 
     def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -141,6 +153,8 @@ class CatBoostBaseline:
             "risk_prob": risk_prob,
             "risk_logit": torch.logit(risk_prob),
             "nliq_pred": torch.from_numpy(nliq),
+            # RMSE-регрессор обучен только на exact events и не является censored-survival моделью.
+            "supports_censored_nliq": torch.zeros(len(nliq), dtype=torch.float32),
         }
 
     def save(self, models_dir, name: str = "catboost") -> None:

@@ -2,7 +2,7 @@
   "model_type": "DPIFlow",
   "display_name": "DPI-Flow",
   "model_kwargs": {
-    "static_dim": 34,
+    "static_dim": 38,
     "prefix_dim": 6,
     "seq_len": 72,
     "prefix_len": 12,
@@ -11,8 +11,8 @@
     "probabilistic": true,
     "use_analytical_layer": true,
     "liq_threshold": 0.95,
-    "hidden_dim": 160,
-    "calibration_steps": 1,
+    "hidden_dim": 192,
+    "calibration_steps": 2,
     "calibration_lr": 0.1,
     "use_traj_residual": true
   },
@@ -38,15 +38,15 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 160,
-      "calibration_steps": 1,
+      "hidden_dim": 192,
+      "calibration_steps": 2,
       "calibration_lr": 0.1,
       "use_traj_residual": true
     }
   },
-  "epochs": 76,
+  "epochs": 30,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 1.55
+  "calib_scale": 0.7
 }

@@ -8,7 +8,7 @@ tags: [protocol, baselines, P1]
 | Группа | Модели | Заметка |
 |---|---|---|
 | State-of-practice geotech | Seed/Idriss, Boulanger/Idriss, Cetin/Moss/Kayen triggering | [[../literature/boulanger-idriss-2016]] · ответ на критику Maurer&Sanger |
-| GBDT/tabular SOTA | **CatBoost** (есть, лучший N_liq), XGBoost/LightGBM, RF | [[../literature/prokhorenkova-2018-catboost]] |
+| GBDT/tabular SOTA | **CatBoost** (risk + exact-event N_liq; censored metric N/A), XGBoost/LightGBM, RF | [[../literature/prokhorenkova-2018-catboost]] |
 | Deep tabular | MLP/ResNet, **TabNet**, **FT-Transformer** (есть) | [[../literature/gorishniy-2021-fttransformer]] · [[../literature/arik-pfister-2021-tabnet]] |
 | Sequence | **GRU/LSTM/TCN/Transformer** (есть) | задача prefix-conditioned continuation |
 | Survival/event-time | **Cox/DeepSurv**/discrete-time survival | [[../literature/katzman-2018-deepsurv]] · для censored N_liq |

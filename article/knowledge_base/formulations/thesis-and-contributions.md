@@ -11,8 +11,8 @@ tags: [formulation, contributions]
 ## Contribution bullets (AAAI-стиль)
 1. **Prefix-conditioned onset-forecasting formulation** для cyclic liquefaction tests: ранний PPR-префикс + soil descriptors → future PPR, risk, censored N_liq.
 2. **Analytical differentiable liquefaction layer над физически ограниченными latent θ** — ядро вклада: amortized inference θ → дифференцируемый CRR/damage/PPR ODE-слой, гарантирующий feasible monotone accumulation. Conditional coupling (RealNVP) flow — **опциональный компонент** для гибкости posterior; в абляции его вклад скромный и зависит от датасета (gaussian posterior сопоставим/лучше на post-prefix RMSE/CRPS на текущем наборе), поэтому headline-вклад — физ-структура и amortized identification, а не сам flow.
-3. **Censored onset objective:** liquefied exact; stabilized non-liq right-censored; unfinished non-liq excluded from N_liq supervision, но kept для trajectory.
-4. **Object-held-out benchmark** на 1093 реальных лабораторных опытах со strong baselines.
+3. **Censored onset objective:** liquefied exact; каждый landmark-eligible non-liq right-censored на фактическом last_obs. Stabilized/unfinished — отдельные физические regime-маски, не censoring-маски.
+4. **Site-held-out benchmark:** архив ~1000 опытов / ~20 площадок; строгий landmark risk set (точные числа — в регенерируемом cohort-manifest) со strong baselines, группировка по `site_id`.
 5. **Transparent uncertainty/physics evaluation:** post-prefix RMSE, censored N_liq, calibration, physics violations, CRR recovery (с N_CRR_test/N_CRR_objects).
 
 ## Короткий вариант contribution (для abstract)

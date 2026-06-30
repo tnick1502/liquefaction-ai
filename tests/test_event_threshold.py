@@ -60,4 +60,24 @@ def test_synthetic_event_definition_uses_canonical_threshold():
                              np.random.default_rng(123), prefix_len=1)
 
     assert obs["liq_label"].tolist() == [1.0, 0.0]
-    assert obs["n_liq_true"].tolist() == [4.0, 99.0]
+    # Для non-event правая цензура ставится на фактическом последнем наблюдённом цикле,
+    # а не на плановом N_max, который может быть не достигнут.
+    assert obs["n_liq_true"].tolist() == [4.0, 4.0]
+
+
+def test_dpi_hitting_is_exact_forward_and_soft_backward():
+    import torch
+    from liquefaction_ai.models.dpi_flow import AnalyticalLiquefactionLayer
+
+    layer = AnalyticalLiquefactionLayer(seq_len=2, max_cycle_reference=3000.0)
+    cycles = torch.tensor([[100.0, 200.0]])
+
+    crossing = torch.tensor([[0.94, 0.96]], requires_grad=True)
+    n_cross = layer.soft_first_hitting(crossing, torch.zeros_like(crossing), cycles)
+    assert torch.allclose(n_cross, torch.tensor([150.0]), atol=1e-3)
+
+    below = torch.tensor([[0.90, 0.94]], requires_grad=True)
+    n_below = layer.soft_first_hitting(below, torch.zeros_like(below), cycles)
+    n_below.sum().backward()
+    assert n_below.item() == 200.0                  # forward = right-censor at horizon
+    assert torch.count_nonzero(below.grad).item() > 0  # backward всё ещё обучает onset

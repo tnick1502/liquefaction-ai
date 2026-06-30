@@ -217,10 +217,11 @@ def object_cluster_bootstrap(df: pd.DataFrame, ref: str = "DPI-Flow", nboot: int
 
     def metrics_on(sub: pd.DataFrame) -> dict:
         # CLS-метрики (AUROC/AUPRC/Brier/ECE) — ТОЛЬКО по образцам с наблюдаемым исходом
-        # (n_liq_observed>0.5), как и в compute_metrics. Иначе bootstrap-CI меряет ДРУГУЮ популяцию,
+        # (risk_label_observed>0.5), как и в compute_metrics. Иначе bootstrap-CI меряет другую популяцию,
         # чем leaderboard (незавершённые non-liq как ложные негативы).
-        if "n_liq_observed" in sub.columns:
-            cs = sub[sub["n_liq_observed"].to_numpy() > 0.5]
+        risk_mask_col = "risk_label_observed" if "risk_label_observed" in sub.columns else "n_liq_observed"
+        if risk_mask_col in sub.columns:
+            cs = sub[sub[risk_mask_col].to_numpy() > 0.5]
         else:
             cs = sub
         y = cs["liq_label"].to_numpy(); p = cs["risk_prob_pred"].to_numpy()
@@ -229,8 +230,19 @@ def object_cluster_bootstrap(df: pd.DataFrame, ref: str = "DPI-Flow", nboot: int
         else:
             out = {k: float("nan") for k in CLS_METRICS}
         for em in err_metrics:
-            v = sub[em].to_numpy(); v = v[~np.isnan(v)]   # err-метрики уже NaN-маскированы по obs
-            out[em] = float(np.mean(v)) if len(v) else float("nan")
+            if em == "traj_rmse_continuation" and {"traj_sse_continuation", "continuation_points"}.issubset(sub.columns):
+                valid = sub["continuation_points"].to_numpy() > 0
+                denom = float(sub.loc[valid, "continuation_points"].sum())
+                out[em] = (float(np.sqrt(sub.loc[valid, "traj_sse_continuation"].sum() / denom))
+                           if denom > 0 else float("nan"))
+            elif em == "coverage90" and {"coverage90_hits", "continuation_points"}.issubset(sub.columns):
+                valid = sub["continuation_points"].to_numpy() > 0
+                denom = float(sub.loc[valid, "continuation_points"].sum())
+                out[em] = (float(sub.loc[valid, "coverage90_hits"].sum() / denom)
+                           if denom > 0 else float("nan"))
+            else:
+                v = sub[em].to_numpy(); v = v[~np.isnan(v)]
+                out[em] = float(np.mean(v)) if len(v) else float("nan")
         return out
 
     point = {m: metrics_on(by[m]) for m in models}
@@ -273,9 +285,16 @@ def object_cluster_bootstrap(df: pd.DataFrame, ref: str = "DPI-Flow", nboot: int
 def bootstrap_classification(df: pd.DataFrame, ref: str = "DPI-Flow",
                              nboot: int = 1000, seed: int = 0) -> pd.DataFrame:
     """Stratified bootstrap-CI (ресэмпл по фолдам) для AUROC/AUPRC/Brier/ECE + разница с ref."""
+    # CLS-метрики — только по наблюдаемым исходам (как compute_metrics/object_cluster_bootstrap),
+    # иначе незавершённые non-liq входят ложными негативами. Маска одинакова у всех моделей, поэтому
+    # фильтрация сохраняет выравнивание по позициям для bootstrap.
+    risk_mask_col = "risk_label_observed" if "risk_label_observed" in df.columns else "n_liq_observed"
+    if risk_mask_col in df.columns:
+        df = df[df[risk_mask_col] > 0.5].copy()
     models = list(df["model"].unique())
     rng = np.random.default_rng(seed)
-    by_model = {m: df[df.model == m].sort_values(["fold", "sidx"]).reset_index(drop=True) for m in models}
+    sort_cols = [c for c in ("repeat", "fold", "sidx") if c in df.columns]
+    by_model = {m: df[df.model == m].sort_values(sort_cols).reset_index(drop=True) for m in models}
     base = by_model[ref][["fold", "sidx"]]
     fold_idx = {f: np.where(base["fold"].to_numpy() == f)[0] for f in base["fold"].unique()}
     point, draws = {}, {}

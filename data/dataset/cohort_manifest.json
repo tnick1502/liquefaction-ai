@@ -1,0 +1,31 @@
+{
+  "raw_specimens": 1093,
+  "analytic_risk_set": 826,
+  "excluded_before_N0_total": 267,
+  "excluded_event_before_N0": 77,
+  "excluded_censored_before_N0": 190,
+  "n_liq": 480,
+  "n_nonliq": 346,
+  "n_objects": 14,
+  "raw_objects": 20,
+  "modes": {
+    "seismic": 461,
+    "storm": 365
+  },
+  "crr_samples": 360,
+  "crr_objects": 5,
+  "risk_observed": 743,
+  "risk_pos": 480,
+  "risk_neg": 263,
+  "risk_censored": 83,
+  "nliq_censor_valid": 826,
+  "regime_stable": 263,
+  "regime_unfinished": 83,
+  "prospective_horizon_audit": {
+    "n_early_flat": 263.0,
+    "n_later_cross": 0.0,
+    "n_later_rise": 260.0,
+    "n_final_liq": 0.0,
+    "frac_later_rise": 0.9885931558935361
+  }
+}

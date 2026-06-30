@@ -2,7 +2,7 @@
   "model_type": "RealNVPFlow",
   "display_name": "RealNVP",
   "model_kwargs": {
-    "static_dim": 34,
+    "static_dim": 38,
     "prefix_dim": 6,
     "seq_len": 72,
     "n_layers": 4

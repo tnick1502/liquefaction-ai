@@ -18,7 +18,7 @@ date: 2026-06-28
 | run_crr_check.py / run_verify.py | покрыто `check_artifact_consistency` (Vs/plaxis/CRR/NaN) в NB **3_8** | ✓ объединено |
 | run_p3_sensitivity.py | NB **3_8** (порт main) | ✓ полный перенос |
 | run_multiseed.py | заменено объектным CV в NB **3_4** (grouped 5-fold + LOO) | ✓ улучшено (P0: grouped > random) |
-| run_p1.py / run_p1b.py | финальные конфиги уже зашиты в модели (conformal `fit_interval_scale`, censored loss) | ✓ superseded |
+| run_p1.py / run_p1b.py | финальные конфиги уже зашиты в модели (variance-scaling `fit_interval_scale`, censored loss) | ✓ superseded |
 | run_ens.py | класс `models/ensemble.py::EnsembleModel` сохранён (опциональная capability) | ⚠ runner снят, класс остался |
 | run_all.py / run_nbexec.py | заменено ручным порядком запуска ноутбуков (см. README) | ✓ оркестрация |
 | incr_train / retrain_all / evt_retrain / dpi_evt_retrain | обучение — в NB **2_1..2_4** (best-of-seeds + лоссы уже там) | ✓ training в ноутбуках |

@@ -6,14 +6,14 @@ tags: [protocol, metrics, P2]
 Связано: [[evaluation-protocol]] · [[../literature/guo-2017-calibration]] · [[../literature/davis-goadrich-2006]] · [[../literature/romano-2019-cqr]]
 
 ## Onset (классификация)
-- **AUPRC — primary** (дисбаланс 640/453), AUROC — вторично. Обоснование: [[../literature/davis-goadrich-2006]], [[../literature/fawcett-2006]].
+- **AUPRC — primary** на известных by-3000 исходах (460 pos / 263 neg; маска `risk_label_observed`), AUROC — вторично. Полный landmark risk set: 790, из них 67 non-liq цензурированы до H.
 - **Brier** ([[../literature/brier-1950]]).
 - **Калибровка: ECE + reliability diagram (фигура)** ([[../literature/guo-2017-calibration]]). **Обязательно на grouped split** — OOD-калибровка обычно ломается; если держится → headline.
 - **Lead-time / timeliness:** за сколько циклов до фактического onset поднимается риск → early-warning метрика.
 
 ## N_liq (event-time, цензура)
 - Headline считать **только на нецензурированных** (или censored-aware), явно оговорив. MAE по right-censored атакуем. Обоснование цензуры: [[../literature/nafday-2010]], [[../literature/cox-1972]].
-- Метрика: **N_liq_logMAE** (текущая лучшая у DPI-Flow 0.164).
+- Метрика: **N_liq_logMAE** (one-sided для цензурированных).
 
 ## Trajectory (вероятностная)
 - Вперёд **CRPS + NLL** (proper scoring), RMSE — diagnostic.

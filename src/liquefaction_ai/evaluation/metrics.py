@@ -289,11 +289,14 @@ def collect_outputs(
 def fit_interval_scale(model, val_split: Dict[str, object], config: ExperimentConfig,
                        device: torch.device, level: float = 0.90) -> float:
     """
-    Пост-hoc конформная калибровка интервалов: подобрать скаляр s, выравнивающий покрытие к номиналу.
+    Пост-hoc VARIANCE-SCALING калибровка интервалов: подобрать скаляр s, выравнивающий покрытие.
 
-    На валидации ищется множитель ``s`` для стандартного отклонения, при котором эмпирическое
-    покрытие интервала уровня ``level`` совпадает с номиналом. Результат записывается в буфер
-    модели ``calib_log_scale`` (= ln s) и автоматически применяется в ``forward_batch``.
+    ЭТО НЕ CONFORMAL. Здесь просто grid-fit множителя стандартного отклонения по эмпирическому
+    покрытию гауссова интервала ``ŷ ± z·s·σ`` на валидации — это даёт асимптотическую подгонку
+    покрытия, но БЕЗ конечновыборочной гарантии. Настоящий split-conformal (с гарантией покрытия
+    при отдельной exchangeable calibration-выборке) — функции :func:`split_conformal_coverage` и
+    :func:`simultaneous_conformal_coverage`. Результат пишется в буфер ``calib_log_scale`` (= ln s)
+    и применяется в ``forward_batch``.
 
     :param model: модель с буфером ``calib_log_scale`` и траекторной головой
     :param val_split: валидационная выборка
@@ -311,8 +314,14 @@ def fit_interval_scale(model, val_split: Dict[str, object], config: ExperimentCo
         return 1.0
     pred = out["traj_mean"]; std = np.sqrt(np.exp(out["traj_logvar"]))
     true = val_split["r_obs"].cpu().numpy(); mask = val_split["mask"].cpu().numpy()
+    if "continuation_mask" in val_split:
+        mask = val_split["continuation_mask"].cpu().numpy()
+    elif "prefix_mask" in val_split:
+        mask = mask * (1.0 - np.minimum(val_split["prefix_mask"].cpu().numpy(), 1.0))
     z = {0.80: 1.2816, 0.90: 1.6449, 0.95: 1.9600}.get(level, 1.6449)
-    denom = max(mask.sum(), 1.0)
+    denom = float(mask.sum())
+    if denom <= 0:
+        return 1.0
 
     def coverage(s):
         lo = pred - z * s * std; hi = pred + z * s * std
@@ -330,7 +339,7 @@ def split_conformal_coverage(cal_pred: np.ndarray, cal_std: np.ndarray, cal_true
                              test_true: np.ndarray, test_mask: np.ndarray,
                              level: float = 0.90) -> Tuple[float, float]:
     """
-    Inductive split-conformal покрытие интервалов PPR (deployable).
+    Inductive split-conformal покрытие интервалов PPR.
 
     Конформный квантиль нормированных остатков ``|y−ŷ|/σ`` считается на ОТДЕЛЬНОМ калибровочном
     наборе (``cal_*``), НЕ пересекающемся с тестом, и применяется к тесту. Так это работает в
@@ -352,12 +361,86 @@ def split_conformal_coverage(cal_pred: np.ndarray, cal_std: np.ndarray, cal_true
     if rc.size == 0 or test_mask.sum() == 0:
         return float("nan"), float("nan")
     n = rc.size
-    q = float(np.quantile(rc, min(1.0, np.ceil((n + 1) * level) / n)))   # finite-sample поправка
+    q = float(np.quantile(rc, min(1.0, np.ceil((n + 1) * level) / n), method="higher"))   # finite-sample поправка
     lo = test_pred - q * test_std
     hi = test_pred + q * test_std
     cov = float(np.sum(((test_true >= lo) & (test_true <= hi)) * test_mask) / test_mask.sum())
     width = float(np.sum((hi - lo) * test_mask) / test_mask.sum())
     return cov, width
+
+
+def simultaneous_conformal_coverage(cal_pred: np.ndarray, cal_std: np.ndarray, cal_true: np.ndarray,
+                                    cal_mask: np.ndarray, test_pred: np.ndarray, test_std: np.ndarray,
+                                    test_true: np.ndarray, test_mask: np.ndarray,
+                                    level: float = 0.90) -> Tuple[float, float]:
+    """
+    SIMULTANEOUS (траекторная) split-conformal полоса — покрытие ВСЕЙ кривой, а не отдельных точек.
+
+    В отличие от pointwise :func:`split_conformal_coverage` (точки времени независимы), здесь
+    nonconformity-скор — ПЕР-ТРАЕКТОРНЫЙ максимум нормированного остатка ``s = max_t |y_t−ŷ_t|/σ_t``
+    (band conformal). Квантиль ``q`` берётся по этим скорам на КАЛИБРОВОЧНОМ наборе (disjoint с тестом),
+    и траектория считается «покрытой», только если ВСЕ её валидные точки в полосе ``ŷ ± q·σ``. Это
+    даёт совместную (joint по времени) гарантию при exchangeability calibration/test.
+
+    :param cal_*: предсказание/σ/истина/маска КАЛИБРОВОЧНОГО набора
+    :param test_*: то же для теста
+    :param level: целевой уровень
+    :return: (доля полностью покрытых траекторий, средняя ширина полосы)
+    """
+    def _per_traj_max(pred, std, true, mask):
+        r = np.where(mask > 0, np.abs(true - pred) / np.maximum(std, 1e-6), -np.inf)
+        valid = mask.sum(axis=1) > 0
+        return r.max(axis=1), valid
+
+    sc, vc = _per_traj_max(cal_pred, cal_std, cal_true, cal_mask)
+    sc = sc[vc]
+    st, vt = _per_traj_max(test_pred, test_std, test_true, test_mask)
+    st = st[vt]
+    if sc.size == 0 or st.size == 0:
+        return float("nan"), float("nan")
+    n = sc.size
+    q = float(np.quantile(sc, min(1.0, np.ceil((n + 1) * level) / n), method="higher"))   # finite-sample квантиль
+    cov = float(np.mean(st <= q))
+    width = float(np.sum((2.0 * q * test_std) * test_mask) / max(test_mask.sum(), 1.0))
+    return cov, width
+
+
+def per_trajectory_nonconformity(pred: np.ndarray, std: np.ndarray, true: np.ndarray,
+                                 mask: np.ndarray) -> np.ndarray:
+    """
+    Пер-траекторный nonconformity-скор ``s_i = max_t |y_t−ŷ_t|/σ_t`` (по валидным точкам).
+
+    Это band-conformal скор одной траектории (как в :func:`simultaneous_conformal_coverage`).
+    Агрегируется до уровня объекта для empirical site-held-out coverage audit.
+
+    :return: массив скоров формы (n,), ``nan`` для траекторий без валидных точек.
+    """
+    r = np.where(mask > 0, np.abs(true - pred) / np.maximum(std, 1e-6), -np.inf)
+    valid = mask.sum(axis=1) > 0
+    return np.where(valid, r.max(axis=1), np.nan).astype(np.float64)
+
+
+def conformal_band_quantile(cal_scores: np.ndarray, level: float = 0.90) -> float:
+    """
+    Конформный квантиль ``q`` band-conformal полосы из КАЛИБРОВОЧНЫХ nonconformity-скоров.
+
+    ``q`` — finite-sample order statistic уровня ``level`` (поправка ``ceil((n+1)·level)/n``,
+    ``method="higher"``). Полоса прогноза для НОВОГО объекта: ``ŷ ± q·σ``; объект покрыт, если
+    его пер-траекторный скор ``s ≤ q``. Калибруется на ОТЛОЖЕННЫХ (disjoint с test) объектах.
+
+    ВНИМАНИЕ: это НЕ ранговая «LOO-coverage» (та была тавтологией — доля скоров ниже своего же
+    квантиля ≈level для любых значений). Здесь ``q`` берётся на КАЛИБРОВКЕ, а покрытие меряется
+    на ОТДЕЛЬНОМ test-наборе (см. cross_validation.aggregate_object_conformal).
+
+    :param cal_scores: калибровочные пер-траекторные/объектные nonconformity-скоры
+    :param level: целевой уровень покрытия
+    :return: квантиль ``q`` (≥0); ``nan`` если калибровка пуста
+    """
+    s = np.asarray([v for v in np.asarray(cal_scores, float).ravel() if np.isfinite(v)], float)
+    n = s.size
+    if n == 0:
+        return float("nan")
+    return float(np.quantile(s, min(1.0, np.ceil((n + 1) * level) / n), method="higher"))
 
 
 def resolve_nliq_prediction(outputs: Dict[str, np.ndarray], max_cycle_reference: float) -> np.ndarray:
@@ -491,16 +574,20 @@ def compute_metrics(
     y_prob = outputs["risk_prob"]
     nliq_pred = resolve_nliq_prediction(outputs, config.max_cycle_reference)
     nliq_true = split["n_liq_true"].cpu().numpy()
+    supports_censored_nliq = not (
+        "supports_censored_nliq" in outputs
+        and np.asarray(outputs["supports_censored_nliq"]).size
+        and float(np.nanmax(outputs["supports_censored_nliq"])) < 0.5
+    )
 
-    # Единый цензур-протокол N_liq (как при обучении): образцы без наблюдаемого терминала N_liq
-    # (3-й режим — нет разжижения и нет стабилизации, маска n_liq_observed==0) исключаются
-    # из ВСЕХ ошибок N_liq — агрегатных, пообъектных и групповых (OOD), иначе метрика штрафовала бы
-    # за «ошибку» по точке, которой нет. Для исключения используется маска obs.
-    if "n_liq_observed" in split:
-        obs = split["n_liq_observed"].cpu().numpy() > 0.5
-    else:
-        obs = np.ones_like(nliq_true, dtype=bool)
-    obs_any = bool(obs.any())
+    # Бинарный risk by-H и event-time имеют разные censoring-маски. Короткий non-liq не является
+    # известным отрицательным by-H, но всё равно задаёт корректную нижнюю границу N_liq>C.
+    risk_obs_key = "risk_label_observed" if "risk_label_observed" in split else "n_liq_observed"
+    nliq_obs_key = "nliq_censor_valid" if "nliq_censor_valid" in split else "n_liq_observed"
+    risk_obs = (split[risk_obs_key].cpu().numpy() > 0.5 if risk_obs_key in split
+                else np.ones_like(nliq_true, dtype=bool))
+    nliq_obs = (split[nliq_obs_key].cpu().numpy() > 0.5 if nliq_obs_key in split
+                else np.ones_like(nliq_true, dtype=bool))
 
     sample_df = localize_meta_frame(meta_df.copy()).reset_index(drop=True)
     sample_df["risk_prob_pred"] = y_prob
@@ -512,21 +599,23 @@ def compute_metrics(
     log_true = np.log1p(np.maximum(nliq_true, 0.0))
     log_err = log_pred - log_true
     liq = y_true > 0.5
-    # Censored timing error: exact liquefaction is absolute error; stabilized non-liquefaction
-    # is right-censored, so only too-early predictions are errors; unfinished non-liq is masked out.
+    # Exact event → absolute error; любой валидный non-event → one-sided right-censoring error.
     nliq_cens_err = np.where(liq, np.abs(nliq_err), np.maximum(nliq_true - nliq_pred, 0.0))
     log_cens_err = np.where(liq, np.abs(log_err), np.maximum(log_true - log_pred, 0.0))
     # Пообъектные ошибки: NaN для неучтённых образцов → groupby.mean() их автоматически пропустит,
     # поэтому групповые (OOD) средние считаются по той же маске, что и агрегат.
-    sample_df["nliq_abs_err"] = np.where(obs, nliq_cens_err, np.nan)
-    sample_df["nliq_log_err"] = np.where(obs, log_cens_err, np.nan)
-    sample_df["n_liq_observed"] = obs.astype(float)
+    aggregate_nliq_mask = nliq_obs if supports_censored_nliq else np.zeros_like(nliq_obs)
+    sample_df["nliq_abs_err"] = np.where(aggregate_nliq_mask, nliq_cens_err, np.nan)
+    sample_df["nliq_log_err"] = np.where(aggregate_nliq_mask, log_cens_err, np.nan)
+    sample_df["n_liq_observed"] = nliq_obs.astype(float)  # legacy event-time alias
+    sample_df["nliq_censor_valid"] = nliq_obs.astype(float)
+    sample_df["risk_label_observed"] = risk_obs.astype(float)
 
-    if obs_any:
-        nliq_mae = float(np.mean(nliq_cens_err[obs]))
-        nliq_rmse = float(np.sqrt(np.mean(nliq_cens_err[obs] ** 2)))
-        nliq_logmae = float(np.mean(log_cens_err[obs]))
-        nliq_logrmse = float(np.sqrt(np.mean(log_cens_err[obs] ** 2)))
+    if aggregate_nliq_mask.any():
+        nliq_mae = float(np.mean(nliq_cens_err[aggregate_nliq_mask]))
+        nliq_rmse = float(np.sqrt(np.mean(nliq_cens_err[aggregate_nliq_mask] ** 2)))
+        nliq_logmae = float(np.mean(log_cens_err[aggregate_nliq_mask]))
+        nliq_logrmse = float(np.sqrt(np.mean(log_cens_err[aggregate_nliq_mask] ** 2)))
     else:
         nliq_mae = nliq_rmse = nliq_logmae = nliq_logrmse = float("nan")
 
@@ -536,7 +625,8 @@ def compute_metrics(
         "N_liq_RMSE": nliq_rmse,
         "N_liq_logMAE": nliq_logmae,
         "N_liq_logRMSE": nliq_logrmse,
-        "N_liq_n_observed": int(obs.sum()),
+        "N_liq_n_observed": int(aggregate_nliq_mask.sum()),
+        "Supports_Censored_Nliq": supports_censored_nliq,
     }
 
     # --- P2: N_liq только на РАЗЖИЖАЮЩИХСЯ (точные таргеты) — прозрачный headline без цензур-эффектов ---
@@ -558,12 +648,9 @@ def compute_metrics(
             metrics[_k] = float("nan")
         sample_df["onset_timing_bias_cyc"] = np.nan
 
-    # РИСК-метрики считаются только на образцах с НАБЛЮДАЕМЫМ исходом (obs): liquefied (label=1) и
-    # demonstrably-stabilized non-liq (label=0, terminal observable). Незавершённые non-liq
-    # (n_liq_observed==0) имеют НЕИЗВЕСТНЫЙ исход — включать их как label=0 было бы ложным негативом
-    # (≈⅕ датасета). Маскируем AUROC/AUPRC/Brier/ECE той же маской obs, что и N_liq.
-    if obs.any():
-        yt_r, yp_r = y_true[obs], y_prob[obs]
+    # Risk by-H известен для событий и non-liq, реально наблюдавшихся до H.
+    if risk_obs.any():
+        yt_r, yp_r = y_true[risk_obs], y_prob[risk_obs]
         auroc, auprc, brier = safe_binary_metrics(yt_r, yp_r)
         ece = expected_calibration_error(yt_r, yp_r)
     else:
@@ -572,7 +659,7 @@ def compute_metrics(
     metrics["AUPRC"] = auprc
     metrics["Brier"] = brier
     metrics["ECE"] = ece
-    metrics["N_risk_observed"] = int(obs.sum())
+    metrics["N_risk_observed"] = int(risk_obs.sum())
 
     if "traj_mean" in outputs:
         pred = outputs["traj_mean"]
@@ -598,40 +685,63 @@ def compute_metrics(
             continuation_mask = mask * (1.0 - np.minimum(prefix_mask, 1.0))
         else:
             continuation_mask = mask
-        cont_denom = np.maximum(continuation_mask.sum(), 1.0)
-        cont_mse = float(np.sum(((pred - true) ** 2) * continuation_mask) / cont_denom)
-        cont_mae = float(np.sum(np.abs(pred - true) * continuation_mask) / cont_denom)
-        cont_rmse = float(np.sqrt(cont_mse))
+        cont_total = float(continuation_mask.sum())
+        if cont_total > 0:
+            cont_mse = float(np.sum(((pred - true) ** 2) * continuation_mask) / cont_total)
+            cont_mae = float(np.sum(np.abs(pred - true) * continuation_mask) / cont_total)
+            cont_rmse = float(np.sqrt(cont_mse))
+        else:
+            cont_mse = cont_mae = cont_rmse = float("nan")
         metrics["Traj_MSE_continuation"] = cont_mse
         metrics["Traj_MAE_continuation"] = cont_mae
         metrics["Traj_RMSE_continuation"] = cont_rmse
-        sample_cont_count = np.maximum(continuation_mask.sum(axis=1), 1.0)
-        sample_df["traj_rmse_continuation"] = np.sqrt(
-            np.sum(((pred - true) ** 2) * continuation_mask, axis=1) / sample_cont_count
+        sample_cont_count = continuation_mask.sum(axis=1)
+        sample_cont_valid = sample_cont_count > 0
+        sample_cont_sse = np.sum(((pred - true) ** 2) * continuation_mask, axis=1)
+        sample_cont_rmse = np.full(len(true), np.nan, dtype=float)
+        sample_cont_rmse[sample_cont_valid] = np.sqrt(
+            sample_cont_sse[sample_cont_valid] / sample_cont_count[sample_cont_valid]
         )
+        sample_df["traj_rmse_continuation"] = sample_cont_rmse
+        sample_df["traj_sse_continuation"] = np.where(sample_cont_valid, sample_cont_sse, np.nan)
+        sample_df["continuation_points"] = sample_cont_count
+        sample_df["continuation_valid"] = sample_cont_valid.astype(float)
         # Экстраполяция: RMSE на ДАЛЬНЕЙ половине горизонта (далеко за окном префикса), где
         # аналитический ODE-слой продолжает физику, а cummax-blackbox экстраполирует плохо.
         # Это разделяет «physics vs cummax» там, где RMSE-по-всему-горизонту их не различает.
         idxg = np.arange(true.shape[1])[None, :]
         horizon = (mask * idxg).max(axis=1, keepdims=True)            # последний валидный индекс/образец
         far_mask = continuation_mask * (idxg >= 0.5 * horizon)
-        far_denom = np.maximum(far_mask.sum(), 1.0)
-        metrics["Traj_RMSE_late"] = float(np.sqrt(np.sum(((pred - true) ** 2) * far_mask) / far_denom))
-        sample_far_count = np.maximum(far_mask.sum(axis=1), 1.0)
-        sample_df["traj_rmse_late"] = np.sqrt(
-            np.sum(((pred - true) ** 2) * far_mask, axis=1) / sample_far_count
+        far_total = float(far_mask.sum())
+        metrics["Traj_RMSE_late"] = (float(np.sqrt(np.sum(((pred - true) ** 2) * far_mask) / far_total))
+                                     if far_total > 0 else float("nan"))
+        sample_far_count = far_mask.sum(axis=1)
+        sample_far = np.full(len(true), np.nan, dtype=float)
+        _fv = sample_far_count > 0
+        sample_far[_fv] = np.sqrt(
+            np.sum(((pred - true) ** 2) * far_mask, axis=1)[_fv] / sample_far_count[_fv]
         )
+        sample_df["traj_rmse_late"] = sample_far
 
         # --- Траекторная ошибка по трём СОСТОЯНИЯМ ОПЫТА (а не по типу воздействия) ---
-        # Состояния: разжижение (liq_label==1); нет разжижения + стабилизация (obs==1);
-        # нет разжижения + нет стабилизации (obs==0). Balanced = макро-среднее по
+        # Состояния задаются физической terminal-динамикой, независимо от risk/censoring-масок.
+        # Balanced = макро-среднее по
         # присутствующим состояниям (нечувствительно к дисбалансу классов и не даёт модели
         # «спрятать» провал режима за счёт лёгкого большинства); worst = худшее состояние
         # (используется gate-ом компетентности в P³, чтобы коллапс целого режима не проходил).
         _se = ((pred - true) ** 2) * mask
-        _states = {"liq": y_true > 0.5,
-                   "stab": (y_true < 0.5) & obs,
-                   "nostab": (y_true < 0.5) & (~obs)}
+        def _split_bool(name, fallback):
+            return split[name].cpu().numpy() > 0.5 if name in split else fallback
+
+        _states = {
+            "liq": _split_bool("regime_liq", y_true > 0.5),
+            "stab": _split_bool("regime_stable", (y_true < 0.5) & risk_obs),
+            "nostab": _split_bool("regime_unfinished", (y_true < 0.5) & (~risk_obs)),
+        }
+        sample_df["regime"] = np.select(
+            [_states["liq"], _states["stab"], _states["nostab"]],
+            ["liquefied", "stabilized", "unfinished"], default="unknown"
+        )
         _present = []
         for _nm, _m in _states.items():
             if int(_m.sum()) > 0:
@@ -672,23 +782,36 @@ def compute_metrics(
 
         if "traj_logvar" in outputs:
             std = np.maximum(np.sqrt(np.exp(outputs["traj_logvar"])), 1e-6)
-            # Калибровка: эмпирическое покрытие интервалов на нескольких уровнях
+            # ВЕРОЯТНОСТНЫЕ метрики (coverage/NLL/CRPS) считаются на POST-PREFIX (continuation)
+            # маске, а НЕ на полной: headline-задача — continuation forecast, а наблюдаемый префикс
+            # модель видит как контекст (точки тривиально внутри интервала) → полная маска искусственно
+            # улучшает калибровку. pm = continuation_mask, pm_cnt — её знаменатель.
+            pm = continuation_mask
+            pm_total = float(pm.sum())
+            pm_row = pm.sum(axis=1)
+            pm_valid = pm_row > 0
             cov_gaps = []
             for level, z in [(80, 1.2816), (90, 1.6449), (95, 1.9600)]:
                 lower = pred - z * std
                 upper = pred + z * std
-                cov = float(np.sum(((true >= lower) & (true <= upper)) * mask) / np.maximum(mask.sum(), 1.0))
-                width = float(np.sum((upper - lower) * mask) / np.maximum(mask.sum(), 1.0))
+                cov = (float(np.sum(((true >= lower) & (true <= upper)) * pm) / pm_total)
+                       if pm_total > 0 else float("nan"))
+                width = (float(np.sum((upper - lower) * pm) / pm_total)
+                         if pm_total > 0 else float("nan"))
                 metrics[f"Coverage_{level}"] = cov
                 metrics[f"Interval_Width_{level}"] = width
-                cov_gaps.append(abs(cov - level / 100.0))
+                if np.isfinite(cov):
+                    cov_gaps.append(abs(cov - level / 100.0))
                 if level == 90:
-                    # Per-sample покрытие@90 (доля валидных шагов внутри интервала) — для
-                    # object-cluster bootstrap калибровки (корректные CI вместо наивных fold-CI).
-                    inb = ((true >= lower) & (true <= upper)) * mask
-                    sample_df["coverage90"] = inb.sum(axis=1) / np.maximum(mask.sum(axis=1), 1.0)
+                    # Per-sample покрытие@90 на continuation — для object-cluster bootstrap CI.
+                    inb = ((true >= lower) & (true <= upper)) * pm
+                    coverage90 = np.full(len(true), np.nan, dtype=float)
+                    coverage_hits = inb.sum(axis=1)
+                    coverage90[pm_valid] = coverage_hits[pm_valid] / pm_row[pm_valid]
+                    sample_df["coverage90"] = coverage90
+                    sample_df["coverage90_hits"] = np.where(pm_valid, coverage_hits, np.nan)
             # Сводная ошибка калибровки интервалов (среднее |покрытие − номинал| по уровням)
-            metrics["Calibration_Error"] = float(np.mean(cov_gaps))
+            metrics["Calibration_Error"] = float(np.mean(cov_gaps)) if cov_gaps else float("nan")
             # ПРИМЕЧАНИЕ: deployable conformal-покрытие требует ОТДЕЛЬНОГО калибровочного набора
             # (disjoint с тестом) — функция split_conformal_coverage. Внутри compute_metrics(test)
             # такого набора нет, поэтому здесь его НЕ считаем (иначе transductive утечка).
@@ -696,17 +819,22 @@ def compute_metrics(
             # калибрует квантиль на VAL-объектах фолда и применяет к test → метрика Coverage_90_splitconf
             # (object-held-out, не transductive). Это POINTWISE marginal покрытие (точки времени
             # независимы), НЕ simultaneous trajectory coverage.
-            # Гауссовская NLL — собственно правило (proper scoring) для вероятностного прогноза
+            # Гауссовская NLL — proper scoring для вероятностного прогноза (на continuation #7)
             nll = 0.5 * (np.log(2 * np.pi * std ** 2) + ((true - pred) ** 2) / (std ** 2))
-            metrics["Traj_NLL"] = float(np.sum(nll * mask) / np.maximum(mask.sum(), 1.0))
-            # CRPS для гауссовского предиктива (награждает калиброванную остроту)
+            metrics["Traj_NLL"] = (float(np.sum(nll * pm) / pm_total) if pm_total > 0 else float("nan"))
+            # CRPS для гауссовского предиктива (награждает калиброванную остроту, на continuation #7)
             z0 = (true - pred) / std
             phi = np.exp(-0.5 * z0 ** 2) / np.sqrt(2 * np.pi)
             Phi = 0.5 * (1.0 + erf(z0 / np.sqrt(2.0)))
             crps = std * (z0 * (2 * Phi - 1) + 2 * phi - 1.0 / np.sqrt(np.pi))
-            metrics["Traj_CRPS"] = float(np.sum(crps * mask) / np.maximum(mask.sum(), 1.0))
+            metrics["Traj_CRPS"] = (float(np.sum(crps * pm) / pm_total) if pm_total > 0 else float("nan"))
             std90 = 1.6449 * std
-            sample_df["interval_width"] = np.sum((2 * std90) * mask, axis=1) / sample_mask_count
+            interval_width = np.full(len(true), np.nan, dtype=float)
+            mean_std = np.full(len(true), np.nan, dtype=float)
+            interval_width[pm_valid] = np.sum((2 * std90) * pm, axis=1)[pm_valid] / pm_row[pm_valid]
+            mean_std[pm_valid] = np.sum(std * pm, axis=1)[pm_valid] / pm_row[pm_valid]
+            sample_df["interval_width"] = interval_width
+            sample_df["mean_pred_std_continuation"] = mean_std
         else:
             for level in (80, 90, 95):
                 metrics[f"Coverage_{level}"] = float("nan")
@@ -774,7 +902,10 @@ def grouped_metrics(sample_df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     :return: таблица групповых агрегатов, отсортированная по размеру группы
     """
     def safe_group_auc(df: pd.DataFrame) -> float:
-        return roc_auc_score(df["liq_label"], df["risk_prob_pred"]) if df["liq_label"].nunique() > 1 else float("nan")
+        mask_col = "risk_label_observed" if "risk_label_observed" in df.columns else None
+        known = df[df[mask_col] > 0.5] if mask_col else df
+        return (roc_auc_score(known["liq_label"], known["risk_prob_pred"])
+                if len(known) and known["liq_label"].nunique() > 1 else float("nan"))
 
     grouped = (
         sample_df.groupby(group_col)

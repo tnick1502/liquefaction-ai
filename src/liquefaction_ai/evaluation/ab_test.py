@@ -112,3 +112,35 @@ def ab_flow_vs_gaussian(model_flow, model_gauss, split, config, device,
     for name, col in (("Traj_mixNLL", "nll"), ("Traj_mixCRPS", "crps")):
         rows.append({"metric": name, **_object_cluster_ab(sf, sg, col, nboot, rng)})
     return pd.DataFrame(rows)
+
+
+def train_ab_pair(benchmark: Dict[str, object], config, device, model_kwargs: Dict[str, object],
+                  epochs: int = None, seed: int = 42):
+    """
+    Обучить ПАРУ DPI-Flow для A/B «flow vs gaussian»: идентичные модели, отличающиеся только
+    ``use_flow`` (True = conditional RealNVP-поток над θ, False = гауссов постериор). Прочее равно
+    (одни kwargs, один сид, одни эпохи/расписание) → разница в скорах относится к самому flow.
+
+    :param benchmark: словарь выборок (нужны ``train``/``val``) из ``prepare_benchmark_dataset``
+    :param config: конфигурация эксперимента (эпохи/расписание/сид)
+    :param device: устройство обучения
+    :param model_kwargs: kwargs конструктора DPIFlow (из ``hyperparams.json``; ``use_flow`` будет задан)
+    :param epochs: число эпох (по умолчанию ``config.publication_physics_epochs``)
+    :param seed: общий сид обеих моделей (идентичная инициализация/порядок батчей)
+    :return: кортеж ``(model_flow, model_gauss)`` — обученные модели с потоком и без
+    """
+    from liquefaction_ai.config import set_global_seed
+    from liquefaction_ai.models import DPIFlow
+    from liquefaction_ai.training.loop import train_model
+
+    ep = int(epochs if epochs is not None else getattr(config, "publication_physics_epochs", 200))
+    base = {k: v for k, v in model_kwargs.items() if k != "use_flow"}
+    trained = []
+    for use_flow in (True, False):
+        set_global_seed(seed)
+        model = DPIFlow(**base, use_flow=use_flow).to(device)
+        model, _ = train_model(model, benchmark["train"], benchmark["val"], epochs=ep,
+                               model_name=f"AB-{'flow' if use_flow else 'gauss'}",
+                               config=config, device=device, verbose=False, scheduler="cosine")
+        trained.append(model)
+    return trained[0], trained[1]

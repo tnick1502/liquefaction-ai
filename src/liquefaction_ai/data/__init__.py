@@ -14,7 +14,7 @@ from liquefaction_ai.data.ppr_envelope import (
     smooth_ppr_trajectory,
 )
 from liquefaction_ai.data.raw_loader import (build_real_objects_population, find_cloud_root,
-                                              DEFAULT_TEST_TYPES, read_statement)
+                                              DEFAULT_TEST_TYPES, read_statement, build_cohort_manifest)
 from liquefaction_ai.data.real_adapter import (
     build_observed_prefix,
     build_population_from_experiments,
@@ -34,6 +34,7 @@ __all__ = [
     "DEFAULT_TEST_TYPES",
     "find_cloud_root",
     "build_real_objects_population",
+    "build_cohort_manifest",
     "generate_population",
     "save_population_artifact",
     "load_population_artifact",

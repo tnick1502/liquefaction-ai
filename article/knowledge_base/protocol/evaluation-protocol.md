@@ -4,7 +4,21 @@ status: TODO (multiseed не прогнан)
 ---
 # Протокол оценки (P0 — критический путь)
 
-Связано: [[../tracks/AAAI-27]] · [[metrics]] · [[ablations]] · [[../literature/roberts-2017]] · [[../literature/maurer-sanger-2023]]
+Связано: [[../tracks/AAAI-27]] · [[metrics]] · [[ablations]] · [[cohort-manifest]] · [[object-split-policy]] · [[../literature/roberts-2017]] · [[../literature/maurer-sanger-2023]]
+
+## Текущий data/label-протокол (метод, anti-leakage)
+- **Единая query-сетка `1…3000` для всех опытов** (uniform prediction horizon). `N_max`/`cycles_count`
+  и фактическая длительность во входы НЕ подаются (в реальных опытах ≈ длительность → утечка).
+- **Префикс** — наблюдения до landmark-цикла N₀ (`prefix_landmark_cycles`), outcome-independent;
+  событие N_liq определяется на ПОЦИКЛОВОЙ огибающей (поцикловое разрешение).
+- **Risk-метка по ОКНУ НАБЛЮДЕНИЯ:** `risk_label_observed` = разжижение ∨ (non-liq, доведённый до ≥H);
+  non-liq, остановленные до H, — цензурированы и исключены из risk-метрик (без cure-предположения).
+- **Event-time:** right-censored regression; `nliq_censor_valid` независим от risk-mask; regime-маски
+  (liquefied / stabilized / unfinished) — по reached_horizon, отдельно.
+- **Нагрузка:** измеренная CSR(N) из амплитуды девиатора; пропуски свойств — missingness-индикаторы.
+- **Группировка:** site-held-out по `site_id` (см. [[object-split-policy]]).
+- **Калибровка/coverage:** variance-scaling σ (НЕ conformal) + empirical site-held-out coverage с
+  object-bootstrap CI (честная оценка, не finite-sample гарантия), ширина полосы рядом с покрытием.
 
 ## Почему это P0
 Текущий headline — single-seed на **random split** → object leakage. Рецензент AAAI спишет метрики как inflated. Grouped CV реализован в ноутбуке **3_4** (`evaluation.cross_validation.make_grouped_cv_folds`).
@@ -21,7 +35,7 @@ status: TODO (multiseed не прогнан)
 - Везде **effect size + CI разницы**, не только p (на 1093 «значимо» бывает мизерным).
 
 ## Anti-leakage чеклист (red flags)
-- [ ] **AUROC ≈ 1.0 — red flag.** 0.9996 на 20 объектах = подозрение на leakage/prefix-shortcut.
+- [ ] **AUROC ≈ 1.0 — red flag.** На 14 landmark-eligible объектах это требует особенно сильного leakage/prefix-shortcut аудита.
 - [ ] **Префикс строго ДО onset** — нет post-onset точек PPR во входном окне (иначе label leakage через вход).
 - [ ] no-prefix stress: если AUROC держится ~1.0 без префикса → искать утечку.
 - [ ] OOD by soil / CSR / site.

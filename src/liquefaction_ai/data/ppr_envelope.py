@@ -22,7 +22,56 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-__all__ = ["extract_upper_envelope", "monotone_smooth", "resample_to_grid", "smooth_ppr_trajectory"]
+__all__ = ["extract_upper_envelope", "extract_cycle_amplitude", "monotone_smooth",
+           "causal_monotone_smooth", "resample_to_grid", "smooth_ppr_trajectory"]
+
+
+def extract_cycle_amplitude(
+    cycles: np.ndarray,
+    signal: np.ndarray,
+    points_in_cycle: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Пер-цикловая ОДИНОЧНАЯ амплитуда колебательного сигнала: ``(max − min) / 2`` в каждом цикле.
+
+    Для восстановления реальной истории нагружения CSR(N) из сырого девиатора (#3): в отличие от
+    :func:`extract_upper_envelope` (верхний пик), берётся половина размаха цикла — фактическая
+    амплитуда напряжения, которая для штормовых/переменно-амплитудных протоколов может меняться.
+
+    :param cycles: номер цикла в каждой измеренной точке, форма (m,)
+    :param signal: значение сигнала (девиатор/напряжение), форма (m,)
+    :param points_in_cycle: число точек на цикл (как в digitrock); иначе по целым циклам
+    :return: ``(cycle_centers, amplitude)`` — номера циклов и одиночная амплитуда, форма (L,)
+    """
+    cyc = np.asarray(cycles, dtype=float)
+    sig = np.nan_to_num(np.asarray(signal, dtype=float))
+    size = min(cyc.size, sig.size)
+    cyc, sig = cyc[:size], sig[:size]
+    if cyc.size == 0:
+        return np.zeros(0), np.zeros(0)
+    n_total = max(int(np.floor(np.nanmax(cyc))), 1)
+
+    if points_in_cycle and points_in_cycle >= 2 and cyc.size >= points_in_cycle:
+        centers, amps = [], []
+        for i in range(0, cyc.size, int(points_in_cycle)):
+            w = sig[i:i + int(points_in_cycle)]
+            if w.size == 0:
+                continue
+            centers.append(float(cyc[min(i + w.size // 2, cyc.size - 1)]))
+            amps.append((float(np.nanmax(w)) - float(np.nanmin(w))) / 2.0)
+        c = np.asarray(centers, float); a = np.asarray(amps, float)
+        order = np.argsort(c)
+        return c[order], a[order]
+
+    centers = np.arange(1, n_total + 1, dtype=float)
+    amps = np.zeros(n_total)
+    for k in range(1, n_total + 1):
+        m = (cyc >= k) & (cyc < k + 1)
+        if int(m.sum()) >= 2:
+            amps[k - 1] = (float(np.nanmax(sig[m])) - float(np.nanmin(sig[m]))) / 2.0
+        elif k > 1:
+            amps[k - 1] = amps[k - 2]
+    return centers, amps
 
 
 def extract_upper_envelope(
@@ -122,6 +171,27 @@ def monotone_smooth(
             iso = np.convolve(padded, np.ones(kernel) / kernel, mode="valid")
         iso = np.maximum.accumulate(iso)        # восстановить монотонность после сглаживания
     return np.clip(iso, clip[0], clip[1])
+
+
+def causal_monotone_smooth(
+    ppr_peaks: np.ndarray,
+    window: int = 3,
+    clip: Tuple[float, float] = (0.0, 1.05),
+) -> np.ndarray:
+    """Односторонняя робастная огибающая для prospective-аудитов без доступа к будущим циклам.
+
+    Каждый цикл использует медиану только текущего и предыдущих ``window-1`` пиков, после чего
+    применяется накопительный максимум. Эта кривая не заменяет publication target, но гарантирует,
+    что значение в цикле N инвариантно к любым измерениям после N.
+    """
+    y = np.clip(np.nan_to_num(np.asarray(ppr_peaks, dtype=float)), clip[0], clip[1])
+    if y.size == 0:
+        return y
+    w = max(int(window), 1)
+    filtered = np.empty_like(y)
+    for i in range(y.size):
+        filtered[i] = np.median(y[max(0, i - w + 1):i + 1])
+    return np.clip(np.maximum.accumulate(filtered), clip[0], clip[1])
 
 
 def resample_to_grid(

@@ -31,14 +31,17 @@ from liquefaction_ai.config import set_global_seed
 from liquefaction_ai.data.splits import (make_grouped_cv_folds, make_loo_object_folds,
                                          prepare_benchmark_dataset)
 from liquefaction_ai.evaluation.metrics import (collect_outputs, compute_metrics, fit_interval_scale,
-                                                split_conformal_coverage)
+                                                split_conformal_coverage,
+                                                simultaneous_conformal_coverage,
+                                                per_trajectory_nonconformity,
+                                                conformal_band_quantile)
 from liquefaction_ai.evaluation.p3_ranking import compute_p3_score
 from liquefaction_ai.training.persistence import load_model_metadata
 from liquefaction_ai.training.loop import train_model
 from liquefaction_ai import models as M
 
 # (артефакт, отображаемое имя, физическая ли модель, тип тренировки 'torch'|'fit')
-# Включены САМЫЕ ОПАСНЫЕ конкуренты в PRIMARY CV (замечание рецензента): Transformer, Neural Spline
+# Включены САМЫЕ ОПАСНЫЕ конкуренты в PRIMARY CV Transformer, Neural Spline
 # Flow (лучший raw RMSE), CatBoost (лучший Brier/N_liq), GRU/TCN — чтобы сильные baselines
 # оценивались на том же объектном протоколе, а не только на слабом single-split.
 DEFAULT_MODELS = [
@@ -68,7 +71,8 @@ NESTED_GRIDS = {
                  "calibration_steps": [0, 1]},
     # Baselines тоже подбираются ВНУТРИ фолда (иначе у них selection-leakage, а у proposed — нет).
     "transformer": {"hidden_dim": [64, 96, 128]},
-    "nsf":         {"hidden_dim": [64, 96, 128]},
+    # NSF не имеет hidden_dim — ёмкость регулируется числом coupling-слоёв и бинов сплайна.
+    "nsf":         {"n_layers": [4, 6, 8], "n_bins": [8, 12]},
     "gru":         {"hidden_dim": [64, 96, 128]},
     "tcn":         {"hidden_dim": [64, 96, 128]},
     "pinn":        {"hidden_dim": [64, 96, 128]},
@@ -79,11 +83,11 @@ NESTED_SELECT_METRIC = "Traj_RMSE_continuation"
 
 METRIC_KEYS = ["P3_Core", "N_liq_logMAE", "N_liq_logMAE_liq", "Traj_RMSE", "Traj_RMSE_continuation",
                "Traj_RMSE_continuation_balanced", "Traj_RMSE_continuation_worst", "Traj_RMSE_worst",
-               "AUROC", "AUPRC", "Brier", "ECE", "Coverage_90", "Coverage_90_splitconf",
+               "AUROC", "AUPRC", "Brier", "ECE", "Coverage_90", "Coverage_90_splitconf", "Coverage_90_simul",
+               "Coverage_90_splitconf_width", "Coverage_90_simul_width",
                "Traj_RMSE_late", "Calibration_Error", "Traj_CRPS",
                "Onset_EarlyWarning_Rate", "Physics_Violation_Rate",
-               "CRR_RMSE", "N_CRR_test", "N_CRR_objects"]   # CRR-метрики в primary CV (замечание рецензента)
-
+               "CRR_RMSE", "N_CRR_test", "N_CRR_objects"]   # CRR-метрики в primary CV 
 # Метрики, передаваемые в P³: используем POST-PREFIX (continuation) траекторию как primary —
 # это соответствует prefix-conditioned forecasting (p3_ranking сам предпочтёт continuation_balanced).
 _P3_INPUT_KEYS = ["N_liq_logMAE", "Traj_RMSE", "Traj_RMSE_balanced", "Traj_RMSE_continuation",
@@ -91,8 +95,11 @@ _P3_INPUT_KEYS = ["N_liq_logMAE", "Traj_RMSE", "Traj_RMSE_balanced", "Traj_RMSE_
                   "Brier", "AUPRC", "Physics_Violation_Rate"]
 
 _SAMPLE_COLS = ["repeat", "fold", "model", "sidx", "object", "liq_label", "n_liq_observed",
-                "risk_prob_pred", "traj_rmse", "traj_rmse_continuation", "coverage90",
-                "nliq_log_err", "physics_violation", "interval_width", "onset_timing_bias_cyc"]
+                "risk_label_observed", "nliq_censor_valid", "continuation_valid", "regime",
+                "risk_prob_pred", "traj_rmse", "traj_rmse_continuation", "traj_sse_continuation",
+                "continuation_points", "coverage90", "coverage90_hits",
+                "nliq_log_err", "physics_violation", "interval_width", "onset_timing_bias_cyc",
+                "mean_pred_std_continuation", "nonconf_max", "conf_q_val", "conf_band_width"]
 
 
 def build_folds(meta: pd.DataFrame, config, seed: int = 42, loo: bool = False,
@@ -131,11 +138,15 @@ def _train_one(name: str, disp: str, is_phys: bool, trainer: str, train, val,
     model_kwargs = hp["model_kwargs"]
     grid = NESTED_GRIDS.get(name) if nested else None
     if grid:
-        # Подбираем ТОЛЬКО те ручки, что реально есть в model_kwargs модели (защита от unexpected-kwarg).
-        _dropped = [k for k in grid if k not in hp["model_kwargs"]]
-        grid = {k: v for k, v in grid.items() if k in hp["model_kwargs"]}
+        # Подбираем ручки, которые конструктор модели РЕАЛЬНО принимает (сверка с СИГНАТУРОЙ, а не с
+        # сохранёнными model_kwargs — иначе параметры с дефолтом, напр. NSF n_bins, ошибочно
+        # отбрасывались бы как «отсутствующие»). Защита от unexpected-kwarg сохраняется.
+        import inspect
+        _accepts = set(inspect.signature(cls.__init__).parameters)
+        _dropped = [k for k in grid if k not in _accepts]
+        grid = {k: v for k, v in grid.items() if k in _accepts}
         if _dropped:   # НЕ молча: если ключ не подходит модели — это видно (а не тихий no-op)
-            print(f"  [nested] '{name}': ключи grid {_dropped} отсутствуют в model_kwargs — пропущены.")
+            print(f"  [nested] '{name}': ключи grid {_dropped} не принимаются конструктором — пропущены.")
         if not grid:
             print(f"  [nested] '{name}': подходящих ручек нет → используются ГЛОБАЛЬНЫЕ гиперпараметры.")
     if grid:
@@ -185,30 +196,89 @@ def evaluate_fold(pop: Dict, config, fold_split: Dict, fold_id: int, device,
             else:
                 model = _train_one(name, disp, is_phys, trainer, train, val, config, device,
                                    fold_id, seed, models_dir, nested=nested)
-            # FOLD-LOCAL конформная калибровка интервалов на VAL текущего outer-фолда (замечание
-            # рецензента: без неё Coverage@90 систематически недопокрывает → claim «calibrated» провален).
+            # FOLD-LOCAL variance-scaling калибровка σ на VAL текущего фолда (НЕ conformal — без
+            # конечновыборочной гарантии; empirical object-held-out audit — ниже). Сбой НЕ глотаем
+            # молча: иначе модель попадёт в таблицу как «calibrated», хотя калибровка не выполнилась.
+            # strict=True → fatal; иначе — громкий WARN.
             if trainer == "torch":
                 try:
                     fit_interval_scale(model, val, config, device)
-                except Exception:
-                    pass
+                except Exception as e:
+                    if strict:
+                        raise RuntimeError(f"калибровка интервалов '{disp}' упала на fold {fold_id}: "
+                                           f"{type(e).__name__}: {e}") from e
+                    print(f"  [WARN] калибровка '{disp}' на fold {fold_id} не выполнилась — "
+                          f"Coverage может быть некорректным: {type(e).__name__}: {e}")
             test_out = collect_outputs(model, test, config, device)
             met, sdf = compute_metrics(disp, test_out, test, config)
-            # #9 DEPLOYABLE split-conformal покрытие@90: конформный квантиль калибруется на VAL-объектах
-            # фолда (disjoint и с train, и с test), применяется к test → честное object-held-out покрытие
-            # (не transductive). Pointwise marginal. Считается для torch-моделей с предсказанным σ.
+            # conformal-скоры считаем на POST-PREFIX (continuation) маске, как и headline-метрики:
+            # наблюдаемый префикс модель видит как контекст и тривиально его накрывает.
+            def _cont_mask(split):
+                if "continuation_mask" in split:
+                    return split["continuation_mask"].cpu().numpy()
+                m = split["mask"].cpu().numpy()
+                if "prefix_mask" in split:
+                    return m * (1.0 - np.minimum(split["prefix_mask"].cpu().numpy(), 1.0))
+                return m
+            _test_cm = _cont_mask(test)
+            # split-conformal покрытие@90 (per-fold ДИАГНОСТИКА): квантиль калибруется на VAL-объектах
+            # фолда (disjoint с test), применяется к test. ОГОВОРКА (#2): val используется ещё и для
+            # early-stopping/селекции, поэтому это НЕ чистый split-conformal и не формальная гарантия.
+            # Pointwise marginal; width публикуется рядом.
             if trainer == "torch" and "traj_logvar" in test_out:
                 try:
                     vo = collect_outputs(model, val, config, device)
                     if "traj_logvar" in vo:
-                        cov_sc, _ = split_conformal_coverage(
-                            vo["traj_mean"], np.sqrt(np.exp(vo["traj_logvar"])),
-                            val["r_obs"].cpu().numpy(), val["mask"].cpu().numpy(),
-                            test_out["traj_mean"], np.sqrt(np.exp(test_out["traj_logvar"])),
-                            test["r_obs"].cpu().numpy(), test["mask"].cpu().numpy(), level=0.90)
+                        _args = (vo["traj_mean"], np.sqrt(np.exp(vo["traj_logvar"])),
+                                 val["r_obs"].cpu().numpy(), _cont_mask(val),
+                                 test_out["traj_mean"], np.sqrt(np.exp(test_out["traj_logvar"])),
+                                 test["r_obs"].cpu().numpy(), _test_cm)
+                        cov_sc, w_sc = split_conformal_coverage(*_args, level=0.90)
+                        cov_si, w_si = simultaneous_conformal_coverage(*_args, level=0.90)
                         met["Coverage_90_splitconf"] = cov_sc
-                except Exception:
-                    pass
+                        met["Coverage_90_splitconf_width"] = w_sc      # sharpness рядом с покрытием
+                        met["Coverage_90_simul"] = cov_si
+                        met["Coverage_90_simul_width"] = w_si
+                except Exception as e:
+                    # НЕ глотаем молча: иначе Coverage просто исчезает из фолда. strict→fatal.
+                    if strict:
+                        raise RuntimeError(f"split-conformal '{disp}' упал на fold {fold_id}: "
+                                           f"{type(e).__name__}: {e}") from e
+                    print(f"  [WARN] split-conformal '{disp}' на fold {fold_id} пропущен: "
+                          f"{type(e).__name__}: {e}")
+            # EMPIRICAL site-held-out coverage: q калибруется на VAL-объектах (disjoint с test),
+            # покрытие меряется на TEST-объектах (каждый объект — в test ровно одного фолда, моделью
+            # его НЕ видевшей). Пишем в sdf пер-траекторный TEST-скор + калиброванный q фолда; агрегат
+            # across folds (aggregate_object_conformal) даёт эмпирическое покрытие + object-bootstrap CI.
+            # Это НЕ formal finite-sample гарантия (val участвует и в early-stop), а честная оценка.
+            if trainer == "torch" and "traj_logvar" in test_out:
+                _nc = per_trajectory_nonconformity(
+                    test_out["traj_mean"], np.sqrt(np.exp(test_out["traj_logvar"])),
+                    test["r_obs"].cpu().numpy(), _test_cm)
+                _qcal = float("nan")
+                try:
+                    vo = collect_outputs(model, val, config, device)
+                    if "traj_logvar" in vo:
+                        _vnc = per_trajectory_nonconformity(
+                            vo["traj_mean"], np.sqrt(np.exp(vo["traj_logvar"])),
+                            val["r_obs"].cpu().numpy(), _cont_mask(val))
+                        # калибруем q на ПЕР-ОБЪЕКТНЫХ скорах val (макс по образцам объекта) — ТОЙ
+                        # ЖЕ единице, что test-score в aggregate_object_conformal. Иначе калибровка по
+                        # образцам, а оценка по объектам — несогласованные единицы.
+                        _vobj = val["meta"]["object"].to_numpy() if "object" in val["meta"].columns else None
+                        if _vobj is not None and np.isfinite(_vnc).any():
+                            _fin = np.isfinite(_vnc)
+                            _vobj_scores = (pd.Series(_vnc[_fin]).groupby(_vobj[_fin]).max().to_numpy())
+                            _qcal = conformal_band_quantile(_vobj_scores, level=0.90)
+                        else:
+                            _qcal = conformal_band_quantile(_vnc, level=0.90)
+                except Exception as e:
+                    if strict:
+                        raise RuntimeError(f"band-quantile '{disp}' fold {fold_id}: "
+                                           f"{type(e).__name__}: {e}") from e
+                sdf = sdf.copy(); sdf["nonconf_max"] = _nc; sdf["conf_q_val"] = _qcal
+                if "mean_pred_std_continuation" in sdf.columns:
+                    sdf["conf_band_width"] = 2.0 * _qcal * sdf["mean_pred_std_continuation"]
             per_model[disp] = met
             samples.append(_samples_frame(sdf, disp, fold_id, repeat))
         except Exception as e:
@@ -241,9 +311,12 @@ def aggregate_cv(raw_df: pd.DataFrame, metric_keys: Optional[List[str]] = None) 
     """Свести per-fold метрики в mean ± 95% CI по фолдам."""
     cols = [c for c in (metric_keys or METRIC_KEYS) if c in raw_df.columns]
     agg = raw_df.groupby("model")[cols].agg(["mean", "std", "count"])
+    # n_folds = число строк-фолдов модели (а НЕ count ненулевого P3_Core: у CatBoost P3 может быть
+    # NaN → раньше n_folds=0). Берём размер группы, который не зависит от наличия конкретной метрики.
+    fold_counts = raw_df.groupby("model").size()
     rows = []
     for model in agg.index:
-        rec = {"model": model, "n_folds": int(agg.loc[model, (cols[0], "count")])}
+        rec = {"model": model, "n_folds": int(fold_counts.loc[model])}
         for c in cols:
             mean = float(agg.loc[model, (c, "mean")]); cnt = int(agg.loc[model, (c, "count")])
             std = float(agg.loc[model, (c, "std")]) if cnt > 1 else 0.0
@@ -251,3 +324,59 @@ def aggregate_cv(raw_df: pd.DataFrame, metric_keys: Optional[List[str]] = None) 
             rec[f"{c}_ci95"] = round(1.96 * std / np.sqrt(max(cnt, 1)), 4)
         rows.append(rec)
     return pd.DataFrame(rows).sort_values("P3_Core_mean", ascending=False).reset_index(drop=True)
+
+
+def aggregate_object_conformal(samples_df: pd.DataFrame, level: float = 0.90,
+                               n_boot: int = 2000, seed: int = 42) -> pd.DataFrame:
+    """
+    EMPIRICAL site-held-out coverage@``level`` с object-bootstrap CI (честная оценка, НЕ гарантия).
+
+    Для каждого (repeat, fold, object) берётся пер-ОБЪЕКТНЫЙ скор ``s = max`` пер-траекторных
+    nonconformity по образцам объекта (вся площадка внутри полосы) и калиброванный на VAL квантиль
+    ``q`` этого фолда (``conf_q_val``, disjoint с test). Объект «покрыт», если ``s ≤ q``. Покрытие =
+    доля покрытых объектных точек; 95% CI — бутстрэп по КЛАСТЕРАМ-объектам (а не по образцам). Так
+    оценивается, накроет ли полоса НОВЫЙ объект; q калибруется вне test → не тавтология. При 20
+    объектах честнее заявлять именно empirical coverage + CI, чем formal finite-sample гарантию.
+
+    :param samples_df: per-sample выходы (нужны model/object/repeat/fold/nonconf_max/conf_q_val)
+    :param level: целевой уровень
+    :return: таблица с empirical coverage, object-bootstrap CI и фактической средней шириной полосы
+    """
+    cols = {"model", "object", "nonconf_max", "conf_q_val"}
+    if samples_df is None or not cols.issubset(samples_df.columns):
+        return pd.DataFrame(columns=["model", "Coverage_emp", "Coverage_lo", "Coverage_hi",
+                                     "mean_band_q", "mean_band_width", "n_objects", "n_object_points"])
+    df = samples_df.copy()
+    df = df[np.isfinite(df["nonconf_max"].astype(float)) & np.isfinite(df["conf_q_val"].astype(float))]
+    gkeys = [c for c in ("repeat", "fold", "object") if c in df.columns]
+    rows = []
+    for model, g in df.groupby("model"):
+        # объектная точка = (фолд, объект): скор-площадки vs её фолд-калиброванный q
+        agg_spec = {"s": ("nonconf_max", "max"), "q": ("conf_q_val", "first"),
+                    "obj": ("object", "first")}
+        if "conf_band_width" in g.columns:
+            agg_spec["width"] = ("conf_band_width", "mean")
+        per_obj = g.groupby(gkeys).agg(**agg_spec).reset_index(drop=True)
+        if per_obj.empty:
+            continue
+        covered = (per_obj["s"].to_numpy() <= per_obj["q"].to_numpy()).astype(float)
+        objs = per_obj["obj"].to_numpy()
+        cov = float(covered.mean())
+        # object-cluster bootstrap CI (ресэмпл уникальных объектов с возвратом)
+        rng = np.random.default_rng(seed)
+        uniq = np.unique(objs)
+        by_obj = {o: covered[objs == o] for o in uniq}
+        boots = []
+        for _ in range(int(n_boot)):
+            pick = rng.choice(uniq, size=len(uniq), replace=True)
+            vals = np.concatenate([by_obj[o] for o in pick])
+            boots.append(vals.mean())
+        lo, hi = np.percentile(boots, [2.5, 97.5])
+        rows.append({"model": model, "Coverage_emp": round(cov, 4),
+                     "Coverage_lo": round(float(lo), 4), "Coverage_hi": round(float(hi), 4),
+                     "mean_band_q": round(float(per_obj["q"].mean()), 4),
+                     "mean_band_width": (round(float(per_obj["width"].mean()), 4)
+                                         if "width" in per_obj else float("nan")),
+                     "n_objects": int(len(uniq)),
+                     "n_object_points": int(len(per_obj))})
+    return pd.DataFrame(rows).sort_values("model").reset_index(drop=True)

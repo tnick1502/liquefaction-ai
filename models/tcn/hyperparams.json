@@ -2,9 +2,9 @@
   "model_type": "TCNBaseline",
   "display_name": "TCN",
   "model_kwargs": {
-    "static_dim": 34,
+    "static_dim": 38,
     "seq_dim": 5,
-    "hidden_dim": 96
+    "hidden_dim": 64
   },
   "search": {
     "grid": {
@@ -15,10 +15,10 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 96
+      "hidden_dim": 64
     }
   },
-  "epochs": 39,
+  "epochs": 92,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

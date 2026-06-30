@@ -34,6 +34,7 @@ _NON_ARRAY_KEYS = (
     "static_feature_names",
     "prefix_summary_names",
     "seq_feature_names",
+    "cohort_filter_counts",
 )
 
 
@@ -80,6 +81,10 @@ def save_population_artifact(artifact_dir: str | Path, population: Dict[str, Any
         "seq_feature_names": population["seq_feature_names"],
     }
     (artifact_dir / "feature_names.json").write_text(json.dumps(feature_names, indent=2), encoding="utf-8")
+    if "cohort_filter_counts" in population:
+        (artifact_dir / "cohort_filter_counts.json").write_text(
+            json.dumps(population["cohort_filter_counts"], indent=2), encoding="utf-8"
+        )
 
 
 def load_population_artifact(artifact_dir: str | Path) -> Tuple[Dict[str, Any], ExperimentConfig]:
@@ -114,6 +119,9 @@ def load_population_artifact(artifact_dir: str | Path) -> Tuple[Dict[str, Any], 
         "prefix_summary_names": feature_names["prefix_summary_names"],
         "seq_feature_names": feature_names["seq_feature_names"],
     }
+    cohort_path = artifact_dir / "cohort_filter_counts.json"
+    if cohort_path.exists():
+        population["cohort_filter_counts"] = json.loads(cohort_path.read_text(encoding="utf-8"))
 
     if all(f"crr_family_{ck}" in raw.files for ck in _CRR_KEYS):
         population["crr_families"] = {ck: arr(f"crr_family_{ck}") for ck in _CRR_KEYS}

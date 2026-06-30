@@ -7,6 +7,7 @@
 """
 import pandas as pd
 import math
+import numpy as np
 import pytest
 import torch
 
@@ -70,7 +71,12 @@ def test_nliq_metric_is_censored():
     # а 3-й режим исключается.
     lb = pd.read_csv(TABLES / "full_leaderboard.csv")
     assert "N_liq_n_observed" in lb.columns, "метрика N_liq не помечена цензур-маской"
-    assert (lb["N_liq_n_observed"] > 0).all()
+    # Модели с цензур-совместимым N_liq должны иметь >0 наблюдаемых. Модели, чей N_liq — ДРУГОЙ
+    # estimand (напр. CatBoost: регрессор обучен только на разжижившихся → censored-aware метрика N/A),
+    # помечаются N_liq_n_observed=0 ОСОЗНАННО, чтобы не сравнивать разные величины. Их исключаем.
+    _na_estimand = {"CatBoost"}
+    _cmp = lb[~lb["model"].isin(_na_estimand)]
+    assert (_cmp["N_liq_n_observed"] > 0).all(), "censored-aware модель с пустой N_liq-маской"
 
     split = {
         "meta": pd.DataFrame({"soil_type": ["sand", "sand", "sand", "sand"]}),
@@ -126,6 +132,46 @@ def test_post_prefix_trajectory_metric_excludes_conditioning_prefix():
     assert metrics["Traj_RMSE"] > 0.7
     assert abs(metrics["Traj_RMSE_continuation"]) < 1e-7
     assert abs(samples["traj_rmse_continuation"].iloc[0]) < 1e-7
+
+
+def test_empty_continuation_is_nan_not_perfect_zero():
+    split = {
+        "meta": pd.DataFrame({"soil_type": ["sand"]}),
+        "label": torch.tensor([0.0]),
+        "n_liq_true": torch.tensor([10.0]),
+        "risk_label_observed": torch.tensor([0.0]),
+        "nliq_censor_valid": torch.tensor([1.0]),
+        "r_obs": torch.tensor([[0.1, 0.2]]),
+        "mask": torch.tensor([[1.0, 1.0]]),
+        "prefix_mask": torch.tensor([[1.0, 1.0]]),
+    }
+    outputs = {
+        "risk_prob": np.array([0.2]), "nliq": np.array([20.0]),
+        "traj_mean": np.array([[0.1, 0.2]]), "traj_logvar": np.zeros((1, 2)),
+    }
+    metrics, samples = compute_metrics("empty-cont", outputs, split, get_default_config())
+    assert math.isnan(metrics["Traj_RMSE_continuation"])
+    assert math.isnan(metrics["Coverage_90"])
+    assert math.isnan(samples["traj_rmse_continuation"].iloc[0])
+    assert math.isnan(samples["coverage90"].iloc[0])
+
+
+def test_exact_only_regressor_is_not_reported_as_censor_aware():
+    split = {
+        "meta": pd.DataFrame({"soil_type": ["sand", "sand"]}),
+        "label": torch.tensor([1.0, 0.0]),
+        "n_liq_true": torch.tensor([100.0, 500.0]),
+        "risk_label_observed": torch.tensor([1.0, 0.0]),
+        "nliq_censor_valid": torch.tensor([1.0, 1.0]),
+    }
+    outputs = {
+        "risk_prob": np.array([0.9, 0.2]), "nliq": np.array([110.0, 200.0]),
+        "supports_censored_nliq": np.zeros(2),
+    }
+    metrics, samples = compute_metrics("exact-only", outputs, split, get_default_config())
+    assert math.isnan(metrics["N_liq_logMAE"])
+    assert not math.isnan(metrics["N_liq_logMAE_liq"])
+    assert samples["nliq_log_err"].isna().all()
 
 
 def test_stress_split_can_remove_prefix_and_derived_auxiliary_targets():

@@ -133,7 +133,10 @@ class ExperimentConfig:
     # "fixed_k" — фикс. окно первых K шагов сетки. "preonset" — обрезка до onset (outcome-dependent).
     prefix_mode: str = "landmark"           # "landmark" | "fixed_k" | "preonset"
     prefix_fixed_k: int = 6                 # длина фиксированного префикса (шагов) для prefix_mode="fixed_k"
-    prefix_landmark_cycles: float = 20.0    # физический landmark N₀ (циклы) для prefix_mode="landmark"
+    prefix_landmark_cycles: float = 10.0    # физический landmark N₀ (циклы) для prefix_mode="landmark".
+    # N₀=10 (а не 20): N₀=20 целиком выбрасывал 6 из 19 площадок (опыты <20 циклов — короткие сейсмо-
+    # протоколы), что подрывало site-held-out claim. При N₀=10 сохраняются ~19/19 сайтов ценой более
+    # короткого префикса. Выбор задокументирован sensitivity-таблицей (cohort × n_sites × длина префикса).
 
 
 def get_default_config() -> ExperimentConfig:

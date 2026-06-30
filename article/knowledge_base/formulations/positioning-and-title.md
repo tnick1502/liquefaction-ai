@@ -16,19 +16,20 @@ tags: [formulation, positioning]
 
 ## Title (рекомендация)
 `Physics-Constrained Conditional Flows for Liquefaction Onset Forecasting`
-- **«Calibrated» в title — рано.** Coverage@90=0.975 = conservative, не идеально calibrated. Calibration → раздел/результат, не title-claim.
+- **«Calibrated» в title — рано.** Calibration — раздел/результат (после прогона), не title-claim. И помнить: основной Coverage@90 — это variance-scaling калибровка, не conformal; честная оценка — empirical site-held-out coverage + object-bootstrap CI.
 - Слова, которые должны быть в title/abstract: *physics-structured, probabilistic, ODE, event-time, prefix-conditioned, site-held-out.* «liquefaction» — как прикладной benchmark.
 
 ## Главный claim (честная формулировка)
-NSF имеет лучший raw RMSE (0.1029), но Physics_Violation_Rate=0.917. Поэтому:
-> **best physically admissible, onset-aware probabilistic forecaster under object-held-out evaluation** (НЕ «best RMSE overall»).
+Чисто нейронные конкуренты (напр. Neural Spline Flow) могут давать лучший raw RMSE ценой высоких
+физических нарушений (немонотонность). Поэтому claim формулируется как **trade-off**, а не «best RMSE»:
+> **best physically admissible, onset-aware probabilistic forecaster under site-held-out evaluation** (НЕ «best RMSE overall»).
 
 ## Keywords
 Machine Learning; Scientific ML; Physics-informed ML; Neural Differential Equations; Uncertainty Quantification; Calibration; Robustness/Generalization; Time-Series Forecasting; Event-Time Prediction; Survival Analysis; Tabular Learning; AI for Engineering.
 
 ## ⚖️ Реформулировка claim после честного grouped CV (рецензент, раунд 2)
 После leakage-free CV **DPI-Flow не выигрывает по большинству отдельных метрик** — и это нормально:
-- **CatBoost** — лучший scalar onset/risk (AUPRC/Brier) и N_liq;
+- **CatBoost** — сильный scalar onset/risk baseline; N_liq только liquefied-only, поскольку RMSE-регрессор не моделирует цензуру;
 - **Transformer / NSF** — сильнее по trajectory/CRPS;
 - **EVT-NeuralSSM** — лучший интегральный P³;
 - **DPI-Flow** — наиболее интерпретируемая probabilistic parameter inference через flow + лучший physics–uncertainty trade-off; **DPI-EVT** усиливает physical coupling.

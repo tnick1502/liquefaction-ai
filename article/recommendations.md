@@ -39,7 +39,7 @@ Headline посчитан на **random split** → образцы одного 
 - `run_multiseed.py --grouped` существует, но **не прогнан**. Прогнать.
 
 ### 2.2 AUROC ≈ 1.0 — это RED FLAG, не достижение
-AUROC 0.9996 на 20 объектах рецензент прочтёт как leakage **или prefix-shortcut** (префикс уже содержит начало onset → задача тривиальна).
+AUROC около 1.0 на 14 landmark-eligible объектах рецензент прочтёт как leakage или prefix-shortcut.
 - **Обязательно проверить, что префикс строго ДО onset** (нет post-onset точек PPR в наблюдаемом окне). Если есть — это label leakage через вход, всё рушится.
 - Закрыть стресс-тестами: **no-prefix**, **prefix-length sweep**, continuation-only метрики, object-held-out. Если AUROC падает под стрессом — это правильно и честно; если держится ~1.0 без префикса — ищите утечку.
 
@@ -51,7 +51,7 @@ AUROC 0.9996 на 20 объектах рецензент прочтёт как l
 ### 2.4 Нет тестов значимости
 - Per-sample ошибки (per-curve traj error, per-sample |log N_liq err|) → **Wilcoxon signed-rank** (ошибки негауссовы) + **Holm–Bonferroni** (13 моделей → множественные сравнения).
 - Неразложимые метрики (AUROC/AUPRC/Brier/ECE/coverage) → **stratified bootstrap CI**, 1000 ресемплов по тест-образцам.
-- Везде давать **effect size + CI разницы**, не только p. На 1093 образцах «значимо» бывает мизерным — показать честно.
+- Везде давать **effect size + CI разницы**, не только p. На 790 benchmark-образцах «значимо» бывает мизерным — показать честно.
 
 > P0 — первым, потому что grouped+multiseed может **перетасовать лидерборд**. Абляции и текст до этого = риск переписывать.
 
@@ -75,12 +75,12 @@ AUROC 0.9996 на 20 объектах рецензент прочтёт как l
 
 ## 4. P2 — метрики (фокус, не количество)
 
-- **Onset:** вперёд **AUPRC** (дисбаланс 640/453), а не AUROC; Brier; калибровка = **ECE + reliability diagram (фигура)**, и обязательно **калибровка на grouped split** (OOD-калибровка обычно ломается; если держится — это headline).
+- **Onset:** вперёд **AUPRC** на известных by-3000 исходах (**460 pos / 263 neg**; остальные 67 цензурированы до H), а не AUROC; Brier; ECE + reliability diagram с `risk_label_observed`.
 - **Lead-time / timeliness:** за сколько циклов до фактического разжижения модель поднимает риск → осмысленная early-warning метрика.
 - **N_liq:** headline-метрику считать **только на нецензурированных** (или censored-aware), явно оговорив. MAE по right-censored таргетам легко атаковать.
 - **Trajectory:** вперёд **CRPS + NLL** (proper scoring), а не RMSE — вклад вероятностный. Плюс **PICP/MPIW** (coverage + ширина интервала) вместе.
 - **Per-state (3-regime)** как primary; pooled — вторично. `Traj_RMSE_worst` — robustness-история.
-- **CRR recovery RMSE** — уникальная способность DPI-семейства, **secondary** (CRR-caveat: N_CRR_objects=1 в held-out test → claim осторожный, см. §5 Limitations и §7 чеклист).
+- **CRR recovery RMSE** — уникальная способность DPI-семейства, **secondary** (CRR-caveat: 5 объектов / 349 benchmark-образцов; claim осторожный).
 
 ---
 
@@ -90,11 +90,11 @@ AUROC 0.9996 на 20 объектах рецензент прочтёт как l
 |---|---|---|
 | 1. Introduction | 0.75 | Onset важен; CSR/CRR интерпретируемы, но не prefix-conditioned probabilistic; чисто нейронные нарушают физику; DPI-Flow. |
 | 2. Problem Setup | 0.75 | Inputs: soil + CSR history + early PPR prefix. Outputs: PPR, risk, N_liq, CRR. Три режима цензуры. Object-held-out. Метрики: post-prefix RMSE primary. |
-| 3. Method: DPI-Flow | 1.5 | Encoder; conditional affine flow над θ; analytical differentiable ODE-layer; soft first-hitting для N_liq; `L = L_traj + L_risk + L_censored_Nliq + L_aux + L_KL/flow + L_physics`; conformal calibration. |
-| 4. Experimental Setup | 1.0 | Dataset 1093/20 объектов, 640/453, 419 CRR; split counts; baselines; стресс-тесты (no-prefix, no-aux, grouped/LOO). |
+| 3. Method: DPI-Flow | 1.5 | Encoder; conditional coupling RealNVP над θ; analytical differentiable ODE-layer; exact-forward/soft-backward first-hitting; `L = L_traj + L_risk + L_censored_Nliq + L_aux + L_KL/flow + L_physics`; variance scaling + empirical held-out coverage audit. |
+| 4. Experimental Setup | 1.0 | raw=1093 / 20 объектов → landmark risk set **790 / 14 объектов** после исключения 97 ранних событий и 206 ранних цензур; **460 liq / 330 non-liq**; risk-known 460/263; seismic=436 / storm=354; **CRR 349 образцов / 5 объектов**. Единый горизонт 1…3000; три физические regime-маски отделены от censoring. |
 | 5. Results | 1.5 | Main table (все модели); отдельная admissible table (physics-feasible); calibration/reliability plot; post-prefix trajectory case study; P³ как **secondary engineering ranking**. |
 | 6. Ablations & Robustness | 1.0 | 7 абляций из §3; object/LOO CIs. |
-| 7. Limitations & Conclusion | 0.5 | CRR N_CRR_objects=1 в held-out test → осторожно; physics = assumptions; prefix упрощает задачу (закрыто стрессами); topology — future work. |
+| 7. Limitations & Conclusion | 0.5 | CRR измерена на 5 объектах / 349 benchmark-образцах; physics = assumptions; prefix упрощает задачу; topology — future work. |
 
 **Фигуры main:** (1) method diagram prefix+soil→encoder→flow θ→analytical layer→PPR/risk/N_liq/CRR; (2) compact leaderboard; (3) reliability + coverage table; (4) ablation table; (5) case-study trajectory с uncertainty band; (6) опционально latent θ UMAP/Mapper как маленькая interpretability-панель.
 **Supplement:** full leaderboard; OOD by soil/CSR; censoring details; reproducibility checklist; topology branch; extra case studies; полные гиперпараметры.
@@ -102,8 +102,8 @@ AUROC 0.9996 на 20 объектах рецензент прочтёт как l
 **Contribution bullets (AAAI-стиль):**
 1. Prefix-conditioned onset-forecasting formulation для cyclic liquefaction tests.
 2. Conditional parameter flow + analytical differentiable liquefaction layer (feasible monotone accumulation).
-3. Censored onset objective (liquefied exact / stabilized right-censored / unfinished excluded from N_liq, kept for trajectory).
-4. Object-held-out benchmark на 1093 реальных опытах со strong baselines.
+3. Censored onset objective: liquefied exact; каждый landmark-eligible non-liq right-censored на фактическом last_obs; stabilized/unfinished анализируются отдельно.
+4. Object-held-out benchmark: raw=1093/20 объектов → landmark risk set **790/14 объектов** (460/330), со strong baselines.
 5. Transparent uncertainty/physics evaluation (post-prefix RMSE, censored N_liq, calibration, physics violations, CRR recovery).
 
 ---

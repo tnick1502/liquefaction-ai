@@ -2,9 +2,9 @@
   "model_type": "GRUBaseline",
   "display_name": "GRU",
   "model_kwargs": {
-    "static_dim": 34,
+    "static_dim": 38,
     "seq_dim": 5,
-    "hidden_dim": 64
+    "hidden_dim": 96
   },
   "search": {
     "grid": {
@@ -15,10 +15,10 @@
     },
     "score_metric": "Traj_RMSE",
     "best": {
-      "hidden_dim": 64
+      "hidden_dim": 96
     }
   },
-  "epochs": 99,
+  "epochs": 81,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

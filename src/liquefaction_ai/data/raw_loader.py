@@ -26,8 +26,10 @@ import numpy as np
 import pandas as pd
 
 from liquefaction_ai.config import ExperimentConfig, LIQ_THRESHOLD
-from liquefaction_ai.data.ppr_envelope import (extract_upper_envelope, smooth_ppr_trajectory,
-                                               landmark_aware_cycles)
+from liquefaction_ai.data.ppr_envelope import (causal_monotone_smooth, extract_cycle_amplitude,
+                                               extract_upper_envelope,
+                                               landmark_aware_cycles, monotone_smooth,
+                                               smooth_ppr_trajectory)
 from liquefaction_ai.data.real_adapter import build_population_from_experiments
 
 
@@ -49,8 +51,39 @@ __all__ = [
     "find_object_pickles", "load_object", "discover_objects",
     "read_statement", "fit_alpha_betta", "build_crr_obs",
     "find_cloud_root", "DEFAULT_TEST_TYPES", "TYPE_TO_MODE",
-    "build_real_objects_population",
+    "build_real_objects_population", "build_cohort_manifest", "canonical_site_id",
 ]
+
+
+def build_cohort_manifest(population: Dict[str, object], raw_count: Optional[int] = None) -> Dict[str, object]:
+    """
+    Манифест когорты: различает RAW (все извлечённые опыты) и ANALYTIC risk set (после landmark-
+    фильтра событий до N₀). Возвращает счётчики для §4 статьи и проверки консистентности артефакта.
+
+    :param population: артефакт популяции (из :func:`build_real_objects_population`)
+    :param raw_count: число опытов в RAW; если не задано, берётся из ``cohort_filter_counts``
+    :return: словарь манифеста (raw/analytic N, классы, объекты, режимы, CRR образцы/объекты)
+    """
+    meta = population["meta"]; lab = np.asarray(population["liq_label"])
+    filt = dict(population.get("cohort_filter_counts", {}))
+    raw_n = int(raw_count if raw_count is not None else filt.get("raw_specimens", len(meta)))
+    excluded_event = int(filt.get("excluded_event_before_N0", 0))
+    excluded_censored = int(filt.get("excluded_censored_before_N0", 0))
+    crrm = population.get("crr_obs_mask")
+    crr_n = int((np.asarray(crrm) > 0.5).sum()) if crrm is not None else 0
+    crr_obj = int(meta.loc[np.asarray(crrm) > 0.5, "object"].nunique()) if crrm is not None else 0
+    return {
+        "raw_specimens": raw_n,
+        "analytic_risk_set": int(len(meta)),
+        "excluded_before_N0_total": int(raw_n - len(meta)),
+        "excluded_event_before_N0": excluded_event,
+        "excluded_censored_before_N0": excluded_censored,
+        "n_liq": int((lab > 0.5).sum()), "n_nonliq": int((lab < 0.5).sum()),
+        "n_objects": int(meta["object"].nunique()),
+        "raw_objects": int(filt.get("raw_objects", meta["object"].nunique())),
+        "modes": {str(k): int(v) for k, v in meta["load_mode"].value_counts().items()},
+        "crr_samples": crr_n, "crr_objects": crr_obj,
+    }
 
 # Фракции грансостава (как в digitrock) и их характерные размеры, мм
 GRAN = ["10", "5", "2", "1", "05", "025", "01", "005", "001", "0002", "0000"]
@@ -139,7 +172,8 @@ def dr_proxy(e) -> float:
 # ============================ Извлечение одного образца ============================
 
 def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
-                 landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None):
+                 landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None,
+                 horizon_default: Optional[float] = None):
     """
     Извлечь из одного образца строки свойств/нагрузки и массивы PPR(N).
 
@@ -160,71 +194,147 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
 
     # гладкая линия PPR(N) по верхней огибающей квазисинусоиды
     pic = gv(tp, "points_in_cycle", None)
-    grid, r, mask, _cp, ppr_peaks = smooth_ppr_trajectory(cyc, ppr, seq_len, points_in_cycle=pic,
-                                                          return_peaks=True)
+    coarse_grid, coarse_r, coarse_mask, _cp, ppr_peaks = smooth_ppr_trajectory(
+        cyc, ppr, seq_len, points_in_cycle=pic, return_peaks=True
+    )
+    # Полноразрешённая поцикловая огибающая. Landmark-сетка должна интерполироваться именно из неё:
+    # повторная интерполяция из coarse_grid теряет ранние наблюдения и позволяет узлам после N0
+    # влиять на префикс до N0.
+    ppr_sm_pc = monotone_smooth(ppr_peaks) if len(ppr_peaks) else np.zeros(0, float)
+    ppr_causal_pc = causal_monotone_smooth(ppr_peaks) if len(ppr_peaks) else np.zeros(0, float)
     peak = float(ppr_peaks.max()) if len(ppr_peaks) else float(np.nanmax(np.nan_to_num(ppr)))
 
-    # Девиатор q(N) и осевая деформация ε(N) — по одному пику на цикл, на ту же сетку, что и PPR.
-    # Сохраняются в артефакт (q_obs/eps_obs), чтобы фазовое пространство X=(PPR,q,ε) для топологии
-    # (ноутбук 4_2) строилось из данных проекта без повторного парсинга сырых пиклов.
-    dev = gv(data_obj, "deviator"); eps_sig = gv(data_obj, "strain")
-    q_grid = _peak_on_grid(cyc, dev, grid, pic) if dev is not None else np.zeros(seq_len, np.float32)
-    eps_grid = _peak_on_grid(cyc, eps_sig, grid, pic) if eps_sig is not None else np.zeros(seq_len, np.float32)
-
-    # #6 общий early-cycle grid (landmark): пересэмплируем PPR/q/ε на сетку с ОДИНАКОВЫМ ранним
-    # разрешением (первые k узлов = geomspace(1, N₀, k) для всех опытов), чтобы объём наблюдаемой
-    # ранней динамики не зависел от N_max/сетки. mask — валиден до последнего наблюдённого цикла.
-    if landmark_n0 is not None:
-        last_obs = float(grid[mask > 0].max()) if np.any(mask > 0) else float(grid[-1])
-        lg = landmark_aware_cycles(last_obs, seq_len, float(landmark_n0), int(landmark_k or 12))
-        r = np.interp(lg, grid, r).astype(np.float32)
-        q_grid = np.interp(lg, grid, q_grid).astype(np.float32)
-        eps_grid = np.interp(lg, grid, eps_grid).astype(np.float32)
-        mask = (lg <= last_obs + 1e-6).astype(np.float32)
-        grid = lg.astype(np.float32)
-
-    # нагрузка
+    # ---- нагрузка и ГОРИЗОНТЫ (a-priori plan vs наблюдаемая длительность) ----
     sigma_1 = gv(tp, "sigma_1", 100.0) or 100.0
     t = gv(tp, "t", None)
     csr = float(t) / float(sigma_1) if t else 0.2
     n_total = max(int(np.floor(np.nanmax(cyc))), 1)
-    # #6 N_max — ПЛАНОВЫЙ горизонт нагружения, заданный ДО опыта (число циклов плана), а НЕ
-    # фактически достигнутая длина: у разжижившихся опыт останавливают на onset, поэтому achieved≈N_liq
-    # и max(planned, achieved) утекал бы в горизонт (corr log(N_max),log(N_liq)≈0.98). Берём planned
-    # cycles_count; если его нет — горизонт неизвестен a priori, помечаем для исключения из N_max-нормировки.
+    # last_obs — ФАКТический последний наблюдённый цикл (длительность опыта). Это censor time для
+    # N_liq, но он НЕ должен попадать во ВХОД (grid/seq_in/delta): у разжижившихся опыт обрывают на
+    # onset, поэтому last_obs≈N_liq и его утечка в сетку даёт corr(log last_obs, log N_liq)≈0.96.
+    last_obs = float(_cp[-1]) if len(_cp) else float(
+        coarse_grid[coarse_mask > 0].max() if np.any(coarse_mask > 0) else coarse_grid[-1]
+    )
+    # N_max — ПЛАНОВЫЙ (a-priori) горизонт: число циклов плана, заданное ДО опыта. Им задаётся
+    # endpoint входной/query-сетки (одинаково для liquefied и non-liq, без утечки факт. длительности).
     cycles_count = gv(tp, "cycles_count", None)
     n_max_planned = float(cycles_count) if (cycles_count and float(cycles_count) > 0) else None
     n_max = n_max_planned if n_max_planned is not None else float(n_total)
+    # ЕДИНЫЙ горизонт задачи: endpoint входной/query-сетки = ФИКСИРОВАННЫЙ horizon_default
+    # (=max_cycle_reference) для ВСЕХ опытов, а НЕ cycles_count. Аудит 1093 опытов: cycles_count≈
+    # last_obs (corr с N_liq≈0.96) — это суррогат длительности, не строго a-priori горизонт. Единая
+    # сетка делает prediction horizon одинаковым и убирает утечку длительности во входы.
+    grid_horizon = float(horizon_default) if (horizon_default and horizon_default > 0) else float(n_total)
 
-    # #7 Единое определение события: ПЕРВОЕ пересечение сглаженной ru≥LIQ_THRESHOLD (0.95).
-    # fail_cycle лаборатории НЕ используется как независимый триггер (он расходился с порогом:
-    # медиана |N_liq−onset|≈14 циклов, 79/640 «положительных» порог не пересекали). N_liq — цикл
-    # пересечения; если пересечения нет — событие не наступило (право-цензура на плановый горизонт).
-    _cross = np.where((np.asarray(r) >= LIQ_THRESHOLD) & (np.asarray(mask) > 0))[0]
-    if _cross.size > 0:
+    # Событие = ПЕРВОЕ пересечение ru≥LIQ_THRESHOLD на ПОЦИКЛОВОЙ сглаженной огибающей (ДО
+    # ресэмплинга на модельную сетку): так N_liq имеет поцикловое разрешение и НЕ квантуется редкими
+    # поздними узлами сетки (на длинных опытах зазор между узлами — сотни циклов). Сетка циклов далее
+    # используется только для входов и траекторного таргета, не для определения времени события.
+    # fail_cycle лаборатории как независимый триггер НЕ используется (расходился с порогом).
+    _cross_pc = np.where(np.asarray(ppr_sm_pc) >= LIQ_THRESHOLD)[0]
+    if _cross_pc.size > 0 and len(_cp):
         liq = 1
-        n_liq = float(grid[int(_cross[0])])
+        n_liq = float(_cp[int(_cross_pc[0])])          # цикл пересечения (поцикловое разрешение)
     else:
+        # нет пересечения → событие не наступило в окне; N_liq право-цензурирован на ФАКТическом
+        # последнем наблюдённом цикле (наблюдённая длительность = нижняя граница N_liq), а НЕ на
+        # плановом горизонте: planned и censoring — разные величины (замечание #6).
         liq = 0
-        n_liq = float(n_max)
+        n_liq = float(last_obs)
+
+    # ЕДИНАЯ early-cycle grid (landmark): первые k узлов = geomspace(1, N₀, k), endpoint =
+    # ФИКСИРОВАННЫЙ горизонт (max_cycle_reference) — сетка ИДЕНТИЧНА для всех опытов (uniform horizon,
+    # без утечки длительности). mask валиден только до last_obs — это доступность ТАРГЕТА, не длина
+    # входной сетки. За last_obs np.interp держит последнее наблюдённое значение (точки замаскированы).
+    if landmark_n0 is not None:
+        grid = landmark_aware_cycles(
+            grid_horizon, seq_len, float(landmark_n0), int(landmark_k or 12)
+        ).astype(np.float32)
+        if len(_cp):
+            r = np.interp(grid, _cp, ppr_sm_pc).astype(np.float32)
+            r_causal = np.interp(grid, _cp, ppr_causal_pc).astype(np.float32)
+        else:
+            r = np.zeros(seq_len, np.float32)
+            r_causal = np.zeros(seq_len, np.float32)
+        mask = (grid <= last_obs + 1e-6).astype(np.float32)
+
+        # Префикс сглаживается ТОЛЬКО по наблюдениям до landmark. Полная изотоническая регрессия
+        # использует всю будущую кривую и потому не должна служить входом модели.
+        early = np.asarray(_cp) <= float(landmark_n0) + 1e-9
+        if int(early.sum()) > 0:
+            cp_early = np.asarray(_cp)[early]
+            ppr_early = monotone_smooth(np.asarray(ppr_peaks)[early])
+            prefix_r = np.interp(grid, cp_early, ppr_early).astype(np.float32)
+        else:
+            prefix_r = np.zeros(seq_len, np.float32)
+    else:
+        grid = coarse_grid.astype(np.float32)
+        r = coarse_r.astype(np.float32)
+        mask = coarse_mask.astype(np.float32)
+        prefix_r = r.copy()
+        r_causal = (np.interp(grid, _cp, ppr_causal_pc).astype(np.float32)
+                    if len(_cp) else np.zeros(seq_len, np.float32))
+
+    # q(N) и ε(N) переносятся на ФИНАЛЬНУЮ сетку напрямую из поцикловых пиков, без двойного
+    # ресэмплинга. Это сохраняет физическое раннее разрешение так же, как для PPR.
+    dev = gv(data_obj, "deviator"); eps_sig = gv(data_obj, "strain")
+    q_grid = _peak_on_grid(cyc, dev, grid, pic) if dev is not None else np.zeros(seq_len, np.float32)
+    eps_grid = _peak_on_grid(cyc, eps_sig, grid, pic) if eps_sig is not None else np.zeros(seq_len, np.float32)
+
+    # ИЗМЕРЕННАЯ история нагружения CSR(N) из амплитуды девиатора (вместо КОНСТАНТЫ и ручного
+    # nonstationarity). CSR(N) привязан к номиналу CSR_base = t/σ₁ через отношение амплитуд (единицы
+    # консистентны), для переменно-амплитудных опытов варьируется. Замечание: на этих данных опыты
+    # контролируемо-амплитудные (амплитуда девиатора почти постоянна, CV≈0.02), поэтому CSR(N) выходит
+    # ~плоской — это ФАКТ данных, а не выдумка. nonstationarity тоже становится DATA-DERIVED (CV
+    # измеренной амплитуды), а не зашитой 0.30/0.05. Нет девиатора → откат на константу CSR_base.
+    meas_nonstat = 0.05
+    if dev is not None:
+        _ca, _amp = extract_cycle_amplitude(cyc, dev, pic)
+        _amp = np.asarray(_amp, float)
+        if _amp.size >= 3 and np.nanmax(_amp) > 0:
+            _ref = float(np.nanmedian(_amp[:max(3, _amp.size // 10)]))
+            _csr_pc = (np.clip(csr * _amp / _ref, 0.0, csr * 3.0 + 1e-6) if _ref > 1e-9
+                       else np.full(_amp.size, csr))
+            csr_series = np.interp(grid, _ca, _csr_pc).astype(np.float32)
+            meas_nonstat = float(np.clip(np.nanstd(_amp) / max(abs(np.nanmean(_amp)), 1e-6), 0.0, 1.0))
+        else:
+            csr_series = np.full(seq_len, csr, np.float32)
+    else:
+        csr_series = np.full(seq_len, csr, np.float32)
 
     # свойства грунта
     tg = int(gv(phys, "type_ground", 7) or 7)
     Ip = gv(phys, "Ip", None); e = gv(phys, "e", None)
     rho = gv(phys, "r", 2.0) or 2.0
-    # Vs по формуле digitrock: Vs = √(G/r), G = E0/(2(1+ν)). Готовое значение хранится в
-    # result.transverse_waves_velocity (ед. √(МПа/(г/см³))) → ×31.6228 = м/с.
+    # Vs по формуле digitrock: Vs = √(G/ρ), G = E/(2(1+ν)). Источники по убыванию приоритета:
+    #   1) измеренная скорость поперечной волны (result.transverse_waves_velocity, ед. √(МПа/(г/см³)) → ×31.6228);
+    #   2) динамический G (result.G, МПа) — там же, где tw (динамический тест);
+    #   3) СТАТИЧЕСКИЙ модуль деформации E0/E из _test_params (есть у ~100% опытов; значения в кПа →
+    #      переводим в МПа), G = E/(2(1+ν)). Это и есть «формула», а не зашитая константа.
+    # Хардкод G=25 МПа — только если ВСЕ источники отсутствуют (на реальных данных ≈никогда).
+    def _modulus_mpa(x):
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        return v / 1000.0 if v > 200.0 else v             # >200 → кПа → МПа; иначе уже МПа
+    nu = gv(tp, "unload_poisons_ratio", 0.2) or 0.2
     tw = gv(tr, "transverse_waves_velocity", None)
+    _G_dyn = gv(tr, "G", None)
+    _E = _modulus_mpa(gv(tr, "E0", None)) or _modulus_mpa(gv(tp, "E0", None)) or _modulus_mpa(gv(tp, "E", None))
+    _vs_measured = 1.0
     if tw and float(tw) > 0:
         Vs = float(tw) * 31.6228
+    elif _G_dyn and float(_G_dyn) > 0:
+        Vs = float((float(_G_dyn) * 1e6 / (float(rho) * 1e3)) ** 0.5)
+    elif _E is not None:                                  # статический E0/E → G → Vs (формула)
+        G_mpa = float(_E) / (2 * (1 + float(nu)))
+        Vs = float((G_mpa * 1e6 / (float(rho) * 1e3)) ** 0.5)
     else:
-        G = gv(tr, "G", None)
-        if G and float(G) > 0:
-            Vs = float((float(G) * 1e6 / (float(rho) * 1e3)) ** 0.5)
-        else:
-            E0d = gv(tr, "E0", None); nu = gv(tp, "unload_poisons_ratio", 0.2) or 0.2
-            G_mpa = (float(E0d) / (2 * (1 + float(nu)))) if E0d else 25.0
-            Vs = float((G_mpa * 1e6 / (float(rho) * 1e3)) ** 0.5)
+        Vs = float((25.0 * 1e6 / (float(rho) * 1e3)) ** 0.5)
+        _vs_measured = 0.0                                # ни одного источника — зашитый G=25 (fabricated)
     Vs = float(np.clip(Vs, 40, 600))
     sigma_eff = float(sigma_1)
     fines, clay, Cu = fines_clay_cu(phys, tg, Ip)
@@ -264,15 +374,29 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         g = gv(phys, f"granulometric_{key}", None)
         soil[col] = 0.0 if g in (None, "") else float(g)
 
+    # ИНДИКАТОРЫ ПРОПУСКОВ: 1 = свойство ИМПУТИРОВано константой (а не измерено). Делает явным
+    # то, что статья ошибочно отрицала («rather than fabricated defaults»): модель видит, какие входы
+    # суррогатные, и может это учесть; отдельно позволяет оценить чувствительность к импутации.
+    _gran_present = any(gv(phys, f"granulometric_{k}", None) not in (None, "") for k in GRAN)
+    soil.update(dict(
+        miss_e=0.0 if e is not None else 1.0,
+        miss_Ip=0.0 if Ip is not None else 1.0,
+        miss_K0=0.0 if gv(tp, "K0", None) is not None else 1.0,
+        miss_vs=float(1.0 - _vs_measured),
+        miss_gran=0.0 if _gran_present else 1.0,
+    ))
+
     load = dict(
         CSR_base=csr, frequency=float(gv(tp, "frequency", 0.5) or 0.5),
         amp_scale=1.0, N_max=n_max, N_max_is_planned=(n_max_planned is not None),
-        nonstationarity=0.30 if test_type == "Штормовое разжижение" else 0.05,
+        nonstationarity=meas_nonstat,                     # DATA-DERIVED (не зашитая 0.30/0.05)
         load_mode=TYPE_TO_MODE.get(test_type, "seismic"),
     )
     arrays = dict(
-        cycles=grid.astype(np.float32), csr=np.full(seq_len, csr, np.float32),
+        cycles=grid.astype(np.float32), csr=csr_series,    # измеренная CSR(N), не константа
         r=r.astype(np.float32), mask=mask.astype(np.float32),
+        prefix_r=prefix_r.astype(np.float32),
+        r_causal=r_causal.astype(np.float32),
         q=q_grid, eps=eps_grid,        # девиатор и деформация на сетке циклов (для топологии 4_2)
     )
     return soil, load, arrays, int(liq), float(n_liq)
@@ -288,7 +412,8 @@ def find_object_pickles(obj_dir: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def load_object(obj_dir: str, test_type: str, seq_len: int,
-                landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None) -> List[Tuple[str, tuple]]:
+                landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None,
+                horizon_default: Optional[float] = None) -> List[Tuple[str, tuple]]:
     """Извлечь все образцы одного объекта → список ``(ключ, запись extract_test)``."""
     dpath, hpath = find_object_pickles(obj_dir)
     if not dpath:
@@ -299,7 +424,8 @@ def load_object(obj_dir: str, test_type: str, seq_len: int,
     for key in D:
         if key not in H:
             continue
-        rec = extract_test(D[key], H[key], test_type, seq_len, landmark_n0=landmark_n0, landmark_k=landmark_k)
+        rec = extract_test(D[key], H[key], test_type, seq_len, landmark_n0=landmark_n0,
+                           landmark_k=landmark_k, horizon_default=horizon_default)
         if rec is not None:
             out.append((key, rec))
     return out
@@ -423,6 +549,28 @@ def build_crr_obs(soil_df: pd.DataFrame, load_df: pd.DataFrame, cycles: np.ndarr
     return crr, mask, n_groups
 
 
+def canonical_site_id(object_name: str) -> str:
+    """
+    Канонический ИД ПЛОЩАДКИ (геологический сайт) из имени папки объекта.
+
+    Геологически связанные проекты на одном адресе (напр. «852-23 …вл.5 (ВГК-5)» и
+    «856-23 …вл.5 (ВГК-6)») — это ОДНА площадка; при object-held-out они обязаны быть в одном фолде,
+    иначе утечка между скоррелированными площадками. Нормализуем имя: убираем ведущий код проекта
+    (``NNN-NN``), скобочные пометки ``(...)``, технические токены (plaxis/мех/вибро/сейсмо/g0/этап),
+    пунктуацию и ё→е, схлопываем пробелы. Совпавшие адреса → один ``site_id``.
+
+    :param object_name: имя папки объекта (``oname``)
+    :return: нормализованный адрес-ключ площадки
+    """
+    s = str(object_name).replace("ё", "е").replace("Ё", "Е").lower()
+    s = re.sub(r"\([^)]*\)", " ", s)                       # (вгк-5), (96), (plaxis…)
+    s = re.sub(r"^\s*\d+\s*[-_]\s*\d+\s*", " ", s)         # ведущий код проекта NNN-NN
+    s = re.sub(r"\b(plaxis|мех|вибро|сейсмо|сейсмо|g0|gо|этап)\b", " ", s)
+    s = re.sub(r"[^\w\s]", " ", s)                         # пунктуация → пробел (пр-д → пр д)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or str(object_name).strip().lower()
+
+
 # ============================ Верхнеуровневая сборка популяции ============================
 
 def build_real_objects_population(
@@ -448,7 +596,8 @@ def build_real_objects_population(
     """
     seq_len = int(seq_len or config.seq_len)
     soil_rows: List[dict] = []; load_rows: List[dict] = []
-    CY, CS, RM, VM, LB, NL, TAG, QM, EM = [], [], [], [], [], [], [], [], []
+    CY, CS, RM, RC, PR, VM, LB, NL, TAG, QM, EM = [], [], [], [], [], [], [], [], [], [], []
+    SITE: List[str] = []                                   # site_id (геологическая площадка)
     multi = len(source_specs) > 1
 
     for root, types in source_specs:
@@ -461,14 +610,21 @@ def build_real_objects_population(
             _lm = getattr(config, "prefix_mode", "preonset") == "landmark"
             _lm_n0 = float(getattr(config, "prefix_landmark_cycles", 20.0)) if _lm else None
             _lm_k = int(getattr(config, "prefix_len", 12)) if _lm else None
+            # endpoint входной сетки = a-priori горизонт; если у опыта нет planned cycles_count —
+            # глобальный horizon (max_cycle_reference), но НИКОГДА не фактический last_obs.
+            _hz = float(getattr(config, "max_cycle_reference", 3000.0))
             for oname, opath in objects:
-                recs = load_object(opath, test_type, seq_len, landmark_n0=_lm_n0, landmark_k=_lm_k)
+                recs = load_object(opath, test_type, seq_len, landmark_n0=_lm_n0, landmark_k=_lm_k,
+                                   horizon_default=_hz)
                 otag = f"{rtag} · {test_type}/{oname}" if multi else f"{test_type}/{oname}"
+                _site = canonical_site_id(oname)           # геологическая площадка (адрес)
                 for _key, (soil, load, arr, liq, nl) in recs:
                     soil_rows.append(soil); load_rows.append(load)
-                    CY.append(arr["cycles"]); CS.append(arr["csr"]); RM.append(arr["r"]); VM.append(arr["mask"])
+                    CY.append(arr["cycles"]); CS.append(arr["csr"]); RM.append(arr["r"])
+                    RC.append(arr.get("r_causal", arr["r"]))
+                    PR.append(arr.get("prefix_r", arr["r"])); VM.append(arr["mask"])
                     QM.append(arr["q"]); EM.append(arr["eps"])
-                    LB.append(liq); NL.append(nl); TAG.append(otag)
+                    LB.append(liq); NL.append(nl); TAG.append(otag); SITE.append(_site)
 
     if not soil_rows:
         raise ValueError("Объекты не найдены — проверьте source_specs (путь к «Облако разжижения»).")
@@ -485,16 +641,19 @@ def build_real_objects_population(
             _obj_planned[tag].append(float(r["N_max"]))
     for i, (r, tag) in enumerate(zip(load_rows, TAG)):
         if not r.get("N_max_is_planned"):
-            # ЧИСТО плановая оценка (медиана объекта / глобальная). НЕ берём max(.., N_liq): это
-            # вернуло бы исход в признак (target dependence). N_max остаётся a-priori-величиной.
-            imp = float(np.median(_obj_planned[tag])) if _obj_planned.get(tag) else _glob
-            r["N_max"] = imp
-            if LB[i] == 0:                               # non-liq: право-цензура на плановый горизонт
-                NL[i] = imp
-    _n_imputed = int(sum(1 for r in load_rows if not r.get("N_max_is_planned")))
+            # ЧИСТО плановая оценка планового горизонта (медиана объекта / глобальная) — ТОЛЬКО для
+            # ПРИЗНАКА N_max. НЕ берём max(.., N_liq) (вернуло бы исход в признак) и НЕ трогаем
+            # N_liq: censor time неразжижившегося = ФАКТический last_obs (см. extract_test). Смешивать
+            # planned-горизонт и censoring-время нельзя — это разные величины.
+            r["N_max"] = float(np.median(_obj_planned[tag])) if _obj_planned.get(tag) else _glob
+    _imp_vals = [float(r["N_max"]) for r in load_rows if not r.get("N_max_is_planned")]
+    _n_imputed = len(_imp_vals)
     if _n_imputed:
-        print(f"[N_max] планового cycles_count нет у {_n_imputed} опытов → импутация медианой объекта "
-              f"(без max(N_liq); planned остаётся a-priori).")
+        _iv = np.array(_imp_vals)
+        # аудит происхождения N_max: доля и распределение импутированных горизонтов (planned отсутствовал)
+        print(f"[N_max] planned cycles_count отсутствует у {_n_imputed}/{len(load_rows)} "
+              f"({100*_n_imputed/len(load_rows):.1f}%) → импутация медианой объекта (без max(N_liq)). "
+              f"Imputed N_max: min/median/max = {_iv.min():.0f}/{np.median(_iv):.0f}/{_iv.max():.0f}.")
     for r in load_rows:
         r.pop("N_max_is_planned", None)                  # служебный флаг — не в признаки
 
@@ -507,23 +666,39 @@ def build_real_objects_population(
             LB[i] = 0.0                                   # разжижение после горизонта → не-событие
             NL[i] = _H                                    # право-цензура на горизонт
 
-    # #3 landmark risk set: для protocol="landmark" исключаем опыты, разжижившиеся ДО физического
-    # landmark-цикла N₀ (их нельзя прогнозировать из префикса ≤N₀ — событие уже произошло на момент
-    # обусловливания). Так артефакт сразу содержит только risk set, и сплиты/CV-фолды консистентны.
+    cohort_filter_counts = {
+        "raw_specimens": int(len(LB)),
+        "raw_objects": int(len(set(TAG))),
+        "excluded_event_before_N0": 0,
+        "excluded_censored_before_N0": 0,
+    }
+    # Landmark risk set содержит только образцы, которые ещё наблюдаются и не разжижились в N0.
+    # Поэтому исключаются ОБА типа недопустимых записей: событие до N0 и цензура до N0. Последние
+    # могут использоваться в отдельном auxiliary pretraining, но не в benchmark после landmark.
     if getattr(config, "prefix_mode", "preonset") == "landmark":
         _N0 = float(getattr(config, "prefix_landmark_cycles", 20.0))
-        _keep = [i for i in range(len(LB)) if not (LB[i] > 0.5 and NL[i] <= _N0)]
+        cohort_filter_counts["excluded_event_before_N0"] = int(sum(
+            LB[i] > 0.5 and NL[i] <= _N0 for i in range(len(LB))
+        ))
+        cohort_filter_counts["excluded_censored_before_N0"] = int(sum(
+            LB[i] < 0.5 and NL[i] <= _N0 for i in range(len(LB))
+        ))
+        _keep = [i for i in range(len(LB)) if NL[i] > _N0]
         if len(_keep) < len(LB):
             soil_rows = [soil_rows[i] for i in _keep]; load_rows = [load_rows[i] for i in _keep]
             CY = [CY[i] for i in _keep]; CS = [CS[i] for i in _keep]; RM = [RM[i] for i in _keep]
-            VM = [VM[i] for i in _keep]; QM = [QM[i] for i in _keep]; EM = [EM[i] for i in _keep]
+            RC = [RC[i] for i in _keep]
+            PR = [PR[i] for i in _keep]; VM = [VM[i] for i in _keep]
+            QM = [QM[i] for i in _keep]; EM = [EM[i] for i in _keep]
             LB = [LB[i] for i in _keep]; NL = [NL[i] for i in _keep]; TAG = [TAG[i] for i in _keep]
+            SITE = [SITE[i] for i in _keep]
 
     soil_df = pd.DataFrame(soil_rows); load_df = pd.DataFrame(load_rows)
     cycles = np.array(CY); csr = np.array(CS)
     r_measured = np.array(RM); valid_mask = np.array(VM)
     liq_label = np.array(LB); n_liq = np.array(NL)
     soil_df["object"] = TAG
+    soil_df["site_id"] = SITE                              # геологическая площадка (группировка CV)
 
     crr_obs, crr_obs_mask, _n_groups = build_crr_obs(
         soil_df, load_df, cycles, n_liq, liq_label, soil_df["object"].tolist(), seq_len)
@@ -533,7 +708,10 @@ def build_real_objects_population(
     population = build_population_from_experiments(
         soil_df=soil_df, load_df=load_df, cycles=cycles, csr=csr, r_measured=r_measured,
         valid_mask=valid_mask, liq_label=liq_label, n_liq=n_liq, config=config,
+        prefix_source=np.array(PR, np.float32),
         crr_obs=crr_obs, crr_obs_mask=crr_obs_mask)
+    population["cohort_filter_counts"] = cohort_filter_counts
+    population["r_causal"] = np.array(RC, np.float32)
     # Девиатор q(N) и деформация ε(N) — сохраняются в артефакт (io пишет любые ndarray-поля),
     # чтобы топология (4_2) строила фазовое пространство X=(PPR,q,ε) на данных проекта.
     population["q_obs"] = np.array(QM, np.float32)

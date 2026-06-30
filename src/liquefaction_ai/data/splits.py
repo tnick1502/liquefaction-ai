@@ -30,70 +30,61 @@ __all__ = [
     "make_loo_object_folds",
     "prepare_benchmark_dataset",
     "iterate_minibatches",
+    "audit_horizon_negatives",
 ]
 
 
-def _terminal_observability(
+def audit_horizon_negatives(
     r_obs: np.ndarray,
     valid_mask: np.ndarray,
+    cycles: np.ndarray,
     liq_label: np.ndarray,
-    cycles: np.ndarray | None = None,
-    tail_frac: float = 0.20,
-    rise_eps: float = 0.02,
-    min_complete_cycles: float = 500.0,
-) -> np.ndarray:
+    threshold: float = 0.95,
+    early_window: tuple = (400.0, 500.0),
+    rise_eps: float = 0.03,
+) -> Dict[str, float]:
     """
-    Определить, наблюдаема ли терминальная точка N_liq у каждого опыта (три режима).
+    ПРОСПЕКТИВНЫЙ аудит: среди опытов без события к концу РАННЕГО окна, ПЛОСКИХ в
+    ``[early_lo, early_hi]`` циклов, смотрим, что происходит ПОЗЖЕ (после окна) — отдельный участок
+    данных, а не тот же хвост, по которому опыт отбирался. Считаем: сколько из них впоследствии
+    (а) пересекли порог 0.95 и (б) выросли более чем на ``rise_eps`` относительно уровня в окне.
 
-    Возвращает бинарную маску ``n_liq_observed`` (1 — терминал наблюдаем/корректно
-    цензурирован, 0 — оценить нельзя):
+    Назначение — РАЗДЕЛИТЬ две гипотезы:
+      • «нет события by horizon» — поддерживается, если поздних пересечений мало/нет;
+      • «absorbing stable state» (PPR замер) — НЕ поддерживается, если многие позже растут.
+    Поэтому risk-метку строим по ОКНУ НАБЛЮДЕНИЯ (доведён ли опыт до горизонта), а НЕ по «стабилизации».
 
-    * **разжижение** (``liq_label==1``) → 1: N_liq наблюдён точно;
-    * **нет разжижения + стабилизация** (длина опыта ≥ ``min_complete_cycles`` и хвост PPR
-      плоский, прирост < ``rise_eps``)
-      → 1: N_liq право-цензурирован на практическом горизонте оценки;
-    * **нет разжижения + нет стабилизации** (длина опыта < ``min_complete_cycles`` или PPR на
-      хвосте ещё растёт)
-      → 0: конечную точку оценить нельзя; такие образцы исключаются из супервизии N_liq
-      (обучаемся только динамике кривой).
-
-    :param r_obs: измеренная траектория PPR, форма (n, seq_len)
-    :param valid_mask: маска валидной длины измерений, форма (n, seq_len)
-    :param liq_label: бинарная метка разжижения, форма (n,)
-    :param cycles: сетка циклов, форма (n, seq_len); если задана, неразжижившийся опыт короче
-        ``min_complete_cycles`` считается незавершённым независимо от хвоста PPR
-    :param tail_frac: доля хвоста валидной части для оценки прироста PPR
-    :param rise_eps: порог прироста PPR на хвосте, ниже которого кривая считается стабильной
-    :param min_complete_cycles: минимальная длительность завершённого неразжижившегося опыта
-    :return: маска ``n_liq_observed`` формы (n,), значения {0., 1.}
+    :return: ``{n_early_flat, n_later_cross, n_later_rise, frac_later_rise}``
     """
-    n = r_obs.shape[0]
-    observed = np.ones(n, dtype=np.float32)
-    for i in range(n):
-        if liq_label[i] >= 0.5:
-            continue                                  # разжижение — наблюдаем точно
-        idx = np.where(valid_mask[i] > 0)[0]
-        if idx.size == 0:
-            observed[i] = 0.0
+    lo, hi = float(early_window[0]), float(early_window[1])
+    n_flat = n_cross = n_rise = 0
+    n_final_liq = 0
+    for i in range(len(liq_label)):
+        v = valid_mask[i] > 0
+        in_win = v & (cycles[i] >= lo) & (cycles[i] <= hi)
+        after = v & (cycles[i] > hi)
+        through_win = v & (cycles[i] <= hi)
+        if int(in_win.sum()) < 2 or int(after.sum()) < 2:
             continue
-        if cycles is not None:
-            last_cycle = float(cycles[i, idx[-1]])
-            if last_cycle < min_complete_cycles:       # короткий non-liq опыт — терминал неизвестен
-                observed[i] = 0.0
-                continue
-        if idx.size < 5:
-            observed[i] = 0.0                          # хвост нельзя надёжно оценить
+        # Eligibility определяется ТОЛЬКО информацией, доступной к hi. Фильтрация по финальному
+        # liq_label была outcome leakage: она по определению удаляла все будущие crossings.
+        if through_win.any() and float(r_obs[i, through_win].max()) >= threshold:
             continue
-        k = max(3, int(tail_frac * idx.size))
-        tail = idx[-k:]
-        tv = r_obs[i, tail]
-        rise = float(tv[-1] - tv[0])                   # чистый прирост хвоста
-        rng = float(np.nanmax(tv) - np.nanmin(tv))     # размах хвоста (ловит осцилляции/rise-then-fall)
-        # Стабилизация (терминал наблюдаем) = ПЛАТО: и малый чистый прирост, И малый размах.
-        # Иначе (растёт / осциллирует / поднялась-упала) терминал неизвестен → исключаем.
-        if rise >= rise_eps or rng >= 2.0 * rise_eps:
-            observed[i] = 0.0
-    return observed
+        win_vals = r_obs[i, in_win]
+        if float(win_vals.max() - win_vals.min()) >= rise_eps:   # в окне НЕ плоский — пропускаем
+            continue
+        n_flat += 1
+        n_final_liq += int(liq_label[i] >= 0.5)
+        win_level = float(win_vals.mean())
+        after_vals = r_obs[i, after]
+        if float(after_vals.max()) >= threshold:
+            n_cross += 1
+        if float(after_vals.max() - win_level) >= rise_eps:
+            n_rise += 1
+    return {"n_early_flat": float(n_flat), "n_later_cross": float(n_cross),
+            "n_later_rise": float(n_rise),
+            "n_final_liq": float(n_final_liq),
+            "frac_later_rise": float(n_rise / max(n_flat, 1))}
 
 
 def safe_strata(meta: pd.DataFrame, fine_columns: List[str]) -> np.ndarray:
@@ -174,15 +165,16 @@ def make_benchmark_splits(meta: pd.DataFrame, subset_size: int, seed: int, confi
     # measured-CRR объектов test/val получают хотя бы один CRR-объект и один обычный объект, чтобы
     # основной grouped leaderboard не терял CRR_RMSE и бинарные риск-метрики.
     if getattr(config, "group_split_by_object", False) and "object" in benchmark_meta.columns:
-        objects = benchmark_meta["object"].to_numpy()
+        gcol = _group_col(benchmark_meta)                # группируем по site_id (если есть)
+        objects = benchmark_meta[gcol].to_numpy()
         obj_stats = (
-            benchmark_meta.groupby("object")
+            benchmark_meta.groupby(gcol)
             .agg(
-                n=("object", "size"),
+                n=(gcol, "size"),
                 liq_rate=("liq_label", "mean"),
                 has_crr=("has_measured_crr", "max") if "has_measured_crr" in benchmark_meta.columns else ("liq_label", "min"),
             )
-            .reset_index()
+            .reset_index().rename(columns={gcol: "object"})
         )
         uniq = np.array(sorted(obj_stats["object"].tolist()))
         rng = np.random.default_rng(seed)
@@ -259,9 +251,16 @@ def make_benchmark_splits(meta: pd.DataFrame, subset_size: int, seed: int, confi
     }
 
 
-def _object_level_table(benchmark_meta: pd.DataFrame, uniq: np.ndarray) -> pd.DataFrame:
-    """Объектные характеристики для стратификации фолдов: размер, доля разжижения, наличие CRR."""
-    g = benchmark_meta.groupby("object")
+def _group_col(meta: pd.DataFrame) -> str:
+    """Единица группировки для leakage-free сплита: канонический ``site_id`` (геологически связанные
+    проекты на одном адресе — напр. ВГК-5/ВГК-6 — это ОДНА площадка), иначе fallback на ``object``."""
+    return "site_id" if "site_id" in meta.columns else "object"
+
+
+def _object_level_table(benchmark_meta: pd.DataFrame, uniq: np.ndarray,
+                        group_col: str = "object") -> pd.DataFrame:
+    """Характеристики единицы группировки для стратификации фолдов: размер, доля разжижения, CRR."""
+    g = benchmark_meta.groupby(group_col)
     n = g.size().reindex(uniq).fillna(0).astype(int)
     if "has_measured_crr" in benchmark_meta.columns:
         crr = g["has_measured_crr"].max().reindex(uniq).fillna(0).astype(int)
@@ -365,10 +364,11 @@ def make_grouped_cv_folds(
     rel = np.arange(len(benchmark_idx))
     if "object" not in benchmark_meta.columns:
         raise ValueError("make_grouped_cv_folds требует колонку 'object' в meta")
-    objects = benchmark_meta["object"].to_numpy()
+    gcol = _group_col(benchmark_meta)                     # группируем по site_id (если есть)
+    objects = benchmark_meta[gcol].to_numpy()
     uniq = np.array(sorted(pd.unique(objects)))
     n_splits = int(max(2, min(n_splits, len(uniq))))
-    stats = _object_level_table(benchmark_meta, uniq)
+    stats = _object_level_table(benchmark_meta, uniq, gcol)
 
     folds: List[Dict[str, np.ndarray]] = []
     for rep in range(int(max(1, n_repeats))):
@@ -409,9 +409,10 @@ def make_loo_object_folds(
     rel = np.arange(len(benchmark_idx))
     if "object" not in benchmark_meta.columns:
         raise ValueError("make_loo_object_folds требует колонку 'object' в meta")
-    objects = benchmark_meta["object"].to_numpy()
+    gcol = _group_col(benchmark_meta)                     # LOO по site_id (если есть)
+    objects = benchmark_meta[gcol].to_numpy()
     uniq = np.array(sorted(pd.unique(objects)))
-    stats = _object_level_table(benchmark_meta, uniq)
+    stats = _object_level_table(benchmark_meta, uniq, gcol)
     rng = np.random.default_rng(seed)
     folds: List[Dict[str, np.ndarray]] = []
     for k, te_o in enumerate(uniq):
@@ -494,7 +495,7 @@ def prepare_benchmark_dataset(
     static_scaled = static_scaler.transform(static_raw).astype(np.float32)
     prefix_scaled = prefix_scaler.transform(prefix_raw).astype(np.float32)
     seq_scaled = ((seq_raw - seq_mean[None, None, :]) / seq_std[None, None, :]).astype(np.float32)
-    # #9 ЕДИНОЕ определение события: «разжижение BY горизонта max_cycle_reference (3000)».
+    # ЕДИНОЕ определение события: «разжижение BY горизонта max_cycle_reference (3000)».
     # Разжижение ПОСЛЕ горизонта = не-событие в окне наблюдения → label:=0 и ПРАВО-ЦЕНЗУРА на горизонт
     # (мы точно знаем, что к 3000 события не было). Так горизонт применяется согласованно к метке И к N_liq
     # (раньше поздние события держали label=1, а N_liq принудительно =3000 — противоречие).
@@ -505,19 +506,32 @@ def prepare_benchmark_dataset(
     n_liq_target = np.minimum(n_liq_true, config.max_cycle_reference).astype(np.float32)
     n_liq_norm = (np.log1p(n_liq_target) / np.log1p(config.max_cycle_reference)).astype(np.float32)
 
-    # --- Маска наблюдаемости терминальной точки N_liq (три режима опыта) ---
-    # Режим 1 (разжижение, label=1): N_liq наблюдён точно → маска 1.
-    # Режим 2 (нет разжижения, длинный опыт, хвост PPR плоский): право-цензура на N_max/horizon
-    #          → маска 1 (корректная цензура).
-    # Режим 3 (нет разжижения, опыт короче min_nonliq_complete_cycles или PPR ещё растёт):
-    #          конечную точку оценить нельзя → маска 0 (N_liq-loss отключаем, динамику PPR учим).
-    n_liq_observed = _terminal_observability(
-        r_obs, valid_mask, liq_label, cycles=cycles,
-        min_complete_cycles=getattr(config, "min_nonliq_complete_cycles", 500.0),
-    )
-    # #9: поздние события (разжижение после горизонта) — корректная право-цензура на горизонт:
-    # к 3000 точно не разжижились → терминал наблюдаем (observed:=1), даже если хвост в окне ещё растёт.
-    n_liq_observed[_late_event] = 1.0
+    # Три разные семантики нельзя кодировать одной маской:
+    #   risk_label_observed — известен ли бинарный исход by-H;
+    #   nliq_censor_valid — есть ли точное event-time или корректная нижняя граница C;
+    #   regime_* — физическое состояние траектории (liq / stabilized / unfinished).
+    _H = float(config.max_cycle_reference)
+    _N0 = float(getattr(config, "prefix_landmark_cycles", 0.0))
+    _reached_horizon = (n_liq_true >= _H - 1e-6)          # опыт доведён до горизонта (или событие в окне)
+    _is_liq = liq_label > 0.5
+    risk_label_observed = (_is_liq | ((~_is_liq) & _reached_horizon)).astype(np.float32)
+    # Для survival/event-time любой non-liq, наблюдавшийся после landmark, даёт валидную правую
+    # цензуру N_liq > C, даже если C < H. Это НЕ делает его известным негативом by-H.
+    landmark_eligible = (n_liq_true > _N0 + 1e-6) if _N0 > 0 else np.ones_like(_is_liq, bool)
+    nliq_censor_valid = landmark_eligible.astype(np.float32)
+
+    # Состояния опыта для P³ (balanced/worst) и trigger-suppression в моделях — по ОКНУ НАБЛЮДЕНИЯ
+    # (reached_horizon), а не по плато-эвристике порога роста PPR (хрупкой к выбору eps). «stable» =
+    # non-liq, доведённый до горизонта без события (наблюдаемый негатив); «unfinished» = остановлен до
+    # H (исход by-H неизвестен). Определение eps-независимо и совпадает с risk-маской.
+    regime_liq = _is_liq.astype(np.float32)
+    regime_stable = ((~_is_liq) & _reached_horizon).astype(np.float32)
+    regime_unfinished = ((~_is_liq) & (~_reached_horizon)).astype(np.float32)
+
+    # Backward-compatible alias: по имени это event-time mask. Risk-потребители обязаны читать
+    # risk_label_observed явно; новые тесты защищают этот контракт.
+    n_liq_observed = nliq_censor_valid.copy()
+    continuation_mask = valid_mask * (1.0 - np.minimum(prefix_mask, 1.0))
 
     benchmark_arrays = {
         "static": static_scaled,
@@ -538,6 +552,13 @@ def prepare_benchmark_dataset(
         "n_liq_raw": n_liq_true.astype(np.float32),
         "n_liq_norm": n_liq_norm.astype(np.float32),
         "n_liq_observed": n_liq_observed.astype(np.float32),
+        "trajectory_mask": valid_mask.astype(np.float32),
+        "continuation_mask": continuation_mask.astype(np.float32),
+        "nliq_censor_valid": nliq_censor_valid.astype(np.float32),
+        "risk_label_observed": risk_label_observed.astype(np.float32),
+        "regime_liq": regime_liq,
+        "regime_stable": regime_stable,
+        "regime_unfinished": regime_unfinished,
     }
 
     # Наблюдаемые вспомогательные цели (выводятся из измеренной PPR — доступны и на реальных
@@ -547,6 +568,7 @@ def prepare_benchmark_dataset(
         # наблюдаемые
         "g_obs": "g_obs",
         "risk_proxy": "risk_proxy",
+        "r_causal": "r_causal",
         "crr_obs": "crr_obs",
         "crr_obs_mask": "crr_obs_mask",
         # синтетические латентные (диагностика)

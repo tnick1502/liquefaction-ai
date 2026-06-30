@@ -7,7 +7,8 @@ from pathlib import Path
 
 import torch
 
-from liquefaction_ai.training.losses import masked_bce_with_logits
+from liquefaction_ai.training.losses import (masked_bce_with_logits, nliq_censor_mask,
+                                             risk_observation_mask)
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "liquefaction_ai" / "models"
 
@@ -27,6 +28,26 @@ def test_masked_bce_excludes_unobserved():
 def test_all_unobserved_returns_zero():
     logit = torch.tensor([1.0, 2.0]); label = torch.tensor([0.0, 0.0])
     assert float(masked_bce_with_logits(logit, label, torch.tensor([0.0, 0.0]))) == 0.0
+
+
+def test_risk_and_event_time_masks_are_not_aliased():
+    batch = {
+        "risk_label_observed": torch.tensor([1.0, 0.0]),
+        "nliq_censor_valid": torch.tensor([1.0, 1.0]),
+        "n_liq_observed": torch.tensor([0.0, 0.0]),  # legacy не должен перекрывать явные ключи
+    }
+    assert risk_observation_mask(batch).tolist() == [1.0, 0.0]
+    assert nliq_censor_mask(batch).tolist() == [1.0, 1.0]
+
+
+def test_structured_models_use_masked_bce_helper():
+    # 3 структурные модели должны вызывать ОБЩИЙ хелпер (контракт all-unobserved→0), а не inline-ветку
+    # с fallback на полный BCE при батче целиком из незавершённых.
+    for f in ("dpi_flow.py", "dpi_evt.py", "evt_ssm.py"):
+        src = (SRC / f).read_text(encoding="utf-8")
+        assert "masked_bce_with_logits(" in src, f"{f} не использует общий masked_bce_with_logits"
+        # И импортирует его (иначе NameError в compute_loss при all-unobserved — тест это ловит)
+        assert "masked_bce_with_logits" in src.split("def ")[0], f"{f} не импортирует masked_bce_with_logits"
 
 
 def test_no_unmasked_bce_on_label_remains_in_models():

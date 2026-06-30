@@ -18,7 +18,6 @@
     "CSR_base",
     "frequency",
     "amp_scale",
-    "N_max",
     "nonstationarity",
     "soil_gravelly_sand",
     "soil_coarse_sand",
@@ -33,7 +32,12 @@
     "mode_seismic",
     "mode_technogenic",
     "mode_stationary_cyclic",
-    "mode_variable_amplitude"
+    "mode_variable_amplitude",
+    "miss_e",
+    "miss_Ip",
+    "miss_K0",
+    "miss_vs",
+    "miss_gran"
   ],
   "prefix_summary_names": [
     "prefix_mean",

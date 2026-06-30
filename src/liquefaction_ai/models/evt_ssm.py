@@ -20,8 +20,10 @@ import torch.nn.functional as F
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
 from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll,
+                                             masked_bce_with_logits,
                                              masked_censored_nliq_loss, masked_mean, monotone_clip,
-                                             observed_aux_loss, soft_auc_loss)
+                                             nliq_censor_mask, observed_aux_loss,
+                                             risk_observation_mask, soft_auc_loss)
 
 __all__ = ["EVTNeuralSSM"]
 
@@ -379,16 +381,14 @@ class EVTNeuralSSM(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        # Риск-лосс только по образцам с наблюдаемым исходом (исключаем незавершённые non-liq).
-        _robs = batch.get("n_liq_observed")
-        if _robs is not None and (_robs > 0.5).any():
-            _rm = _robs > 0.5; _rlogit, _rlabel = outputs["risk_logit"][_rm], batch["label"][_rm]
-        else:
-            _rlogit, _rlabel = outputs["risk_logit"], batch["label"]
-        risk_loss = F.binary_cross_entropy_with_logits(_rlogit, _rlabel)
-        rank_loss = soft_auc_loss(_rlogit, _rlabel)  # прямая оптимизация AUROC
+        # Риск-лосс только по наблюдаемым (хелпер: all-unobserved → 0); soft-AUC тоже по наблюдаемым.
+        _robs = risk_observation_mask(batch)
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], _robs)
+        _m = (_robs > 0.5) if _robs is not None else torch.ones_like(batch["label"], dtype=torch.bool)
+        rank_loss = (soft_auc_loss(outputs["risk_logit"][_m], batch["label"][_m]) if bool(_m.any())
+                     else outputs["risk_logit"].sum() * 0.0)  # прямая оптимизация AUROC
         nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
-                                              batch["label"], batch.get("n_liq_observed"))
+                                              batch["label"], nliq_censor_mask(batch))
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
         state_smoothness = (
             torch.abs(outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]).mean()
@@ -418,11 +418,12 @@ class EVTNeuralSSM(nn.Module):
         # включая незавершённые (правоцензурированные) опыты, т.к. штрафуется только за пределами факта.
         noliq = (1.0 - batch["label"]).unsqueeze(1)                      # (B,1)
         overshoot = masked_mean(torch.relu(outputs["traj_mean"] - batch["r_obs"]) * noliq, batch["mask"])
-        # подавление триггера — ТОЛЬКО на уверенно неразжижающихся (стабилизация, n_liq_observed==1).
-        # Для незавершённых опытов (нет разжижения И нет стабилизации) исход цензурирован — такие
+        # Подавление триггера — только в физически стабилизированном режиме. Risk/event-time masks
+        # здесь неприменимы: незавершённый опыт может продолжить рост, даже имея валидную цензуру.
+        # Для незавершённых опытов (нет разжижения И нет стабилизации) такие
         # образцы могли бы разжижиться при продолжении, поэтому триггер на них НЕ штрафуем.
-        observed = batch.get("n_liq_observed")
-        stab = noliq if observed is None else (noliq * observed.unsqueeze(1))
+        stable = batch.get("regime_stable")
+        stab = noliq if stable is None else stable.unsqueeze(1)
         trigger_noliq = masked_mean(outputs["g"] * stab, batch["mask"])
         loss = (
             traj_loss

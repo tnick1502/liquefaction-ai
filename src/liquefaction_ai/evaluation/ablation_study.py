@@ -45,7 +45,7 @@ VARIANTS = [
     ("wo_censored_nliq",   {"use_censored_nliq": False}, True, [], None),
     ("miss_vs",            {}, True, VS_FEATURES, None),
     ("miss_grainsize",     {}, True, GRAIN_FEATURES, None),
-    # Stress-тесты (замечание рецензента): прогноз без наблюдаемого PPR-префикса и без derived-aux.
+    # Stress-тесты прогноз без наблюдаемого PPR-префикса и без derived-aux.
     ("no_prefix",          {}, True, [], "no_prefix"),
     ("no_aux",             {"use_observed_aux_loss": False}, True, [], "no_aux"),
 ]
@@ -94,10 +94,10 @@ def run_ablation_fold(pop: dict, config, fold_split: dict, fold_id: int, feat_na
         model, _ = train_model(model, train, val, epochs=epochs, model_name=f"abl:{name}(f{fold_id})",
                                config=config, device=device, verbose=False, scheduler="cosine")
         if use_conf:
-            try:
-                fit_interval_scale(model, val, config, device)
-            except Exception:
-                pass
+            # НЕ глотаем ошибку молча: иначе абляция «с калибровкой» может незаметно остаться
+            # без неё и сравнение wo_variance_scaling станет бессмысленным. (Это variance-scaling
+            # σ-калибровка, НЕ conformal — настоящий conformal отдельный, см. metrics.)
+            fit_interval_scale(model, val, config, device)
         elif hasattr(model, "calib_log_scale"):
             with torch.no_grad():
                 model.calib_log_scale.zero_()

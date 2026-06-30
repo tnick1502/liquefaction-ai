@@ -307,7 +307,7 @@ def build_observed_prefix(
     :return: словарь с ``prefix_obs`` и ``prefix_mask``
     """
     if landmark_cycles is not None and cycles is not None:
-        # #3 landmark-протокол: окно по физическим циклам ≤ N₀, capped по prefix_len (одинаковый
+        # landmark-протокол: окно по физическим циклам ≤ N₀, capped по prefix_len (одинаковый
         # префикс во всех ветвях модели; prefix_coverage≤1).
         prefix_mask = landmark_prefix_mask(cycles, valid_mask, landmark_cycles, prefix_len=prefix_len)
     else:
@@ -329,6 +329,7 @@ def build_population_from_experiments(
     liq_label: np.ndarray,
     n_liq: np.ndarray,
     config: ExperimentConfig,
+    prefix_source: Optional[np.ndarray] = None,
     crr_obs: Optional[np.ndarray] = None,
     crr_obs_mask: Optional[np.ndarray] = None,
 ) -> Dict[str, object]:
@@ -357,6 +358,9 @@ def build_population_from_experiments(
     :param liq_label: бинарная метка разжижения, форма (n,)
     :param n_liq: число циклов до разжижения (или N_max, если не разжижился), форма (n,)
     :param config: конфигурация эксперимента (длины, нормировки, размеры выборок)
+    :param prefix_source: опциональная leakage-free PPR-кривая для входного префикса. Для landmark
+        она должна быть построена только из наблюдений до N0; target ``r_measured`` может использовать
+        всю траекторию для сглаживания.
     :param crr_obs: опциональная измеренная кривая CRR(N), форма (n, seq_len) (например, по серии
         из 6 образцов); используется как наблюдаемая супервизия границы CRR там, где доступна
     :param crr_obs_mask: опциональная по-образцовая маска наличия измеренной CRR, форма (n,)
@@ -393,8 +397,11 @@ def build_population_from_experiments(
     _fixed_k = _mode == "fixed_k"
     _landmark = _mode == "landmark"
     _pref_window = int(getattr(config, "prefix_fixed_k", 6)) if _fixed_k else config.prefix_len
+    prefix_values = r_measured if prefix_source is None else np.asarray(prefix_source)
+    if prefix_values.shape != r_measured.shape:
+        raise ValueError("prefix_source должен иметь ту же форму, что r_measured")
     observations = build_observed_prefix(
-        r_measured.astype(np.float32), valid_mask.astype(np.float32), _pref_window,
+        prefix_values.astype(np.float32), valid_mask.astype(np.float32), _pref_window,
         strict_preonset=(False if (_fixed_k or _landmark) else getattr(config, "prefix_strict_preonset", True)),
         onset_threshold=getattr(config, "prefix_onset_threshold", config.liq_threshold),
         margin=getattr(config, "prefix_onset_margin", 1),
@@ -403,7 +410,8 @@ def build_population_from_experiments(
         cycles=(cycles.astype(np.float32) if _landmark else None),
     )
     features = build_feature_matrices(soil_df, load_df, cycles.astype(np.float32), delta_cycles,
-                                      csr.astype(np.float32), observations, config.prefix_len)
+                                      csr.astype(np.float32), observations, config.prefix_len,
+                                      max_cycle_reference=float(config.max_cycle_reference))
 
     meta = pd.concat([soil_df, load_df], axis=1)
     meta["liq_label"] = np.asarray(liq_label).astype(int)

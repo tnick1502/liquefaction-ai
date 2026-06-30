@@ -18,7 +18,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import CausalTemporalBlock, ResidualMLP
-from liquefaction_ai.training.losses import masked_bce_with_logits, gaussian_nll, masked_censored_nliq_loss, masked_mean
+from liquefaction_ai.training.losses import (gaussian_nll, masked_bce_with_logits,
+                                             masked_censored_nliq_loss, masked_mean,
+                                             nliq_censor_mask, risk_observation_mask)
 
 __all__ = ["RiskMLP", "GRUBaseline", "TCNBaseline", "LSTMBaseline", "TransformerBaseline"]
 
@@ -74,8 +76,8 @@ class RiskMLP(nn.Module):
         :return: словарь выходов с добавленным ключом ``loss``
         """
         outputs = self.forward_batch(batch)
-        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         loss = risk_loss + 0.45 * nliq_loss
         outputs["loss"] = loss
         return outputs
@@ -139,8 +141,8 @@ class GRUBaseline(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )
@@ -205,8 +207,8 @@ class LSTMBaseline(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )
@@ -284,8 +286,8 @@ class TransformerBaseline(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )
@@ -357,8 +359,8 @@ class TCNBaseline(nn.Module):
         """
         outputs = self.forward_batch(batch)
         traj_loss = gaussian_nll(outputs["traj_mean"], outputs["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(outputs["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(outputs["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         smoothness = masked_mean(
             torch.abs(outputs["traj_mean"][:, 1:] - outputs["traj_mean"][:, :-1]), batch["mask"][:, 1:]
         )

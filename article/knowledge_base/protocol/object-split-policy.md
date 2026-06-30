@@ -5,6 +5,13 @@ tags: [protocol, P0, split-design, decision]
 
 Связано: [[evaluation-protocol]] · [[p0-findings]] · [[../literature/roberts-2017]] · [[../formulations/significance-and-data-value]]
 
+## Текущий протокол (метод)
+Группировка сплитов — по **`site_id`** (канонический ИД геологической площадки, `raw_loader.canonical_site_id`):
+геологически связанные проекты на одном адресе (напр. разные скважины одной площадки) объединяются в одну
+единицу held-out, чтобы исключить утечку между скоррелированными площадками. Все фолд-билдеры
+(`make_grouped_cv_folds` / `make_loo_object_folds` / `make_benchmark_splits`) группируют по `site_id`
+(`_group_col`, fallback на `object`). Балансировка фолдов сохраняет CRR-покрытие и оба класса в val.
+
 ## Идея автора
 «Объекты с меньшим числом проб выносить из обучения в test, чтобы обучение шло лучше (на крупных объектах).»
 

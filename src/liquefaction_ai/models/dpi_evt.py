@@ -28,8 +28,9 @@ from liquefaction_ai.models.dpi_flow import ConditionalCouplingFlow, flow_kl_per
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
 from liquefaction_ai.models.heads import physics_summary
 from liquefaction_ai.training.losses import (energy_crps, gaussian_nll, gaussian_mixture_nll,
-                                             masked_censored_nliq_loss, masked_mean,
-                                             masked_mse, monotone_clip, soft_auc_loss)
+                                             masked_bce_with_logits, masked_censored_nliq_loss, masked_mean,
+                                             masked_mse, monotone_clip, monotone_residual_scale,
+                                             nliq_censor_mask, risk_observation_mask, soft_auc_loss)
 
 __all__ = ["DPIEvtNet"]
 
@@ -225,7 +226,9 @@ class DPIEvtNet(EVTNeuralSSM):
 
         z, r, c, g = self._engine(encoded, params, crr_dyn, batch)
         if self.use_traj_residual:
-            r = r + 0.10 * torch.tanh(self.traj_residual(encoded))
+            # МОНОТОННО-СОХРАНЯЮЩАЯ коррекция (масштаб приращений ±10%, не уровней): кривая остаётся
+            # неубывающей по построению, residual не может сделать модель «physically unreliable».
+            r = monotone_residual_scale(r, self.traj_residual(encoded))
         r = monotone_clip(r)
 
         if self.nliq_from_curve:
@@ -316,16 +319,14 @@ class DPIEvtNet(EVTNeuralSSM):
                 traj_loss = traj_loss + self.mc_crps_weight * energy_crps(samples, batch["r_obs"], batch["mask"])
         else:
             traj_loss = gaussian_nll(out["traj_mean"], out["traj_logvar"], batch["r_obs"], batch["mask"])
-        # Риск-лосс только по образцам с наблюдаемым исходом (исключаем незавершённые non-liq).
-        _robs = batch.get("n_liq_observed")
-        if _robs is not None and (_robs > 0.5).any():
-            _rm = _robs > 0.5; _rlogit, _rlabel = out["risk_logit"][_rm], batch["label"][_rm]
-        else:
-            _rlogit, _rlabel = out["risk_logit"], batch["label"]
-        risk_loss = F.binary_cross_entropy_with_logits(_rlogit, _rlabel)
-        rank_loss = soft_auc_loss(_rlogit, _rlabel)
+        # Риск-лосс только по наблюдаемым (хелпер: all-unobserved → 0); soft-AUC тоже по наблюдаемым.
+        _robs = risk_observation_mask(batch)
+        risk_loss = masked_bce_with_logits(out["risk_logit"], batch["label"], _robs)
+        _m = (_robs > 0.5) if _robs is not None else torch.ones_like(batch["label"], dtype=torch.bool)
+        rank_loss = (soft_auc_loss(out["risk_logit"][_m], batch["label"][_m]) if bool(_m.any())
+                     else out["risk_logit"].sum() * 0.0)
         nliq_loss = masked_censored_nliq_loss(out["nliq_norm"], batch["n_liq_norm"],
-                                              batch["label"], batch.get("n_liq_observed"))
+                                              batch["label"], nliq_censor_mask(batch))
         switch_reg = torch.abs(out["g"][:, 1:] - out["g"][:, :-1]).mean()
         state_smooth = (torch.abs(out["traj_mean"][:, 2:] - 2 * out["traj_mean"][:, 1:-1] + out["traj_mean"][:, :-2]).mean()
                         + torch.abs(out["z"][:, 2:] - 2 * out["z"][:, 1:-1] + out["z"][:, :-2]).mean())
@@ -346,11 +347,11 @@ class DPIEvtNet(EVTNeuralSSM):
         # --- подавление ложного роста PPR и ложного триггера на НЕразжижающихся опытах ---
         # overshoot: одностороннее превышение измеренной кривой (безопасно и для незавершённых,
         # правоцензурированных опытов). Подавление триггера g — только на уверенно неразжижающихся
-        # (стабилизация, n_liq_observed==1): незавершённые опыты могли бы разжижиться, их не штрафуем.
+        # (regime_stable==1): незавершённые опыты могли бы продолжить рост, их не штрафуем.
         noliq = (1.0 - batch["label"]).unsqueeze(1)
         overshoot = masked_mean(torch.relu(out["traj_mean"] - batch["r_obs"]) * noliq, batch["mask"])
-        observed = batch.get("n_liq_observed")
-        stab = noliq if observed is None else (noliq * observed.unsqueeze(1))
+        stable = batch.get("regime_stable")
+        stab = noliq if stable is None else stable.unsqueeze(1)
         trigger_noliq = masked_mean(out["g"] * stab, batch["mask"]) if "g" in out else torch.zeros((), device=out["traj_mean"].device)
 
         loss = (traj_loss + 0.80 * risk_loss + 0.30 * rank_loss + 0.25 * nliq_loss

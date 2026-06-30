@@ -23,7 +23,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from liquefaction_ai.training.losses import masked_bce_with_logits, gaussian_nll, masked_censored_nliq_loss, masked_mean
+from liquefaction_ai.training.losses import (gaussian_nll, masked_bce_with_logits,
+                                             masked_censored_nliq_loss, masked_mean,
+                                             nliq_censor_mask, risk_observation_mask)
 
 __all__ = ["DeepStateBaseline", "RealNVPFlow", "NeuralSplineFlow"]
 
@@ -61,8 +63,8 @@ class DeepStateBaseline(nn.Module):
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         out = self.forward_batch(batch)
         traj_loss = gaussian_nll(out["traj_mean"], out["traj_logvar"], batch["r_obs"], batch["mask"])
-        risk_loss = masked_bce_with_logits(out["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(out["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(out["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(out["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         out["loss"] = traj_loss + 0.35 * risk_loss + 0.25 * nliq_loss
         return out
 
@@ -222,8 +224,8 @@ class _ConditionalTrajectoryFlow(nn.Module):
         nll = -self.log_prob(y, ctx).mean() / self.dim
         risk_logit = self.risk_head(ctx).squeeze(-1)
         nliq_pred = torch.sigmoid(self.nliq_head(ctx).squeeze(-1))
-        risk_loss = masked_bce_with_logits(risk_logit, batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(nliq_pred, batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(risk_logit, batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(nliq_pred, batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         loss = nll + 0.35 * risk_loss + 0.25 * nliq_loss
         return {"loss": loss, "risk_logit": risk_logit, "risk_prob": torch.sigmoid(risk_logit),
                 "nliq_pred": nliq_pred, "nll": nll}

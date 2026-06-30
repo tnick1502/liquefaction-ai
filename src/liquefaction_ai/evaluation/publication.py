@@ -51,6 +51,14 @@ def reliability_diagram(samples_df: pd.DataFrame, ref: str = "DPI-Flow", bins: i
     sub = samples_df[samples_df["model"] == ref]
     if sub.empty:
         raise ValueError(f"model {ref} not present in per-sample data")
+    # ИСКЛЮЧАЕМ образцы с НЕнаблюдаемой меткой риска (незавершённые non-liq опыты): их нельзя
+    # трактовать как известный отрицательный класс. Без фильтра reliability/ECE расходятся с таблицей
+    # (метрики риска маскированы по risk_label_observed) — фигура противоречила бы leaderboard.
+    risk_mask_col = "risk_label_observed" if "risk_label_observed" in sub.columns else "n_liq_observed"
+    if risk_mask_col in sub.columns:
+        sub = sub[sub[risk_mask_col].to_numpy() > 0.5]
+        if sub.empty:
+            raise ValueError(f"model {ref}: нет наблюдаемых меток риска после маскирования")
     y = (sub["liq_label"].to_numpy() > 0.5).astype(float)
     p = sub["risk_prob_pred"].to_numpy()
     edges = np.linspace(0, 1, bins + 1)

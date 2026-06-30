@@ -30,8 +30,10 @@ def test_split_exposes_censoring_mask():
     pop, cfg = load_population_artifact(REAL_OBJECTS)
     bench = prepare_benchmark_dataset(pop, cfg, torch.device("cpu"))
     for name in ["train", "val", "test"]:
-        assert "n_liq_observed" in bench[name], f"в выборке {name} нет n_liq_observed"
-        vals = set(np.unique(bench[name]["n_liq_observed"].cpu().numpy()).tolist())
+        for key in ("risk_label_observed", "nliq_censor_valid", "continuation_mask",
+                    "regime_liq", "regime_stable", "regime_unfinished"):
+            assert key in bench[name], f"в выборке {name} нет {key}"
+        vals = set(np.unique(bench[name]["nliq_censor_valid"].cpu().numpy()).tolist())
         assert vals.issubset({0.0, 1.0})
 
 

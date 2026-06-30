@@ -21,7 +21,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
-from liquefaction_ai.training.losses import masked_bce_with_logits, gaussian_nll, masked_censored_nliq_loss, masked_mean
+from liquefaction_ai.training.losses import (gaussian_nll, masked_bce_with_logits,
+                                             masked_censored_nliq_loss, masked_mean,
+                                             nliq_censor_mask, risk_observation_mask)
 
 __all__ = ["PINNBaseline"]
 
@@ -74,8 +76,8 @@ class PINNBaseline(nn.Module):
         out = self.forward_batch(batch)
         r = out["traj_mean"]; csr = out["csr"]; mask = batch["mask"]
         traj_loss = gaussian_nll(r, out["traj_logvar"], batch["r_obs"], mask)
-        risk_loss = masked_bce_with_logits(out["risk_logit"], batch["label"], batch.get("n_liq_observed"))
-        nliq_loss = masked_censored_nliq_loss(out["nliq_pred"], batch["n_liq_norm"], batch["label"], batch.get("n_liq_observed"))
+        risk_loss = masked_bce_with_logits(out["risk_logit"], batch["label"], risk_observation_mask(batch))
+        nliq_loss = masked_censored_nliq_loss(out["nliq_pred"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch))
         # физический остаток: dr/dn − α·CSR·(1−r) (конечная разность по индексу цикла)
         dr = r[:, 1:] - r[:, :-1]
         rhs = out["alpha"].unsqueeze(1) * csr[:, :-1] * (1.0 - r[:, :-1])

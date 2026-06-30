@@ -17,7 +17,17 @@ import torch.nn.functional as F
 __all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "gaussian_mixture_nll",
            "masked_bce_with_logits", "energy_crps", "clone_state_dict",
            "observed_aux_loss", "soft_auc_loss", "monotone_clip", "beta_nll", "censored_nliq_loss",
-           "masked_censored_nliq_loss"]
+           "masked_censored_nliq_loss", "risk_observation_mask", "nliq_censor_mask"]
+
+
+def risk_observation_mask(batch: Dict[str, torch.Tensor]):
+    """Маска образцов с известным бинарным исходом by-H; legacy fallback оставлен для старых артефактов."""
+    return batch.get("risk_label_observed", batch.get("n_liq_observed"))
+
+
+def nliq_censor_mask(batch: Dict[str, torch.Tensor]):
+    """Маска точных/право-цензурированных event-time наблюдений; не равна risk mask в общем случае."""
+    return batch.get("nliq_censor_valid", batch.get("n_liq_observed"))
 
 
 def soft_auc_loss(logit: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
@@ -85,22 +95,23 @@ def masked_censored_nliq_loss(nliq_pred: torch.Tensor, nliq_target: torch.Tensor
                               liq_label: torch.Tensor,
                               observed: torch.Tensor = None) -> torch.Tensor:
     """
-    Цензурированная потеря N_liq с маской наблюдаемости терминала (три режима опыта).
+    Цензурированная потеря N_liq с независимой event-time маской.
 
     Объединяет корректную обработку всех трёх типов опыта:
 
     * **разжижение** (``liq_label==1``): обычная Smooth-L1 к наблюдаемому N_liq;
-    * **нет разжижения + стабилизация** (``liq_label==0``, ``observed==1``):
-      право-цензурирование при практическом горизонте —
+    * **нет разжижения** (``liq_label==0``, ``observed==1``):
+      право-цензурирование на фактическом последнем наблюдённом цикле —
       штраф только за **занижение** прогноза (предсказание разжижения раньше точки цензуры),
       «перелёт» не штрафуется (Tobit);
-    * **нет разжижения + нет стабилизации** (``observed==0``): терминал оценить нельзя →
-      образец **исключается** из потери N_liq (вес 0), обучение идёт только по динамике кривой PPR.
+    * ``observed==0``: образец не принадлежит landmark risk set или не имеет корректного времени
+      наблюдения и исключается. Стабилизация является отдельным физическим режимом и не определяет
+      валидность обычной правой цензуры.
 
     :param nliq_pred: предсказанный нормированный N_liq, форма (batch,)
     :param nliq_target: целевой нормированный N_liq (для цензурированных — точка N_max), (batch,)
     :param liq_label: бинарная метка разжижения, форма (batch,)
-    :param observed: маска наблюдаемости терминала ``n_liq_observed`` ∈ {0,1}, форма (batch,);
+    :param observed: маска ``nliq_censor_valid`` ∈ {0,1}, форма (batch,);
         ``None`` — все образцы наблюдаемы (обратная совместимость)
     :return: скалярная потеря (взвешенное среднее по наблюдаемым образцам)
     """
@@ -127,6 +138,28 @@ def monotone_clip(traj: torch.Tensor, lo: float = 0.0, hi: float = 1.05) -> torc
     :return: монотонно неубывающая ограниченная траектория той же формы
     """
     return torch.clamp(torch.cummax(traj, dim=1).values, lo, hi)
+
+
+def monotone_residual_scale(traj: torch.Tensor, residual: torch.Tensor, span: float = 0.10) -> torch.Tensor:
+    """
+    МОНОТОННО-СОХРАНЯЮЩАЯ обучаемая коррекция траектории PPR(N).
+
+    Вместо аддитивного residual (``traj + r``, который может сделать кривую убывающей и нарушить
+    физику) масштабирует НЕОТРИЦАТЕЛЬНЫЕ приращения базовой кривой множителем
+    ``g = 1 + span·tanh(residual) ∈ [1−span, 1+span] > 0``. Поскольку приращения ``Δ = clamp(diff, ≥0)``
+    остаются неотрицательными, ``traj₀ + cumsum(Δ·g)`` неубывающая ПО ПОСТРОЕНИЮ. Модель корректирует
+    ТЕМП накопления (±span), но не направление → не может стать «physically unreliable» из-за residual,
+    независимо от post-hoc проекции.
+
+    :param traj: базовая (неубывающая) траектория, форма (batch, seq_len)
+    :param residual: выход residual-головы, форма (batch, seq_len)
+    :param span: предел относительной коррекции темпа (0.10 = ±10%)
+    :return: скорректированная неубывающая траектория той же формы
+    """
+    base0 = traj[:, :1]
+    dr = torch.clamp(traj[:, 1:] - traj[:, :-1], min=0.0)
+    gate = 1.0 + span * torch.tanh(residual[:, 1:])
+    return torch.cat([base0, base0 + torch.cumsum(dr * gate, dim=1)], dim=1)
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -206,7 +239,7 @@ def masked_bce_with_logits(logit: torch.Tensor, label: torch.Tensor,
 
     :param logit: логиты риска, форма (N,)
     :param label: бинарные метки разжижения, форма (N,)
-    :param observed: маска наблюдаемости исхода (``n_liq_observed``); None → без маски
+    :param observed: маска известности бинарного исхода (``risk_label_observed``); None → без маски
     :return: скалярный BCE (0, если в батче нет наблюдаемых исходов)
     """
     if observed is not None:
@@ -270,7 +303,7 @@ def observed_aux_loss(
     batch: Dict[str, torch.Tensor],
     use_states: bool = True,
     w_g: float = 0.10,
-    w_risk: float = 0.10,
+    w_risk: float = 0.0,
     w_crr: float = 0.10,
 ) -> torch.Tensor:
     """
@@ -291,8 +324,18 @@ def observed_aux_loss(
     """
     device = outputs["risk_prob"].device if "risk_prob" in outputs else outputs["traj_mean"].device
     total = torch.zeros((), device=device)
-    if "risk_proxy" in batch and "risk_prob" in outputs:
-        total = total + w_risk * F.mse_loss(outputs["risk_prob"], batch["risk_proxy"])
+    # ВНИМАНИЕ (калибровка): risk_proxy = PPR_max — НЕПРЕРЫВНЫЙ прокси, а НЕ событие «разжижение by 3000».
+    # Регрессия калиброванного risk_prob к нему противоречит масочному BCE (у stabilized non-liq, label=0,
+    # медиана proxy≈0.63 → толкает вероятность негатива вверх) и портит Brier/ECE/AUPRC. Поэтому по
+    # умолчанию ВЫКЛЮЧЕНО (w_risk=0): risk_prob калибруется ТОЛЬКО событийным масочным BCE. Если включить —
+    # хотя бы маскируем по наблюдаемости (как BCE), но семантический конфликт всё равно остаётся.
+    if w_risk > 0 and "risk_proxy" in batch and "risk_prob" in outputs:
+        _o = risk_observation_mask(batch)
+        if _o is not None and bool((_o > 0.5).any()):
+            _m = _o > 0.5
+            total = total + w_risk * F.mse_loss(outputs["risk_prob"][_m], batch["risk_proxy"][_m])
+        elif _o is None:
+            total = total + w_risk * F.mse_loss(outputs["risk_prob"], batch["risk_proxy"])
     if use_states and "g_obs" in batch and "g" in outputs:
         total = total + w_g * masked_mse(outputs["g"], batch["g_obs"], batch["mask"])
     if use_states and "crr_obs" in batch and "crr" in outputs:
