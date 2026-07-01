@@ -71,7 +71,7 @@ def audit_horizon_negatives(
         if through_win.any() and float(r_obs[i, through_win].max()) >= threshold:
             continue
         win_vals = r_obs[i, in_win]
-        if float(win_vals.max() - win_vals.min()) >= rise_eps:   # в окне НЕ плоский — пропускаем
+        if float(win_vals.max() - win_vals.min()) >= rise_eps: # в окне НЕ плоский — пропускаем
             continue
         n_flat += 1
         n_final_liq += int(liq_label[i] >= 0.5)
@@ -133,7 +133,7 @@ def stratified_subset_indices(meta: pd.DataFrame, subset_size: int, seed: int) -
     """
     subset_size = min(subset_size, len(meta))
     idx = np.arange(len(meta))
-    if subset_size >= len(meta):  # подмножество — вся популяция
+    if subset_size >= len(meta): # подмножество — вся популяция
         return idx
     strata = safe_strata(meta, ["soil_type", "load_mode", "liq_label"])
     keep_idx, _ = train_test_split(idx, train_size=subset_size, stratify=strata, random_state=seed)
@@ -165,7 +165,7 @@ def make_benchmark_splits(meta: pd.DataFrame, subset_size: int, seed: int, confi
     # measured-CRR объектов test/val получают хотя бы один CRR-объект и один обычный объект, чтобы
     # основной grouped leaderboard не терял CRR_RMSE и бинарные риск-метрики.
     if getattr(config, "group_split_by_object", False) and "object" in benchmark_meta.columns:
-        gcol = _group_col(benchmark_meta)                # группируем по site_id (если есть)
+        gcol = _group_col(benchmark_meta) # группируем по site_id (если есть)
         objects = benchmark_meta[gcol].to_numpy()
         obj_stats = (
             benchmark_meta.groupby(gcol)
@@ -296,7 +296,7 @@ def _pick_balanced_val(pool: List[str], k: int, stats: pd.DataFrame, rng) -> Lis
         crr = [o for o in perm if int(stats.loc[o, "has_crr"]) and o not in chosen]
         if crr:
             chosen.append(crr[0])
-    for o in perm:                       # добор до k, если запрошено больше
+    for o in perm: # добор до k, если запрошено больше
         if len(chosen) >= max(k, 2):
             break
         if o not in chosen:
@@ -364,7 +364,7 @@ def make_grouped_cv_folds(
     rel = np.arange(len(benchmark_idx))
     if "object" not in benchmark_meta.columns:
         raise ValueError("make_grouped_cv_folds требует колонку 'object' в meta")
-    gcol = _group_col(benchmark_meta)                     # группируем по site_id (если есть)
+    gcol = _group_col(benchmark_meta) # группируем по site_id (если есть)
     objects = benchmark_meta[gcol].to_numpy()
     uniq = np.array(sorted(pd.unique(objects)))
     n_splits = int(max(2, min(n_splits, len(uniq))))
@@ -409,7 +409,7 @@ def make_loo_object_folds(
     rel = np.arange(len(benchmark_idx))
     if "object" not in benchmark_meta.columns:
         raise ValueError("make_loo_object_folds требует колонку 'object' в meta")
-    gcol = _group_col(benchmark_meta)                     # LOO по site_id (если есть)
+    gcol = _group_col(benchmark_meta) # LOO по site_id (если есть)
     objects = benchmark_meta[gcol].to_numpy()
     uniq = np.array(sorted(pd.unique(objects)))
     stats = _object_level_table(benchmark_meta, uniq, gcol)
@@ -512,7 +512,7 @@ def prepare_benchmark_dataset(
     #   regime_* — физическое состояние траектории (liq / stabilized / unfinished).
     _H = float(config.max_cycle_reference)
     _N0 = float(getattr(config, "prefix_landmark_cycles", 0.0))
-    _reached_horizon = (n_liq_true >= _H - 1e-6)          # опыт доведён до горизонта (или событие в окне)
+    _reached_horizon = (n_liq_true >= _H - 1e-6) # опыт доведён до горизонта (или событие в окне)
     _is_liq = liq_label > 0.5
     risk_label_observed = (_is_liq | ((~_is_liq) & _reached_horizon)).astype(np.float32)
     # Для survival/event-time любой non-liq, наблюдавшийся после landmark, даёт валидную правую

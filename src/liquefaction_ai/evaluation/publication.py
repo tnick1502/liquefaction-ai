@@ -6,11 +6,11 @@ Pure numpy/pandas/matplotlib — runs on cross-validation artifacts without torc
 the key results read as figures, not bare tables.
 
 API
-    reliability_diagram(samples_df, ref, bins, out_dir, suffix)        -> (fig, ece)
-    forest_plot(cluster_df, metric, higher_better, ref, out_dir, ...)  -> fig   (model CI comparison)
-    ablation_bars(ablation_summary, metric, out_dir, ...)              -> fig   (component contribution)
-    pareto_plot(summary_df, out_dir, ...)                              -> fig   (onset vs trajectory)
-    headline_table(summary_df, cluster_df)                            -> DataFrame
+    reliability_diagram(samples_df, ref, bins, out_dir, suffix) -> (fig, ece)
+    forest_plot(cluster_df, metric, higher_better, ref, out_dir, ...) -> fig (model CI comparison)
+    ablation_bars(ablation_summary, metric, out_dir, ...) -> fig (component contribution)
+    pareto_plot(summary_df, out_dir, ...) -> fig (onset vs trajectory)
+    headline_table(summary_df, cluster_df) -> DataFrame
 """
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ import pandas as pd
 
 # Consistent palette (matches viz theme without importing the torch-bearing package)
 INK = "#2b2f36"
-ACCENT = "#C36F6F"       # proposed / highlighted model
-AMBER = "#E0A458"        # reference (PINN)
-BLUE = "#7C9CB5"         # other baselines
+ACCENT = "#C36F6F" # proposed / highlighted model
+AMBER = "#E0A458" # reference (PINN)
+BLUE = "#7C9CB5" # other baselines
 GRIDC = "#dfe3e8"
 STRUCTURED = {"DPI-Flow", "DPI-EVT", "EVT-NeuralSSM"}
 
@@ -110,7 +110,7 @@ def forest_plot(cluster_df: pd.DataFrame, metric: str = "AUPRC", higher_better: 
     ax.errorbar(point, y, xerr=err, fmt="none", ecolor=INK, elinewidth=1.1, capsize=3, zorder=2)
     ax.scatter(point, y, s=70, c=colors, edgecolor=INK, linewidth=0.6, zorder=3)
     ax.set_yticks(y); ax.set_yticklabels(d["model"])
-    ax.set_xlabel(f"{metric}  ({'higher' if higher_better else 'lower'} is better)  — 95% object-cluster bootstrap CI")
+    ax.set_xlabel(f"{metric} ({'higher' if higher_better else 'lower'} is better) — 95% object-cluster bootstrap CI")
     ax.set_title(title or f"Model comparison: {metric} ({suffix})")
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
@@ -126,20 +126,20 @@ def ablation_bars(ablation_summary: pd.DataFrame, metric: str = "Traj_RMSE_worst
                   out_dir: Optional[str] = None) -> object:
     """Component-contribution bars: a metric across ablation variants, 'full' highlighted.
 
-    ablation_summary has columns ``ablation`` and ``<metric>_mean`` (+ optional ``<metric>_ci95``).
+    ``fold_sd`` is descriptive variability, not a confidence interval: grouped folds are dependent.
     """
     plt = _mpl()
     mcol = f"{metric}_mean" if f"{metric}_mean" in ablation_summary.columns else metric
     d = ablation_summary.dropna(subset=[mcol]).copy().sort_values(mcol, ascending=higher_better)
     vals = d[mcol].to_numpy()
-    ci = d.get(f"{metric}_ci95", np.zeros(len(d)))
+    sd = d.get(f"{metric}_fold_sd", np.zeros(len(d)))
     colors = [ACCENT if a == baseline else BLUE for a in d["ablation"]]
     fig, ax = plt.subplots(figsize=(7.2, 0.5 * len(d) + 1.4))
-    ax.barh(np.arange(len(d)), vals, xerr=np.asarray(ci), color=colors, edgecolor=INK, linewidth=0.6,
+    ax.barh(np.arange(len(d)), vals, xerr=np.asarray(sd), color=colors, edgecolor=INK, linewidth=0.6,
             error_kw=dict(ecolor=INK, capsize=3, lw=0.9))
     ax.set_yticks(np.arange(len(d))); ax.set_yticklabels(d["ablation"])
     ax.invert_yaxis()
-    ax.set_xlabel(f"{metric}  ({'higher' if higher_better else 'lower'} is better)  [mean ± 95% CI over folds]")
+    ax.set_xlabel(f"{metric} ({'higher' if higher_better else 'lower'} is better) [mean ± fold SD]")
     ax.set_title(f"Ablation: component contribution to {metric}")
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
@@ -163,7 +163,7 @@ def pareto_plot(summary_df: pd.DataFrame, x: str = "Traj_RMSE_continuation", y: 
     if xs_col not in d or ys_col not in d:
         raise ValueError(f"summary lacks {xs_col}/{ys_col}")
     pvr = d.get("Physics_Violation_Rate_mean", pd.Series(np.zeros(len(d)), index=d.index))
-    gate = 0.05   # physical-feasibility gate of the P3 profile (PVR>gate => excluded/unreliable)
+    gate = 0.05 # physical-feasibility gate of the P3 profile (PVR>gate => excluded/unreliable)
     fig, ax = plt.subplots(figsize=(6.2, 5.0))
     for _, r in d.iterrows():
         m = r["model"]; admissible = float(pvr.get(r.name, 0.0)) <= gate

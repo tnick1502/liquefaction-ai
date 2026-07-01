@@ -74,7 +74,7 @@ class DPIEvtNet(EVTNeuralSSM):
         self.logvar_head = nn.Linear(hidden_dim, 33)
         # Conditional RealNVP с latent-зависимым coupling и log-det (вместо диагонального flow).
         self.flow = ConditionalCouplingFlow(33, hidden_dim, n_layers=4, hidden=64)
-        self.crr_ref_head = nn.Linear(hidden_dim, 3)              # [CRR_ref, λ_crr, m_crr]
+        self.crr_ref_head = nn.Linear(hidden_dim, 3) # [CRR_ref, λ_crr, m_crr]
         self.traj_residual = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
                                            nn.Linear(hidden_dim, seq_len))
         nn.init.zeros_(self.traj_residual[-1].weight)
@@ -85,7 +85,7 @@ class DPIEvtNet(EVTNeuralSSM):
         mu = self.param_head(encoded)
         raw_logvar = torch.clamp(self.logvar_head(encoded), min=-5.0, max=3.0)
         if self.probabilistic:
-            stochastic = self.training or self._force_sample   # _force_sample → MC-сэмплы на инференсе
+            stochastic = self.training or self._force_sample # _force_sample → MC-сэмплы на инференсе
             eps = torch.randn_like(mu) if stochastic else torch.zeros_like(mu)
             latent = mu + torch.exp(0.5 * raw_logvar) * eps
         else:
@@ -126,7 +126,7 @@ class DPIEvtNet(EVTNeuralSSM):
             crr_dyn = self.compute_crr(params, cycles)
             crr_out, _, _ = power_crr()
             cons = ((torch.log(crr_out + 1e-6) - torch.log(crr_dyn + 1e-6)) ** 2).mean(dim=1)
-        else:  # damage
+        else: # damage
             crr_dyn = crr_out = self.crr_from_damage_law(params, crr_ref, cycles)
         return crr_dyn, crr_out, cons
 
@@ -193,7 +193,7 @@ class DPIEvtNet(EVTNeuralSSM):
         for _ in range(self.calibration_steps):
             work = work.detach().requires_grad_(True)
             with torch.enable_grad():
-                theta, _ = self._theta_from_latent(work, encoded)   # (θ, log_det) — берём θ
+                theta, _ = self._theta_from_latent(work, encoded) # (θ, log_det) — берём θ
                 params = self.unpack_params(theta)
                 crr_dyn, _, _ = self._compute_crr_pair(encoded, params, batch["cycles"])
                 _, r_pref, _, _ = self._engine(encoded, params, crr_dyn, batch, n_steps=self.prefix_len)
@@ -202,16 +202,16 @@ class DPIEvtNet(EVTNeuralSSM):
                                   batch["prefix_mask"][:, : self.prefix_len])
             grad = torch.autograd.grad(loss, work, retain_graph=False, create_graph=False)[0]
             work = work - self.calibration_lr * grad
-        return anchor + (work.detach() - anchor.detach())          # straight-through
+        return anchor + (work.detach() - anchor.detach()) # straight-through
 
     # ---------- N_liq из кривой PPR ----------
     def _nliq_from_curve(self, r, cycles, beta: float = 25.0):
         """Дифференцируемый момент пересечения порога ru монотонной кривой PPR. Возвращает (N_liq, pdf, mass)."""
-        p = torch.sigmoid(beta * (r - self.liq_threshold))         # монотонно растёт (r монотонна)
+        p = torch.sigmoid(beta * (r - self.liq_threshold)) # монотонно растёт (r монотонна)
         dp = torch.clamp(p[:, 1:] - p[:, :-1], min=0.0)
-        pdf = torch.cat([p[:, :1], dp], dim=1)                     # масса пересечения по шагам
+        pdf = torch.cat([p[:, :1], dp], dim=1) # масса пересечения по шагам
         mass = pdf.sum(dim=1)
-        resid = torch.clamp(1.0 - mass, min=0.0)                   # не пересёк → цензура на последнем цикле
+        resid = torch.clamp(1.0 - mass, min=0.0) # не пересёк → цензура на последнем цикле
         nliq = (pdf * cycles).sum(dim=1) + resid * cycles[:, -1]
         return nliq, pdf, mass
 
@@ -219,7 +219,7 @@ class DPIEvtNet(EVTNeuralSSM):
         context = self.build_context(batch)
         encoded = self.context_encoder(context)
         latent, mu, raw_logvar = self.infer_theta(encoded)
-        latent = self.calibrate_theta(latent, encoded, batch)      # DPI: уточнение θ по префиксу (steps=0 → no-op)
+        latent = self.calibrate_theta(latent, encoded, batch) # DPI: уточнение θ по префиксу (steps=0 → no-op)
         theta, log_det = self._theta_from_latent(latent, encoded)
         params = self.unpack_params(theta)
         crr_dyn, crr_out, crr_cons = self._compute_crr_pair(encoded, params, batch["cycles"])
@@ -231,13 +231,15 @@ class DPIEvtNet(EVTNeuralSSM):
             r = monotone_residual_scale(r, self.traj_residual(encoded))
         r = monotone_clip(r)
 
+        mcr = torch.as_tensor(self.max_cycle_reference, device=r.device, dtype=r.dtype)
         if self.nliq_from_curve:
-            nliq, cross_pdf, cross_mass = self._nliq_from_curve(r, batch["cycles"])
+            nliq_curve, cross_pdf, cross_mass = self._nliq_from_curve(r, batch["cycles"])
         else:
-            nliq = self.soft_first_hitting(r, g, batch["cycles"])
+            nliq_curve = self.soft_first_hitting(r, g, batch["cycles"])
             cross_pdf = torch.zeros_like(r); cross_mass = torch.zeros(r.shape[0], device=r.device)
-        mcr = torch.as_tensor(self.max_cycle_reference, device=nliq.device, dtype=nliq.dtype)
-        nliq_norm = torch.log1p(nliq) / torch.log1p(mcr)
+        nliq_norm_curve = torch.log1p(nliq_curve) / torch.log1p(mcr)
+        # Выделенная N_liq-голова (robust на OOD) заменяет/уточняет пересечение; consistency в лоссе.
+        nliq, nliq_norm, nliq_norm_curve = self._apply_nliq_head(encoded, nliq_norm_curve, mcr)
         summary = physics_summary(r, z, g, nliq_norm)
         risk_prior = 6.0 * (0.50 * r.amax(dim=1) + 0.25 * g.amax(dim=1) + 0.25 * z.amax(dim=1) - 0.75)
         risk_logit = (self.risk_clf(encoded).squeeze(-1) + self.prior_gate * risk_prior
@@ -251,7 +253,8 @@ class DPIEvtNet(EVTNeuralSSM):
         return {
             "traj_mean": r, "ru": r, "damage": z, "traj_logvar": traj_logvar,
             "risk_logit": risk_logit, "risk_prob": torch.sigmoid(risk_logit),
-            "nliq": nliq, "nliq_norm": nliq_norm, "z": z, "g": g, "c": c, "crr": crr_out, "kl": kl,
+            "nliq": nliq, "nliq_norm": nliq_norm, "nliq_norm_curve": nliq_norm_curve,
+            "z": z, "g": g, "c": c, "crr": crr_out, "kl": kl,
             "crr_consistency": crr_cons, "cross_pdf": cross_pdf, "cross_mass": cross_mass,
         }
 
@@ -291,10 +294,14 @@ class DPIEvtNet(EVTNeuralSSM):
         if crrs:
             out["crr"] = torch.stack(crrs, 0).mean(0)
         if nliqs:
-            nn_ = torch.stack(nliqs, 0).mean(0)
+            nn_samples = torch.stack(nliqs, 0)
+            nn_ = nn_samples.mean(0)
             out["nliq_norm"] = nn_
             mcr = torch.as_tensor(self.max_cycle_reference, device=nn_.device, dtype=nn_.dtype)
             out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
+            cyc_samples = torch.expm1(nn_samples * torch.log1p(mcr))
+            out["nliq_q05"] = torch.quantile(cyc_samples, 0.05, dim=0)
+            out["nliq_q95"] = torch.quantile(cyc_samples, 0.95, dim=0)
         return out
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -337,11 +344,11 @@ class DPIEvtNet(EVTNeuralSSM):
         joint = torch.zeros((), device=out["traj_mean"].device)
         if out["cross_mass"].sum() > 0:
             m = torch.clamp(out["cross_mass"], min=1e-4)
-            crr_at = (out["cross_pdf"] * out["crr"]).sum(1) / m            # CRR в момент разжижения
-            z_at = (out["cross_pdf"] * out["z"]).sum(1) / m               # Damage в момент разжижения
+            crr_at = (out["cross_pdf"] * out["crr"]).sum(1) / m # CRR в момент разжижения
+            z_at = (out["cross_pdf"] * out["z"]).sum(1) / m # Damage в момент разжижения
             csr_app = batch["csr"].amax(dim=1)
-            crr_cons_liq = (liq * (crr_at - csr_app) ** 2).sum() / denom   # CRR(N_liq) ≈ CSR
-            dmg_cons_liq = (liq * (z_at - 0.90) ** 2).sum() / denom        # Damage(N_liq) ≈ порог
+            crr_cons_liq = (liq * (crr_at - csr_app) ** 2).sum() / denom # CRR(N_liq) ≈ CSR
+            dmg_cons_liq = (liq * (z_at - 0.90) ** 2).sum() / denom # Damage(N_liq) ≈ порог
             joint = crr_cons_liq + dmg_cons_liq
 
         # --- подавление ложного роста PPR и ложного триггера на НЕразжижающихся опытах ---
@@ -354,7 +361,10 @@ class DPIEvtNet(EVTNeuralSSM):
         stab = noliq if stable is None else stable.unsqueeze(1)
         trigger_noliq = masked_mean(out["g"] * stab, batch["mask"]) if "g" in out else torch.zeros((), device=out["traj_mean"].device)
 
+        # consistency: N_liq-голова ≈ физическое пересечение кривой (где событие произошло)
+        nliq_consistency = self._nliq_consistency_loss(out, batch)
         loss = (traj_loss + 0.80 * risk_loss + 0.30 * rank_loss + 0.25 * nliq_loss
+                + 0.10 * nliq_consistency
                 + 0.02 * switch_reg + 0.01 * state_smooth + 0.02 * kl_loss
                 + 0.01 * out["crr_consistency"].mean() + 0.05 * joint
                 + 0.20 * overshoot + 0.05 * trigger_noliq)

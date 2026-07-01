@@ -33,6 +33,85 @@ from liquefaction_ai.data.ppr_envelope import (causal_monotone_smooth, extract_c
 from liquefaction_ai.data.real_adapter import build_population_from_experiments
 
 
+def _cycle_bins(cycles) -> np.ndarray:
+    """Целочисленный НОМЕР ЦИКЛА для каждого пика (устойчиво к субцикловому дрожанию фазы).
+
+    В режиме ``points_in_cycle`` номера циклов пиков — ИЗМЕРЕННЫЕ float-значения (аргмакс внутри
+    окна одного цикла), которые около onset дрожат по фазе: два ПОДРЯД идущих цикла могут иметь пики
+    в k+0.9 и (k+1)+0.1 → сырой diff ≈ 0.2 и «выглядит» как один цикл, хотя это два соседних. Поэтому
+    последовательность определяется по ЦЕЛОМУ номеру цикла ``floor(cyc)``, а НЕ по сырым float-разностям.
+    Небольшой ε страхует от fp-погрешности (2.0 хранится как 1.9999999)."""
+    return np.floor(np.asarray(cycles, dtype=float) + 1e-6).astype(np.int64)
+
+
+def _consecutive_cycles(cycles) -> bool:
+    """Все соседние пики окна принадлежат ПОСЛЕДОВАТЕЛЬНЫМ целым циклам (шаг ровно 1)."""
+    if cycles is None:
+        return True
+    bins = _cycle_bins(cycles)
+    return bins.size <= 1 or bool(np.all(np.diff(bins) == 1))
+
+
+def sustained_first_crossing(curve, thr: float = LIQ_THRESHOLD, sustain: int = 3,
+                             cycles=None) -> int:
+    """
+    Индекс первого ЦИКЛА устойчивого пересечения порога ``thr`` на СЫРОЙ (не монотонной) кривой.
+
+    Причинно/физически корректный критерий onset разжижения:
+
+    * применять к СЫРЫМ поцикловым пикам, НЕ к изотонической огибающей — на монотонной кривой после
+      первого пересечения значение по построению остаётся ≥ порога, и любое sustain-окно там no-op;
+    * требуется ПОЛНОЕ окно из ``sustain`` подряд идущих ЦЕЛЫХ циклов ≥ порога (последовательность —
+      по целому номеру цикла ``floor(cyc)``, устойчиво к субцикловому дрожанию фазы пиков в режиме
+      ``points_in_cycle``; сырые float-разности для этого не годятся, см. :func:`_cycle_bins`);
+    * усечённый хвост НЕ принимается как событие. Такие случаи аудируются отдельно как
+      terminal-ambiguous (:func:`terminal_onset_ambiguous`), поскольку правило «два последних
+      превышения вместо трёх» меняло бы определение события в зависимости от момента остановки опыта.
+
+    :param curve: поцикловые значения ru (сырые пики), 1-D
+    :param thr: порог разжижения ru (обычно :data:`LIQ_THRESHOLD`)
+    :param sustain: требуемое число подряд идущих циклов ≥ порога
+    :param cycles: физические номера циклов пиков; если заданы, окно должно покрывать ``sustain``
+        последовательных целых циклов
+    :return: индекс первого устойчивого пересечения; ``-1`` если события нет
+    """
+    c = np.asarray(curve)
+    cyc = np.arange(c.size, dtype=float) if cycles is None else np.asarray(cycles, dtype=float)
+    if cyc.shape != c.shape:
+        raise ValueError("cycles и curve должны иметь одинаковую форму")
+    above = c >= thr
+    n = c.size
+    s = int(max(1, sustain))
+    for i in range(n):
+        if not above[i]:
+            continue
+        j = i + s
+        if j <= n and bool(above[i:j].all()):
+            if cycles is None or _consecutive_cycles(cyc[i:j]):
+                return i
+    return -1
+
+
+def terminal_onset_ambiguous(curve, thr: float = LIQ_THRESHOLD, sustain: int = 3,
+                             cycles=None, min_tail: int = 2) -> bool:
+    """Есть ли у конца записи правдоподобное, но недостаточно длинное sustained-превышение."""
+    c = np.asarray(curve)
+    cyc = np.arange(c.size, dtype=float) if cycles is None else np.asarray(cycles, dtype=float)
+    if c.shape != cyc.shape or c.size == 0:
+        return False
+    above = c >= thr
+    start = c.size
+    while start > 0 and above[start - 1]:
+        start -= 1
+    tail = c.size - start
+    s = max(int(sustain), 1)
+    if not (max(int(min_tail), 1) <= tail < s):
+        return False
+    if cycles is not None and tail > 1 and not _consecutive_cycles(cyc[start:]):
+        return False
+    return True
+
+
 def _peak_on_grid(cyc, signal, grid, points_in_cycle=None) -> np.ndarray:
     """Пик произвольного циклического сигнала по циклам, интерполированный на сетку ``grid``.
 
@@ -50,7 +129,8 @@ __all__ = [
     "fines_clay_cu", "dr_proxy", "extract_test",
     "find_object_pickles", "load_object", "discover_objects",
     "read_statement", "fit_alpha_betta", "build_crr_obs",
-    "find_cloud_root", "DEFAULT_TEST_TYPES", "TYPE_TO_MODE",
+    "find_cloud_root", "DEFAULT_TEST_TYPES", "TYPE_TO_MODE", "sustained_first_crossing",
+    "terminal_onset_ambiguous",
     "build_real_objects_population", "build_cohort_manifest", "canonical_site_id",
 ]
 
@@ -72,6 +152,9 @@ def build_cohort_manifest(population: Dict[str, object], raw_count: Optional[int
     crrm = population.get("crr_obs_mask")
     crr_n = int((np.asarray(crrm) > 0.5).sum()) if crrm is not None else 0
     crr_obj = int(meta.loc[np.asarray(crrm) > 0.5, "object"].nunique()) if crrm is not None else 0
+    crr_site = int(meta.loc[np.asarray(crrm) > 0.5, "site_id"].nunique()) \
+        if crrm is not None and "site_id" in meta else crr_obj
+    events = np.asarray(population.get("n_liq_true", []), dtype=float)[lab > 0.5]
     return {
         "raw_specimens": raw_n,
         "analytic_risk_set": int(len(meta)),
@@ -80,9 +163,22 @@ def build_cohort_manifest(population: Dict[str, object], raw_count: Optional[int
         "excluded_censored_before_N0": excluded_censored,
         "n_liq": int((lab > 0.5).sum()), "n_nonliq": int((lab < 0.5).sum()),
         "n_objects": int(meta["object"].nunique()),
+        "n_sites": int(meta["site_id"].nunique()) if "site_id" in meta else int(meta["object"].nunique()),
         "raw_objects": int(filt.get("raw_objects", meta["object"].nunique())),
         "modes": {str(k): int(v) for k, v in meta["load_mode"].value_counts().items()},
-        "crr_samples": crr_n, "crr_objects": crr_obj,
+        "crr_samples": crr_n, "crr_objects": crr_obj, "crr_sites": crr_site,
+        "terminal_onset_ambiguous_raw": int(filt.get("terminal_onset_ambiguous", 0)),
+        "terminal_onset_ambiguous_analytic": int(meta.get(
+            "onset_terminal_ambiguous", pd.Series(np.zeros(len(meta), dtype=int))).sum()),
+        "audit_prefix_crossed_but_target_after_N0": int(
+            filt.get("audit_prefix_crossed_but_target_after_N0", 0)),
+        "audit_target_by_N0_but_prefix_not_crossed": int(
+            filt.get("audit_target_by_N0_but_prefix_not_crossed", 0)),
+        "event_nliq_quantiles": ({str(q): float(np.quantile(events, q)) for q in (0.0, 0.25, 0.5, 0.75, 1.0)}
+                                 if events.size else {}),
+        "site_object_map": ({str(site): sorted(map(str, grp["object"].unique()))
+                             for site, grp in meta.groupby("site_id")}
+                            if "site_id" in meta else {}),
     }
 
 # Фракции грансостава (как в digitrock) и их характерные размеры, мм
@@ -147,8 +243,8 @@ def fines_clay_cu(phys, type_ground: int, Ip) -> Tuple[float, float, float]:
     gd = {k: gv(phys, f"granulometric_{k}", None) for k in GRAN}
     if any(v not in (None, "") for v in gd.values()):
         v = {k: (float(gd[k]) if gd[k] not in (None, "") else 0.0) for k in GRAN}
-        fines = v["005"] + v["001"] + v["0002"] + v["0000"]   # ≤ 0.05 мм
-        clay = v["0000"]                                        # < 0.002 мм
+        fines = v["005"] + v["001"] + v["0002"] + v["0000"] # ≤ 0.05 мм
+        clay = v["0000"] # < 0.002 мм
         frac_pass = np.clip(np.cumsum([v[k] for k in GRAN][::-1])[::-1], 0, 100)
         d = np.array(GRAN_SIZE, float); order = np.argsort(frac_pass)
         try:
@@ -173,7 +269,7 @@ def dr_proxy(e) -> float:
 
 def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
                  landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None,
-                 horizon_default: Optional[float] = None):
+                 horizon_default: Optional[float] = None, onset_sustain_cycles: int = 3):
     """
     Извлечь из одного образца строки свойств/нагрузки и массивы PPR(N).
 
@@ -226,19 +322,33 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
     # сетка делает prediction horizon одинаковым и убирает утечку длительности во входы.
     grid_horizon = float(horizon_default) if (horizon_default and horizon_default > 0) else float(n_total)
 
-    # Событие = ПЕРВОЕ пересечение ru≥LIQ_THRESHOLD на ПОЦИКЛОВОЙ сглаженной огибающей (ДО
-    # ресэмплинга на модельную сетку): так N_liq имеет поцикловое разрешение и НЕ квантуется редкими
-    # поздними узлами сетки (на длинных опытах зазор между узлами — сотни циклов). Сетка циклов далее
-    # используется только для входов и траекторного таргета, не для определения времени события.
-    # fail_cycle лаборатории как независимый триггер НЕ используется (расходился с порогом).
-    _cross_pc = np.where(np.asarray(ppr_sm_pc) >= LIQ_THRESHOLD)[0]
-    if _cross_pc.size > 0 and len(_cp):
+    # Событие (РЕТРОСПЕКТИВНЫЙ таргет) = первый ЦИКЛ устойчивого пересечения ru≥LIQ_THRESHOLD.
+    # ВАЖНО про строгость критерия:
+    #   • Критерий применяется к СЫРЫМ поцикловым пикам ``ppr_peaks``, а НЕ к монотонной огибающей:
+    #     на изотонической ``ppr_sm_pc`` после первого пересечения значение по построению остаётся
+    #     ≥ порога, поэтому sustain-окно там НИЧЕГО не фильтровало (был no-op). На сырых пиках sustain
+    #     реально отсекает одиночные числовые всплески у порога.
+    #   • Требуется ПОЛНОЕ окно из ``sustain`` подряд идущих ЦЕЛЫХ циклов ≥ порога. Усечённый хвост
+    #     (полное окно не влезает у конца записи) событием НЕ считается — такие случаи отдельно
+    #     помечаются как terminal-ambiguous (onset_terminal_ambiguous) и аудируются, а не «дотягиваются»
+    #     до события правилом «2 вместо 3», которое привязало бы определение onset к моменту остановки.
+    # Это РЕТРОСПЕКТИВНЫЙ таргет (пики берутся по всей записи) — он корректен как метка/цель, но НЕ
+    # является причинным; причинным (для входа) является ТОЛЬКО префикс ниже. fail_cycle лаборатории
+    # как независимый триггер НЕ используется (расходился с порогом).
+    def _sustained_first_crossing(curve, cycle_values):
+        return sustained_first_crossing(curve, thr=LIQ_THRESHOLD,
+                                        sustain=int(max(1, onset_sustain_cycles)), cycles=cycle_values)
+    _cross_i = _sustained_first_crossing(ppr_peaks, _cp) if len(ppr_peaks) else -1
+    onset_terminal_ambiguous = int(terminal_onset_ambiguous(
+        ppr_peaks, thr=LIQ_THRESHOLD, sustain=int(max(1, onset_sustain_cycles)), cycles=_cp,
+    )) if len(ppr_peaks) else 0
+    if _cross_i >= 0 and len(_cp):
         liq = 1
-        n_liq = float(_cp[int(_cross_pc[0])])          # цикл пересечения (поцикловое разрешение)
+        n_liq = float(_cp[int(_cross_i)]) # цикл устойчивого пересечения (поцикловое разрешение)
     else:
         # нет пересечения → событие не наступило в окне; N_liq право-цензурирован на ФАКТическом
         # последнем наблюдённом цикле (наблюдённая длительность = нижняя граница N_liq), а НЕ на
-        # плановом горизонте: planned и censoring — разные величины (замечание #6).
+        # плановом горизонте: planned и censoring — разные величины.
         liq = 0
         n_liq = float(last_obs)
 
@@ -246,6 +356,7 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
     # ФИКСИРОВАННЫЙ горизонт (max_cycle_reference) — сетка ИДЕНТИЧНА для всех опытов (uniform horizon,
     # без утечки длительности). mask валиден только до last_obs — это доступность ТАРГЕТА, не длина
     # входной сетки. За last_obs np.interp держит последнее наблюдённое значение (точки замаскированы).
+    event_in_prefix = 0 # причинный флаг «разжижение наблюдаемо к N₀»
     if landmark_n0 is not None:
         grid = landmark_aware_cycles(
             grid_horizon, seq_len, float(landmark_n0), int(landmark_k or 12)
@@ -258,15 +369,25 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
             r_causal = np.zeros(seq_len, np.float32)
         mask = (grid <= last_obs + 1e-6).astype(np.float32)
 
-        # Префикс сглаживается ТОЛЬКО по наблюдениям до landmark. Полная изотоническая регрессия
-        # использует всю будущую кривую и потому не должна служить входом модели.
+        # ПРИЧИННЫЙ префикс: сглаживается ТОЛЬКО по наблюдениям до landmark N₀ (никакого будущего).
+        # НИКАКОГО клиппинга по метке — прежний клип `min(prefix, порог) при grid<n_liq` был
+        # outcome-conditioned (зависел от будущего n_liq/liq, неизвестного в prospective inference) и
+        # к тому же лепил плато ровно 0.949, которое само становилось proxy-сигналом. Вместо
+        # переписывания входа: причинный префикс строим как есть, а образцы, у которых он УЖЕ пересёк
+        # порог к N₀, ПОМЕЧАЕМ (event_in_prefix) для исключения из landmark risk set в сборке.
         early = np.asarray(_cp) <= float(landmark_n0) + 1e-9
         if int(early.sum()) > 0:
             cp_early = np.asarray(_cp)[early]
-            ppr_early = monotone_smooth(np.asarray(ppr_peaks)[early])
+            peaks_early = np.asarray(ppr_peaks)[early]
+            ppr_early = monotone_smooth(peaks_early)
             prefix_r = np.interp(grid, cp_early, ppr_early).astype(np.float32)
+            # event_in_prefix — БЕЗ обращения к метке: устойчивое пересечение порога на СЫРЫХ пиках
+            # причинного окна ≤ N₀ (тот же sustained-критерий). Если наблюдаемое разжижение УЖЕ
+            # случилось к N₀, образец не может быть forecasting-таргетом → пометка на исключение.
+            event_in_prefix = int(_sustained_first_crossing(peaks_early, cp_early) >= 0)
         else:
             prefix_r = np.zeros(seq_len, np.float32)
+            event_in_prefix = 0
     else:
         grid = coarse_grid.astype(np.float32)
         r = coarse_r.astype(np.float32)
@@ -319,7 +440,7 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
             return None
         if v <= 0:
             return None
-        return v / 1000.0 if v > 200.0 else v             # >200 → кПа → МПа; иначе уже МПа
+        return v / 1000.0 if v > 200.0 else v # >200 → кПа → МПа; иначе уже МПа
     nu = gv(tp, "unload_poisons_ratio", 0.2) or 0.2
     tw = gv(tr, "transverse_waves_velocity", None)
     _G_dyn = gv(tr, "G", None)
@@ -329,12 +450,12 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         Vs = float(tw) * 31.6228
     elif _G_dyn and float(_G_dyn) > 0:
         Vs = float((float(_G_dyn) * 1e6 / (float(rho) * 1e3)) ** 0.5)
-    elif _E is not None:                                  # статический E0/E → G → Vs (формула)
+    elif _E is not None: # статический E0/E → G → Vs (формула)
         G_mpa = float(_E) / (2 * (1 + float(nu)))
         Vs = float((G_mpa * 1e6 / (float(rho) * 1e3)) ** 0.5)
     else:
         Vs = float((25.0 * 1e6 / (float(rho) * 1e3)) ** 0.5)
-        _vs_measured = 0.0                                # ни одного источника — зашитый G=25 (fabricated)
+        _vs_measured = 0.0 # ни одного источника — зашитый G=25 (fabricated)
     Vs = float(np.clip(Vs, 40, 600))
     sigma_eff = float(sigma_1)
     fines, clay, Cu = fines_clay_cu(phys, tg, Ip)
@@ -351,7 +472,7 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         sigma_eff=sigma_eff, permeability=PERM_BY_TYPE.get(tg, 1e-7),
         fines_content=fines, clay_fraction=clay, Cu=Cu,
         K0=float(gv(tp, "K0", 0.5) or 0.5), static_shear_ratio=0.0,
-        ige=str(gv(phys, "ige", "") or ""),   # ИГЭ — для группировки кривых CRR
+        ige=str(gv(phys, "ige", "") or ""), # ИГЭ — для группировки кривых CRR
     )
 
     def _f(x):
@@ -386,18 +507,25 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         miss_gran=0.0 if _gran_present else 1.0,
     ))
 
+    # ФЛАГ причинной утечки в префикс: 1 = разжижение НАБЛЮДАЕМО (устойчивое пересечение
+    # на сырых пиках) уже в причинном окне ≤ N₀ → запись нельзя использовать как forecasting-таргет.
+    # Определён БЕЗ обращения к ретроспективной метке (см. выше), пробрасывается в meta; landmark risk
+    # set в сборке = {event_in_prefix == 0}. Ретроспективный контроль (n_liq ≤ N₀) считается там же и
+    # расхождения аудируются отдельно, а не «чинятся» переписыванием входа.
     load = dict(
         CSR_base=csr, frequency=float(gv(tp, "frequency", 0.5) or 0.5),
         amp_scale=1.0, N_max=n_max, N_max_is_planned=(n_max_planned is not None),
-        nonstationarity=meas_nonstat,                     # DATA-DERIVED (не зашитая 0.30/0.05)
+        nonstationarity=meas_nonstat, # DATA-DERIVED (не зашитая 0.30/0.05)
         load_mode=TYPE_TO_MODE.get(test_type, "seismic"),
+        event_in_prefix=event_in_prefix, # 1 = onset попал в окно N₀ (исключить из risk set)
+        onset_terminal_ambiguous=onset_terminal_ambiguous,
     )
     arrays = dict(
-        cycles=grid.astype(np.float32), csr=csr_series,    # измеренная CSR(N), не константа
+        cycles=grid.astype(np.float32), csr=csr_series, # измеренная CSR(N), не константа
         r=r.astype(np.float32), mask=mask.astype(np.float32),
         prefix_r=prefix_r.astype(np.float32),
         r_causal=r_causal.astype(np.float32),
-        q=q_grid, eps=eps_grid,        # девиатор и деформация на сетке циклов (для топологии 4_2)
+        q=q_grid, eps=eps_grid, # девиатор и деформация на сетке циклов (для топологии 4_2)
     )
     return soil, load, arrays, int(liq), float(n_liq)
 
@@ -413,7 +541,8 @@ def find_object_pickles(obj_dir: str) -> Tuple[Optional[str], Optional[str]]:
 
 def load_object(obj_dir: str, test_type: str, seq_len: int,
                 landmark_n0: Optional[float] = None, landmark_k: Optional[int] = None,
-                horizon_default: Optional[float] = None) -> List[Tuple[str, tuple]]:
+                horizon_default: Optional[float] = None,
+                onset_sustain_cycles: int = 3) -> List[Tuple[str, tuple]]:
     """Извлечь все образцы одного объекта → список ``(ключ, запись extract_test)``."""
     dpath, hpath = find_object_pickles(obj_dir)
     if not dpath:
@@ -425,7 +554,8 @@ def load_object(obj_dir: str, test_type: str, seq_len: int,
         if key not in H:
             continue
         rec = extract_test(D[key], H[key], test_type, seq_len, landmark_n0=landmark_n0,
-                           landmark_k=landmark_k, horizon_default=horizon_default)
+                           landmark_k=landmark_k, horizon_default=horizon_default,
+                           onset_sustain_cycles=onset_sustain_cycles)
         if rec is not None:
             out.append((key, rec))
     return out
@@ -563,10 +693,10 @@ def canonical_site_id(object_name: str) -> str:
     :return: нормализованный адрес-ключ площадки
     """
     s = str(object_name).replace("ё", "е").replace("Ё", "Е").lower()
-    s = re.sub(r"\([^)]*\)", " ", s)                       # (вгк-5), (96), (plaxis…)
-    s = re.sub(r"^\s*\d+\s*[-_]\s*\d+\s*", " ", s)         # ведущий код проекта NNN-NN
+    s = re.sub(r"\([^)]*\)", " ", s) # (вгк-5), (96), (plaxis…)
+    s = re.sub(r"^\s*\d+\s*[-_]\s*\d+\s*", " ", s) # ведущий код проекта NNN-NN
     s = re.sub(r"\b(plaxis|мех|вибро|сейсмо|сейсмо|g0|gо|этап)\b", " ", s)
-    s = re.sub(r"[^\w\s]", " ", s)                         # пунктуация → пробел (пр-д → пр д)
+    s = re.sub(r"[^\w\s]", " ", s) # пунктуация → пробел (пр-д → пр д)
     s = re.sub(r"\s+", " ", s).strip()
     return s or str(object_name).strip().lower()
 
@@ -597,7 +727,7 @@ def build_real_objects_population(
     seq_len = int(seq_len or config.seq_len)
     soil_rows: List[dict] = []; load_rows: List[dict] = []
     CY, CS, RM, RC, PR, VM, LB, NL, TAG, QM, EM = [], [], [], [], [], [], [], [], [], [], []
-    SITE: List[str] = []                                   # site_id (геологическая площадка)
+    SITE: List[str] = [] # site_id (геологическая площадка)
     multi = len(source_specs) > 1
 
     for root, types in source_specs:
@@ -613,11 +743,12 @@ def build_real_objects_population(
             # endpoint входной сетки = a-priori горизонт; если у опыта нет planned cycles_count —
             # глобальный horizon (max_cycle_reference), но НИКОГДА не фактический last_obs.
             _hz = float(getattr(config, "max_cycle_reference", 3000.0))
+            _sustain = int(getattr(config, "onset_sustain_cycles", 3))
             for oname, opath in objects:
                 recs = load_object(opath, test_type, seq_len, landmark_n0=_lm_n0, landmark_k=_lm_k,
-                                   horizon_default=_hz)
+                                   horizon_default=_hz, onset_sustain_cycles=_sustain)
                 otag = f"{rtag} · {test_type}/{oname}" if multi else f"{test_type}/{oname}"
-                _site = canonical_site_id(oname)           # геологическая площадка (адрес)
+                _site = canonical_site_id(oname) # геологическая площадка (адрес)
                 for _key, (soil, load, arr, liq, nl) in recs:
                     soil_rows.append(soil); load_rows.append(load)
                     CY.append(arr["cycles"]); CS.append(arr["csr"]); RM.append(arr["r"])
@@ -654,8 +785,14 @@ def build_real_objects_population(
         print(f"[N_max] planned cycles_count отсутствует у {_n_imputed}/{len(load_rows)} "
               f"({100*_n_imputed/len(load_rows):.1f}%) → импутация медианой объекта (без max(N_liq)). "
               f"Imputed N_max: min/median/max = {_iv.min():.0f}/{np.median(_iv):.0f}/{_iv.max():.0f}.")
+    # Причинный флаг event_in_prefix снимаем ИЗ load_rows ДО построения load_df (иначе он утёк бы как
+    # входной признак), сохраняя в отдельный массив для формирования risk set и аудита.
+    EIP = [int(r.get("event_in_prefix", 0)) for r in load_rows]
+    OTA = [int(r.get("onset_terminal_ambiguous", 0)) for r in load_rows]
     for r in load_rows:
-        r.pop("N_max_is_planned", None)                  # служебный флаг — не в признаки
+        r.pop("N_max_is_planned", None) # служебный флаг — не в признаки
+        r.pop("event_in_prefix", None) # причинный флаг — не в признаки (только в meta ниже)
+        r.pop("onset_terminal_ambiguous", None) # аудит метки, не входной признак
 
     # #7/#9: ЕДИНОЕ определение события «разжижение BY горизонта» уже НА СБОРКЕ — чтобы meta.parquet,
     # EDA, стратификация фолдов и CRR-сборка использовали ТО ЖЕ определение, что обучение/метрики
@@ -663,27 +800,47 @@ def build_real_objects_population(
     _H = float(config.max_cycle_reference)
     for i in range(len(LB)):
         if LB[i] > 0.5 and NL[i] > _H:
-            LB[i] = 0.0                                   # разжижение после горизонта → не-событие
-            NL[i] = _H                                    # право-цензура на горизонт
+            LB[i] = 0.0 # разжижение после горизонта → не-событие
+            NL[i] = _H # право-цензура на горизонт
 
     cohort_filter_counts = {
         "raw_specimens": int(len(LB)),
         "raw_objects": int(len(set(TAG))),
-        "excluded_event_before_N0": 0,
-        "excluded_censored_before_N0": 0,
+        "excluded_event_in_prefix_causal": 0, # разжижение НАБЛЮДАЕМО в причинном окне ≤ N₀ (первично)
+        "excluded_event_before_N0": 0, # ретроспективный onset ≤ N₀ (таргет уже наступил)
+        "excluded_censored_before_N0": 0, # цензура до N₀ (нет валидного risk-периода)
+        "audit_prefix_crossed_but_target_after_N0": 0, # причинно пересёк, а ретро-onset > N₀
+        "audit_target_by_N0_but_prefix_not_crossed": 0, # ретро-onset ≤ N₀, а причинно не пересёк
+        "terminal_onset_ambiguous": int(sum(OTA)), # всего терминально-неоднозначных
+        "excluded_terminal_ambiguous": 0, # из них исключено из когорты (если включён флаг)
     }
-    # Landmark risk set содержит только образцы, которые ещё наблюдаются и не разжижились в N0.
-    # Поэтому исключаются ОБА типа недопустимых записей: событие до N0 и цензура до N0. Последние
-    # могут использоваться в отдельном auxiliary pretraining, но не в benchmark после landmark.
+    _excl_ambig = bool(getattr(config, "exclude_terminal_ambiguous", True))
+    # Landmark risk set = образцы, у которых разжижение ещё НЕ наблюдаемо и НЕ наступило к N₀.
+    # ПЕРВИЧНЫЙ критерий исключения — ПРИЧИННЫЙ event_in_prefix (наблюдаемо к N₀, без метки). Плюс
+    # ретроспективные исключения (onset ≤ N₀ и цензура ≤ N₀). Противоречия причинного и ретро-критериев
+    # НЕ «чинятся» переписыванием входа, а ОТДЕЛЬНО аудируются (см. счётчики) — это честный сигнал о
+    # рассогласовании сырых пиков и монотонной цели у самой границы окна.
     if getattr(config, "prefix_mode", "preonset") == "landmark":
         _N0 = float(getattr(config, "prefix_landmark_cycles", 20.0))
+        cohort_filter_counts["excluded_event_in_prefix_causal"] = int(sum(EIP))
         cohort_filter_counts["excluded_event_before_N0"] = int(sum(
             LB[i] > 0.5 and NL[i] <= _N0 for i in range(len(LB))
         ))
         cohort_filter_counts["excluded_censored_before_N0"] = int(sum(
             LB[i] < 0.5 and NL[i] <= _N0 for i in range(len(LB))
         ))
-        _keep = [i for i in range(len(LB)) if NL[i] > _N0]
+        cohort_filter_counts["audit_prefix_crossed_but_target_after_N0"] = int(sum(
+            EIP[i] == 1 and NL[i] > _N0 for i in range(len(LB))
+        ))
+        cohort_filter_counts["audit_target_by_N0_but_prefix_not_crossed"] = int(sum(
+            EIP[i] == 0 and NL[i] <= _N0 for i in range(len(LB))
+        ))
+        cohort_filter_counts["excluded_terminal_ambiguous"] = int(sum(
+            _excl_ambig and OTA[i] and EIP[i] == 0 and NL[i] > _N0 for i in range(len(LB))
+        ))
+        # keep = НЕ наблюдаемо причинно, ретро-onset строго после N₀, и (опц.) не терминально-неоднозначно
+        _keep = [i for i in range(len(LB))
+                 if (EIP[i] == 0 and NL[i] > _N0 and not (_excl_ambig and OTA[i]))]
         if len(_keep) < len(LB):
             soil_rows = [soil_rows[i] for i in _keep]; load_rows = [load_rows[i] for i in _keep]
             CY = [CY[i] for i in _keep]; CS = [CS[i] for i in _keep]; RM = [RM[i] for i in _keep]
@@ -692,13 +849,15 @@ def build_real_objects_population(
             QM = [QM[i] for i in _keep]; EM = [EM[i] for i in _keep]
             LB = [LB[i] for i in _keep]; NL = [NL[i] for i in _keep]; TAG = [TAG[i] for i in _keep]
             SITE = [SITE[i] for i in _keep]
+            OTA = [OTA[i] for i in _keep]
 
     soil_df = pd.DataFrame(soil_rows); load_df = pd.DataFrame(load_rows)
     cycles = np.array(CY); csr = np.array(CS)
     r_measured = np.array(RM); valid_mask = np.array(VM)
     liq_label = np.array(LB); n_liq = np.array(NL)
     soil_df["object"] = TAG
-    soil_df["site_id"] = SITE                              # геологическая площадка (группировка CV)
+    soil_df["site_id"] = SITE # геологическая площадка (группировка CV)
+    soil_df["onset_terminal_ambiguous"] = np.asarray(OTA, dtype=np.int8) # meta-only audit column
 
     crr_obs, crr_obs_mask, _n_groups = build_crr_obs(
         soil_df, load_df, cycles, n_liq, liq_label, soil_df["object"].tolist(), seq_len)

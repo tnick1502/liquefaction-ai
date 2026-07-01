@@ -147,7 +147,7 @@ def persistence_summary(dgms: List[np.ndarray]) -> Dict[str, float]:
             out[f"entropy_{k}"] = 0.0
             continue
         life = dgm[:, 1] - dgm[:, 0]
-        life = life[np.isfinite(life)]            # убрать бесконечную особенность H0
+        life = life[np.isfinite(life)] # убрать бесконечную особенность H0
         life = life[life > 0]
         total = float(life.sum())
         out[f"betti_{k}"] = float(len(life))

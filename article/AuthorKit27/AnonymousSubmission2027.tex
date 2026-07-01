@@ -81,9 +81,11 @@ normalizing flows, uncertainty calibration, and survival/event-time modeling
 \citep{karniadakis21,chen18,latentnode22,rezende15,guo17,romano19,cuqds25,davis06,abdar21,cox72}.
 
 We introduce \textbf{DPI-Flow}, a physics-structured probabilistic model that amortizes inference of
-physically constrained latent parameters $\theta$, refines them through prefix calibration, and
+physically constrained latent parameters $\theta$ with a \emph{prefix-conditioned} conditional flow, and
 integrates a differentiable analytical CRR/damage/PPR layer; uncertainty is propagated through the flow
-by Monte-Carlo sampling at inference. Our contributions are: (i) a \textbf{prefix-conditioned
+by Monte-Carlo sampling at inference. (The reported model normalizes a proper flow density over
+$\theta$; optional test-time gradient refinement of $\theta$ is evaluated only as an ablation, since its
+Jacobian is not part of the normalized density.) Our contributions are: (i) a \textbf{prefix-conditioned
 onset-forecasting formulation} for cyclic liquefaction tests; (ii) a \textbf{conditional parameter flow
 plus differentiable analytical layer} that guarantees feasible monotone accumulation while producing
 risk, $N_{\mathrm{liq}}$ and a CRR curve from one latent state; (iii) a \textbf{censoring-aware

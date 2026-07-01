@@ -174,7 +174,7 @@ def save_figure(
             try:
                 mpl_fig.savefig(str(target_dir / f"{fig_id}.pdf"), bbox_inches="tight",
                                 facecolor="white")
-            except Exception as exc:  # noqa: BLE001 — вектор необязателен
+            except Exception as exc: # noqa: BLE001 — вектор необязателен
                 print(f"[save_figure] PDF для '{fig_id}' не сохранён: {exc}")
         return fig
 
@@ -182,6 +182,6 @@ def save_figure(
     try:
         fig.write_html(str(target_dir / f"{fig_id}.html"), include_plotlyjs="cdn", full_html=True)
         fig.write_image(str(target_dir / f"{fig_id}.png"), width=width, height=height, scale=scale)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc: # noqa: BLE001
         print(f"[save_figure] '{fig_id}' не сохранён: {exc}")
     return fig

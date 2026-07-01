@@ -97,7 +97,7 @@ def sample_soil_profiles(n: int, rng: np.random.Generator, type_ground_probs: np
     type_target = rng.choice(9, size=n, p=type_ground_probs) + 1
     type_idx = type_target - 1
 
-    fractions = sample_grain_size(type_target, rng)  # (n, 11), сумма 100
+    fractions = sample_grain_size(type_target, rng) # (n, 11), сумма 100
 
     Ip = np.clip(rng.normal(_by_type(_IP_CENTER, type_idx), np.maximum(_by_type(_IP_SPREAD, type_idx), 1e-6)), 0.0, 60.0)
     Ir = np.clip(rng.normal(_by_type(_IR_CENTER, type_idx), _by_type(_IR_SPREAD, type_idx)), 0.0, 100.0)

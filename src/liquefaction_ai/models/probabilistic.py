@@ -39,7 +39,7 @@ class DeepStateBaseline(nn.Module):
         super().__init__()
         self.static_proj = nn.Sequential(nn.Linear(static_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
         self.gru = nn.GRU(input_size=seq_dim + hidden_dim, hidden_size=hidden_dim, batch_first=True, num_layers=2, dropout=0.10)
-        self.delta_head = nn.Linear(hidden_dim, 1)        # приращение уровня (≥0 через softplus)
+        self.delta_head = nn.Linear(hidden_dim, 1) # приращение уровня (≥0 через softplus)
         self.logvar_head = nn.Linear(hidden_dim, 1)
         self.level0_head = nn.Linear(hidden_dim, 1)
         self.risk_head = nn.Linear(hidden_dim, 1)
@@ -49,9 +49,9 @@ class DeepStateBaseline(nn.Module):
         se = self.static_proj(batch["static"])
         se_exp = se.unsqueeze(1).expand(-1, batch["seq_in"].shape[1], -1)
         h, _ = self.gru(torch.cat([batch["seq_in"], se_exp], dim=-1))
-        delta = F.softplus(self.delta_head(h).squeeze(-1))          # неотрицательные приращения
-        level0 = self.level0_head(se)                              # (B,1)
-        level = level0 + torch.cumsum(delta, dim=1)                 # состояние-блуждание
+        delta = F.softplus(self.delta_head(h).squeeze(-1)) # неотрицательные приращения
+        level0 = self.level0_head(se) # (B,1)
+        level = level0 + torch.cumsum(delta, dim=1) # состояние-блуждание
         traj_mean = torch.sigmoid(level)
         traj_logvar = torch.clamp(self.logvar_head(h).squeeze(-1), min=-6.0, max=2.0)
         pooled = h[:, -1]
@@ -108,11 +108,11 @@ def _rqs(x, w, h, d, inverse, bound=4.0, min_bin=1e-3, min_deriv=1e-3):
     xi = x[inside]
     wi = min_bin + (1 - min_bin * K) * torch.softmax(w[inside], dim=-1)
     hi = min_bin + (1 - min_bin * K) * torch.softmax(h[inside], dim=-1)
-    di = min_deriv + F.softplus(d[inside])                       # (n, K-1) внутренние производные
-    dd = F.pad(di, (1, 1), value=1.0)                            # хвостовые производные = 1 (линейные хвосты)
+    di = min_deriv + F.softplus(d[inside]) # (n, K-1) внутренние производные
+    dd = F.pad(di, (1, 1), value=1.0) # хвостовые производные = 1 (линейные хвосты)
 
-    cumw = F.pad(torch.cumsum(wi, dim=-1), (1, 0)) * 2 * bound - bound   # (n, K+1) узлы по x
-    cumh = F.pad(torch.cumsum(hi, dim=-1), (1, 0)) * 2 * bound - bound   # (n, K+1) узлы по y
+    cumw = F.pad(torch.cumsum(wi, dim=-1), (1, 0)) * 2 * bound - bound # (n, K+1) узлы по x
+    cumh = F.pad(torch.cumsum(hi, dim=-1), (1, 0)) * 2 * bound - bound # (n, K+1) узлы по y
 
     search = cumh if inverse else cumw
     idx = (torch.searchsorted(search, xi.unsqueeze(-1).contiguous(), right=True) - 1).clamp(0, K - 1)

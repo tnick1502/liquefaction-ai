@@ -20,7 +20,8 @@ date: 2026-06-28
 ## Грид-сёрч (ноутбуки 2_x, на уровне)
 - **2_1** baselines: `search_epochs=config.grid_search_epochs`; финальное обучение —
   `publication_*` эпохи (PINN — physics, остальные — baseline).
-- **2_2** DPI-Flow: grid `hidden_dim∈{128,160,192} × calibration_steps∈{1,2}`,
+- **2_2** DPI-Flow: grid `hidden_dim∈{128,160,192} × use_traj_residual∈{T,F}` при `calibration_steps=0`
+  (headline = нормированная плотность потока; θ-доводка 1/2 — только абляция),
   `search_epochs=config.grid_search_epochs`, финал `publication_physics_epochs`.
 - **2_3** EVT-NeuralSSM: grid `hidden_dim∈{96,128,160}`, аналогично.
 - **2_4** DPI-EVT: финал `publication_physics_epochs` (наследует tuned `hidden_dim` от EVT).

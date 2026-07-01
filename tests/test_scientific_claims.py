@@ -18,18 +18,43 @@ from liquefaction_ai import load_population_artifact, prepare_benchmark_dataset
 _skip_art = pytest.mark.skipif(not REAL_OBJECTS.exists(), reason="нет артефакта data/real_objects")
 
 
-def _artifact_weights_dims_match(model_name: str) -> bool:
-    """Согласованы ли размерности СОХРАНЁННОГО артефакта и СОХРАНЁННЫХ весов модели.
+def _build_model_from_hp(hp: dict):
+    """Сконструировать модель из hyperparams.json (model_type → класс). None, если тип неизвестен."""
+    from liquefaction_ai.models import DPIEvtNet, DPIFlow, EVTNeuralSSM
+    reg = {"DPIFlow": DPIFlow, "EVTNeuralSSM": EVTNeuralSSM, "DPIEvtNet": DPIEvtNet}
+    cls = reg.get(hp.get("model_type"))
+    return cls(**hp["model_kwargs"]) if cls is not None else None
 
-    При активной переработке признаков (убран N_max, добавлены missingness-индикаторы) артефакт
-    регенерируется раньше переобучения весов → static_dim расходится. Тесты, грузящие веса на
-    артефакт, тогда пропускаются (это ожидаемое «нужен retrain», а не баг кода)."""
+
+def _artifact_weights_dims_match(model_name: str) -> bool:
+    """ПОЛНАЯ совместимость СОХРАНЁННЫХ весов и текущей архитектуры (замечание #6).
+
+    Раньше проверялся только static_dim — расхождение ЛЮБОГО другого слоя (напр. добавлен nliq_head,
+    сменилась размерность θ, изменился flow) молча ломало load_state_dict уже ВНУТРИ теста. Теперь
+    preflight: (1) static_dim артефакта == static_dim весов; (2) множества ключей state_dict
+    сконструированной из hyperparams модели и сохранённого weights.pt СОВПАДАЮТ; (3) формы всех
+    тензоров совпадают. Любое расхождение → тест грузящий веса ПРОПУСКАЕТСЯ как «нужен retrain»
+    (ожидаемо при активной переработке архитектуры), а не падает с непрозрачной ошибкой."""
     import json
+
+    import torch
     try:
         fn = json.loads((REAL_OBJECTS / "feature_names.json").read_text())
         sf = fn["static_feature_names"] if isinstance(fn, dict) else fn
         hp = json.loads((REPO_ROOT / "models" / model_name / "hyperparams.json").read_text())
-        return int(len(sf)) == int(hp["model_kwargs"].get("static_dim", -1))
+        if int(len(sf)) != int(hp["model_kwargs"].get("static_dim", -1)):
+            return False
+        wp = REPO_ROOT / "models" / model_name / "weights.pt"
+        if not wp.exists():
+            return False
+        model = _build_model_from_hp(hp)
+        if model is None:
+            return False
+        saved = torch.load(wp, map_location="cpu", weights_only=True)
+        cur = model.state_dict()
+        if set(saved.keys()) != set(cur.keys()):
+            return False
+        return all(tuple(saved[k].shape) == tuple(cur[k].shape) for k in cur)
     except Exception:
         return False
 

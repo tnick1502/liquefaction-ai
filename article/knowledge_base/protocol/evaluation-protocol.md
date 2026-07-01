@@ -9,8 +9,12 @@ status: TODO (multiseed не прогнан)
 ## Текущий data/label-протокол (метод, anti-leakage)
 - **Единая query-сетка `1…3000` для всех опытов** (uniform prediction horizon). `N_max`/`cycles_count`
   и фактическая длительность во входы НЕ подаются (в реальных опытах ≈ длительность → утечка).
-- **Префикс** — наблюдения до landmark-цикла N₀ (`prefix_landmark_cycles`), outcome-independent;
-  событие N_liq определяется на ПОЦИКЛОВОЙ огибающей (поцикловое разрешение).
+- **Префикс** — причинные наблюдения до landmark-цикла N₀ (`prefix_landmark_cycles`), outcome-independent,
+  без клиппинга по метке. Образцы с наблюдаемым (causal) пересечением в окне ≤ N₀ исключаются из risk set
+  (`event_in_prefix`), а не переписываются.
+- **Onset (событие/N_liq)** — первый цикл УСТОЙЧИВОГО пересечения ru≥0.95 на `onset_sustain_cycles`
+  подряд идущих ЦЕЛЫХ циклах, на СЫРЫХ поцикловых пиках (поцикловое разрешение). Terminal-ambiguous
+  (пересечение в 1–2 последних цикла без полного окна) исключаются опцией `exclude_terminal_ambiguous`.
 - **Risk-метка по ОКНУ НАБЛЮДЕНИЯ:** `risk_label_observed` = разжижение ∨ (non-liq, доведённый до ≥H);
   non-liq, остановленные до H, — цензурированы и исключены из risk-метрик (без cure-предположения).
 - **Event-time:** right-censored regression; `nliq_censor_valid` независим от risk-mask; regime-маски
@@ -36,6 +40,7 @@ status: TODO (multiseed не прогнан)
 
 ## Anti-leakage чеклист (red flags)
 - [ ] **AUROC ≈ 1.0 — red flag.** На 14 landmark-eligible объектах это требует особенно сильного leakage/prefix-shortcut аудита.
-- [ ] **Префикс строго ДО onset** — нет post-onset точек PPR во входном окне (иначе label leakage через вход).
+- [ ] **Причинный префикс** — вход строится только из наблюдений ≤ N₀; никакого клиппинга по будущей метке (прежний клип лепил proxy-плато 0.949). Наблюдаемые onset'ы в окне → исключение из risk set, не переписывание.
+- [ ] **DPI-Flow headline с `calibration_steps=0`** — inner-градиентная доводка θ не входит в нормированную плотность потока (шаги 1/2 — только абляция).
 - [ ] no-prefix stress: если AUROC держится ~1.0 без префикса → искать утечку.
 - [ ] OOD by soil / CSR / site.

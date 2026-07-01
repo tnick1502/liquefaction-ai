@@ -257,7 +257,7 @@ def gaussian_mixture_nll(means: torch.Tensor, logvars: torch.Tensor,
 
     Предиктив DPI-Flow как смесь по S сэмплам θ из conditional flow:
         p(y) = (1/S) Σ_s N(y; μ_s, σ_s²),
-        NLL  = − masked_mean[ log p(y) ].
+        NLL = − masked_mean[ log p(y) ].
     Логарифм считается устойчиво через ``logsumexp`` по компонентам. В отличие от одиночного
     :func:`gaussian_nll`, минимизация ЭТОГО лосса привязывает РАЗБРОС компонент (= неопределённость
     flow-постериора над θ) к фактической предиктивной ошибке — иначе разброс flow не калибруется и
@@ -274,8 +274,8 @@ def gaussian_mixture_nll(means: torch.Tensor, logvars: torch.Tensor,
     s = means.shape[0]
     t = target.unsqueeze(0)
     comp_logp = -0.5 * (math.log(2.0 * math.pi) + logvars
-                        + (t - means) ** 2 * torch.exp(-logvars))      # (S, B, T)
-    logp = torch.logsumexp(comp_logp, dim=0) - math.log(float(s))      # (B, T)
+                        + (t - means) ** 2 * torch.exp(-logvars)) # (S, B, T)
+    logp = torch.logsumexp(comp_logp, dim=0) - math.log(float(s)) # (B, T)
     return masked_mean(-logp, mask)
 
 
@@ -293,8 +293,8 @@ def energy_crps(samples: torch.Tensor, target: torch.Tensor, mask: torch.Tensor)
     :return: скалярный CRPS
     """
     t = target.unsqueeze(0)
-    term1 = torch.abs(samples - t).mean(dim=0)                                  # (B, T)
-    diff = torch.abs(samples.unsqueeze(0) - samples.unsqueeze(1)).mean(dim=(0, 1))  # (B, T)
+    term1 = torch.abs(samples - t).mean(dim=0) # (B, T)
+    diff = torch.abs(samples.unsqueeze(0) - samples.unsqueeze(1)).mean(dim=(0, 1)) # (B, T)
     return masked_mean(term1 - 0.5 * diff, mask)
 
 

@@ -329,6 +329,12 @@ def fit_interval_scale(model, val_split: Dict[str, object], config: ExperimentCo
 
     grid = np.linspace(0.3, 4.0, 75)
     best = min(grid, key=lambda s: abs(coverage(s) - level))
+    # УСИЛЕНИЕ под site-shift: val-подгонка σ-масштаба недокрывает НОВЫЕ площадки (сдвиг распределения),
+    # поэтому расширяем интервал множителем-запасом ``calibration_shift_inflation`` (≥1). Это НЕ
+    # гарантия покрытия — эмпирическое site-held-out покрытие всё равно репортится честно (см.
+    # aggregate_object_conformal). Дефолт >1 даёт консервативный запас; conformal-полоса — headline.
+    infl = float(getattr(config, "calibration_shift_inflation", 1.0) or 1.0)
+    best = best * max(infl, 1e-3)
     with torch.no_grad():
         model.calib_log_scale.fill_(float(np.log(best)))
     return float(best)
@@ -361,7 +367,7 @@ def split_conformal_coverage(cal_pred: np.ndarray, cal_std: np.ndarray, cal_true
     if rc.size == 0 or test_mask.sum() == 0:
         return float("nan"), float("nan")
     n = rc.size
-    q = float(np.quantile(rc, min(1.0, np.ceil((n + 1) * level) / n), method="higher"))   # finite-sample поправка
+    q = float(np.quantile(rc, min(1.0, np.ceil((n + 1) * level) / n), method="higher")) # finite-sample поправка
     lo = test_pred - q * test_std
     hi = test_pred + q * test_std
     cov = float(np.sum(((test_true >= lo) & (test_true <= hi)) * test_mask) / test_mask.sum())
@@ -399,7 +405,7 @@ def simultaneous_conformal_coverage(cal_pred: np.ndarray, cal_std: np.ndarray, c
     if sc.size == 0 or st.size == 0:
         return float("nan"), float("nan")
     n = sc.size
-    q = float(np.quantile(sc, min(1.0, np.ceil((n + 1) * level) / n), method="higher"))   # finite-sample квантиль
+    q = float(np.quantile(sc, min(1.0, np.ceil((n + 1) * level) / n), method="higher")) # finite-sample квантиль
     cov = float(np.mean(st <= q))
     width = float(np.sum((2.0 * q * test_std) * test_mask) / max(test_mask.sum(), 1.0))
     return cov, width
@@ -590,6 +596,10 @@ def compute_metrics(
                 else np.ones_like(nliq_true, dtype=bool))
 
     sample_df = localize_meta_frame(meta_df.copy()).reset_index(drop=True)
+    # site_id (площадка) — единица кластеризации для CV-статистики/conformal; пробрасываем явно,
+    # т.к. localize_meta_frame может его не сохранить. Две скважины одной площадки → один кластер.
+    if "site_id" in meta_df.columns and "site_id" not in sample_df.columns:
+        sample_df["site_id"] = meta_df["site_id"].to_numpy()
     sample_df["risk_prob_pred"] = y_prob
     sample_df["liq_label"] = y_true
     sample_df["nliq_pred"] = nliq_pred
@@ -607,7 +617,7 @@ def compute_metrics(
     aggregate_nliq_mask = nliq_obs if supports_censored_nliq else np.zeros_like(nliq_obs)
     sample_df["nliq_abs_err"] = np.where(aggregate_nliq_mask, nliq_cens_err, np.nan)
     sample_df["nliq_log_err"] = np.where(aggregate_nliq_mask, log_cens_err, np.nan)
-    sample_df["n_liq_observed"] = nliq_obs.astype(float)  # legacy event-time alias
+    sample_df["n_liq_observed"] = nliq_obs.astype(float) # legacy event-time alias
     sample_df["nliq_censor_valid"] = nliq_obs.astype(float)
     sample_df["risk_label_observed"] = risk_obs.astype(float)
 
@@ -642,9 +652,18 @@ def compute_metrics(
         metrics["Onset_Timing_MAE_cyc"] = float(np.median(np.abs(timing_bias)))
         sb = np.full(len(nliq_true), np.nan); sb[liq] = timing_bias
         sample_df["onset_timing_bias_cyc"] = sb
+        if "nliq_q05" in outputs and "nliq_q95" in outputs:
+            q05 = np.asarray(outputs["nliq_q05"]); q95 = np.asarray(outputs["nliq_q95"])
+            covered = (nliq_true >= q05) & (nliq_true <= q95)
+            metrics["N_liq_Coverage_90_liq"] = float(np.mean(covered[liq]))
+            metrics["N_liq_Interval_Width_90_liq"] = float(np.mean((q95 - q05)[liq]))
+        else:
+            metrics["N_liq_Coverage_90_liq"] = float("nan")
+            metrics["N_liq_Interval_Width_90_liq"] = float("nan")
     else:
         for _k in ("N_liq_logMAE_liq", "N_liq_MAE_liq", "Onset_EarlyWarning_Rate",
-                   "Onset_Timing_Bias_cyc", "Onset_Timing_MAE_cyc"):
+                   "Onset_Timing_Bias_cyc", "Onset_Timing_MAE_cyc",
+                   "N_liq_Coverage_90_liq", "N_liq_Interval_Width_90_liq"):
             metrics[_k] = float("nan")
         sample_df["onset_timing_bias_cyc"] = np.nan
 
@@ -710,7 +729,7 @@ def compute_metrics(
         # аналитический ODE-слой продолжает физику, а cummax-blackbox экстраполирует плохо.
         # Это разделяет «physics vs cummax» там, где RMSE-по-всему-горизонту их не различает.
         idxg = np.arange(true.shape[1])[None, :]
-        horizon = (mask * idxg).max(axis=1, keepdims=True)            # последний валидный индекс/образец
+        horizon = (mask * idxg).max(axis=1, keepdims=True) # последний валидный индекс/образец
         far_mask = continuation_mask * (idxg >= 0.5 * horizon)
         far_total = float(far_mask.sum())
         metrics["Traj_RMSE_late"] = (float(np.sqrt(np.sum(((pred - true) ** 2) * far_mask) / far_total))
@@ -773,9 +792,12 @@ def compute_metrics(
 
         # Физические нарушения: доля предсказаний с «невозможной» кривой PPR(N) — заметно
         # убывающей (ru должна монотонно расти) или выходящей за физические границы [0, 1.05].
+        # ЧИСЛЕННЫЙ ДОПУСК: clamp(..., 1.05) может дать 1.0500001 из-за float-округления — это НЕ
+        # реальное нарушение границы. Проверяем с eps, иначе структурные модели ложно получают PVR>0.
+        _pvr_tol = 1e-4
         diffs = pred[:, 1:] - pred[:, :-1]
         decreasing = ((diffs < -0.02) * mask[:, 1:]).sum(axis=1) > 0
-        out_of_bounds = (((pred > 1.05) | (pred < -0.02)) * mask).sum(axis=1) > 0
+        out_of_bounds = (((pred > 1.05 + _pvr_tol) | (pred < -0.02 - _pvr_tol)) * mask).sum(axis=1) > 0
         violation = decreasing | out_of_bounds
         metrics["Physics_Violation_Rate"] = float(violation.mean())
         sample_df["physics_violation"] = violation.astype(float)
@@ -875,16 +897,51 @@ def compute_metrics(
         per = np.sqrt(np.sum(((crr_pred - crr_true) ** 2) * tmask, axis=1) / np.maximum(tmask.sum(axis=1), 1.0))
         sel = crr_m > 0
         n_crr_test = int(sel.sum())
-        # Сколько разных объектов/площадок стоят за измеренной CRR — важно для честной интерпретации:
-        # CRR-метрика опирается на малую выборку из немногих объектов (раскрываем это в таблицах).
-        if "object" in sample_df.columns and n_crr_test > 0:
-            n_crr_objects = int(pd.Series(sample_df["object"].to_numpy()[sel]).nunique())
+        # Сколько разных ПЛОЩАДОК (site_id — обменочная единица группировки) стоят за измеренной CRR —
+        # важно для честной интерпретации: CRR-метрика опирается на малую выборку из немногих площадок
+        # (раскрываем это в таблицах). Fallback на object, если site_id нет.
+        _crr_grp = "site_id" if "site_id" in sample_df.columns else ("object" if "object" in sample_df.columns else None)
+        if _crr_grp is not None and n_crr_test > 0:
+            n_crr_objects = int(pd.Series(sample_df[_crr_grp].to_numpy()[sel]).nunique())
         if sel.any():
             crr_rmse = float(per[sel].mean())
     metrics["CRR_RMSE"] = crr_rmse
-    metrics["N_CRR_test"] = n_crr_test            # число тест-образцов с измеренной CRR (мощность выборки)
-    metrics["N_CRR_objects"] = n_crr_objects      # число объектов/площадок за этими образцами
+    metrics["N_CRR_test"] = n_crr_test # число тест-образцов с измеренной CRR (мощность выборки)
+    metrics["N_CRR_objects"] = n_crr_objects # число объектов/площадок за этими образцами
     metrics["Produces_CRR"] = "crr" in outputs
+    # Физическая onset-coherence: на фактически разжижившихся опытах сопротивление CRR в
+    # предсказанный момент onset должно быть близко к приложенному CSR того же цикла.
+    if "crr" in outputs and int(liq.sum()) > 0:
+        cyc = split["cycles"].cpu().numpy(); csr_seq = split["csr"].cpu().numpy()
+        crr_pred = np.asarray(outputs["crr"])
+        crr_at = np.array([np.interp(nliq_pred[i], cyc[i], crr_pred[i]) for i in range(len(cyc))])
+        csr_at = np.array([np.interp(nliq_pred[i], cyc[i], csr_seq[i]) for i in range(len(cyc))])
+        metrics["CRR_Onset_Coherence_MAE"] = float(np.mean(np.abs(crr_at[liq] - csr_at[liq])))
+    else:
+        metrics["CRR_Onset_Coherence_MAE"] = float("nan")
+
+    # SITE-MACRO агрегаты: sample-average доминируется крупными площадками (одна
+    # площадка с многими пробами перевешивает). Macro = сначала среднее ВНУТРИ площадки, затем
+    # среднее ПО площадкам — каждая площадка весит одинаково. Это honest generalization-число для
+    # немногих обменочных единиц (site_id). Считаем для continuation-RMSE и log-ошибки N_liq.
+    if "site_id" in sample_df.columns:
+        def _site_macro(col: str) -> float:
+            if col not in sample_df.columns:
+                return float("nan")
+            sub = sample_df[["site_id", col]].dropna(subset=[col])
+            if sub.empty:
+                return float("nan")
+            return float(sub.groupby("site_id")[col].mean().mean())
+        metrics["Traj_RMSE_continuation_siteMacro"] = _site_macro("traj_rmse_continuation")
+        if "nliq_log_err" in sample_df.columns:
+            _tmp = sample_df[["site_id", "nliq_log_err"]].copy()
+            _tmp["nliq_log_err"] = _tmp["nliq_log_err"].abs()
+            _tmp = _tmp.dropna(subset=["nliq_log_err"])
+            metrics["N_liq_logMAE_siteMacro"] = (
+                float(_tmp.groupby("site_id")["nliq_log_err"].mean().mean()) if not _tmp.empty else float("nan"))
+        else:
+            metrics["N_liq_logMAE_siteMacro"] = float("nan")
+        metrics["N_sites_test"] = int(sample_df["site_id"].nunique())
 
     return metrics, sample_df
 
@@ -981,6 +1038,7 @@ def stress_split(
     split: Dict[str, object],
     *,
     no_prefix: bool = False,
+    no_static: bool = False,
     drop_derived_aux: bool = False,
 ) -> Dict[str, object]:
     """
@@ -1014,6 +1072,10 @@ def stress_split(
                 value = out[key].clone()
                 value[..., -2:] = 0.0
                 out[key] = value
+    if no_static:
+        for key in ("static", "static_raw"):
+            if key in out and torch.is_tensor(out[key]):
+                out[key] = torch.zeros_like(out[key])
     if drop_derived_aux:
         for key in ("g_obs", "risk_proxy"):
             out.pop(key, None)
@@ -1251,7 +1313,7 @@ def english_metric_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # --- P³-ranking вынесен в отдельный модуль (работает поверх metrics_df) ---
-from liquefaction_ai.evaluation.p3_ranking import (  # noqa: E402,F401
+from liquefaction_ai.evaluation.p3_ranking import ( # noqa: E402,F401
     metric_direction, compute_physical_admissibility, compute_p3_score,
     build_pareto_objectives, pareto_rank, publication_ranking_table,
 )

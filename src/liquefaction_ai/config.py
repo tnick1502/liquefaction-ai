@@ -94,13 +94,13 @@ class ExperimentConfig:
     benchmark_train_fraction: float = 0.70
     benchmark_val_fraction: float = 0.15
     batch_size: int = 256
-    baseline_epochs: int = 4               # demo/дымовой режим (быстро)
-    physics_epochs: int = 6                # demo/дымовой режим (быстро)
+    baseline_epochs: int = 4 # demo/дымовой режим (быстро)
+    physics_epochs: int = 6 # demo/дымовой режим (быстро)
     # --- ФИНАЛЬНЫЙ (публикационный) режим: много эпох + ранняя остановка по best-val ---
-    publication_baseline_epochs: int = 120   # потолок; реально остановит early stopping
-    publication_physics_epochs: int = 200    # потолок; реально остановит early stopping
-    grid_search_epochs: int = 20             # серьёзный грид-сёрч (не 1–2 эпохи)
-    early_stopping_patience: int = 25        # терпеливее для длинного обучения
+    publication_baseline_epochs: int = 120 # потолок; реально остановит early stopping
+    publication_physics_epochs: int = 200 # потолок; реально остановит early stopping
+    grid_search_epochs: int = 50 # тот же режим сходимости, что final training, но меньший потолок
+    early_stopping_patience: int = 25 # терпеливее для длинного обучения
     early_stopping_min_delta: float = 1e-4
     ablation_epochs: int = 2
     learning_rate: float = 2e-3
@@ -113,30 +113,47 @@ class ExperimentConfig:
     risk_threshold: float = 0.5
     measured_crr_fraction: float = 0.25
     dataset_source: str = "synthetic"
-    liq_threshold: float = LIQ_THRESHOLD   # канонический порог события разжижения ru=PPR (см. LIQ_THRESHOLD)
+    liq_threshold: float = LIQ_THRESHOLD # канонический порог события разжижения ru=PPR (см. LIQ_THRESHOLD)
     min_nonliq_complete_cycles: float = 500.0
     use_observed_aux_loss: bool = True
-    group_split_by_object: bool = True     # Основной протокол: leakage-free разбиение по объекту/площадке
+    group_split_by_object: bool = True # Основной протокол: leakage-free разбиение по объекту/площадке
     #                                        (ни один объект не попадает одновременно в train/val/test)
-    # --- Анти-утечка префикса (P0-c). Наблюдаемый префикс ОБРЕЗАЕТСЯ строго до onset разжижения,
+    # --- Анти-утечка префикса. Наблюдаемый префикс ОБРЕЗАЕТСЯ строго до onset разжижения,
     #     иначе на быстрых опытах вход уже содержит само событие (≈24% разжижающихся) и AUROC≈1.0
     #     становится артефактом утечки метки через вход. См. data.real_adapter.strict_pre_onset_prefix_mask.
-    prefix_strict_preonset: bool = True     # обрезать префикс строго до onset (рекоменд. протокол)
-    prefix_onset_threshold: float = LIQ_THRESHOLD   # порог ru, определяющий onset (тот же, что у события)
-    prefix_onset_margin: int = 1            # доп. буфер шагов: последний шаг префикса < onset_idx − margin
-    prefix_min_len: int = 3                 # минимальная длина префикса, НО только если не пересекает onset
+    prefix_strict_preonset: bool = True # обрезать префикс строго до onset (рекоменд. протокол)
+    prefix_onset_threshold: float = LIQ_THRESHOLD # порог ru, определяющий onset (тот же, что у события)
+    prefix_onset_margin: int = 1 # доп. буфер шагов: последний шаг префикса < onset_idx − margin
+    prefix_min_len: int = 3 # минимальная длина префикса, НО только если не пересекает onset
+    # Единый ПРИЧИННЫЙ критерий onset: первое пересечение порога ru, УСТОЙЧИВОЕ на
+    # onset_sustain_cycles подряд идущих ЦЕЛЫХ циклах. Гасит одиночные числовые выбросы у порога,
+    # дававшие ложные события/префикс-пересечения. Тот же критерий — для метки/N_liq и для префикса.
+    onset_sustain_cycles: int = 3
+    # Терминально-неоднозначные образцы: ru пересекает порог в последние 1–2 цикла записи, но полного
+    # sustained-окна нет (опыт остановлен слишком рано, чтобы подтвердить onset). Метка таких образцов
+    # ГЕНУИННО неизвестна (может быть и позитив, и транзиент). Для ЧЕСТНОГО headline-бенчмарка их
+    # исключаем из размеченной когорты (флаг onset_terminal_ambiguous остаётся в meta для аудита и
+    # sensitivity-анализа). Поставьте False, чтобы вернуть их как censored-негативы (менее строго).
+    exclude_terminal_ambiguous: bool = True
+    # Калибровка интервалов PPR: множитель-запас σ под site-shift. ДЕФОЛТ 1.0 (никакой подгонки):
+    # значение >1 было бы test-informed (введено после наблюдения held-out недокрытия) — это ручная
+    # подгонка тестового результата. Честный headline калибровки = empirical site-held-out conformal
+    # coverage (aggregate_object_conformal). Если запас и нужен — выбирать его ТОЛЬКО внутри outer-train.
+    calibration_shift_inflation: float = 1.0
     # --- Протокол префикса. "preonset" — основной (анти-утечка, длина зависит от onset → outcome-dependent).
     #     "fixed_k" — отдельный leakage-free протокол: ФИКСИРОВАННОЕ окно первых prefix_fixed_k шагов для
     #     ВСЕХ опытов, не зависящее от исхода; K выбран малым, чтобы разжижение почти не попадало в окно.
     # "landmark" (рекомендуемый primary, leakage-free onset forecasting): префикс = наблюдения до
     #   ФИЗИЧЕСКОГО landmark-цикла N₀; risk set — только опыты, не разжижившиеся до N₀ (см. splits).
     # "fixed_k" — фикс. окно первых K шагов сетки. "preonset" — обрезка до onset (outcome-dependent).
-    prefix_mode: str = "landmark"           # "landmark" | "fixed_k" | "preonset"
-    prefix_fixed_k: int = 6                 # длина фиксированного префикса (шагов) для prefix_mode="fixed_k"
-    prefix_landmark_cycles: float = 10.0    # физический landmark N₀ (циклы) для prefix_mode="landmark".
-    # N₀=10 (а не 20): N₀=20 целиком выбрасывал 6 из 19 площадок (опыты <20 циклов — короткие сейсмо-
-    # протоколы), что подрывало site-held-out claim. При N₀=10 сохраняются ~19/19 сайтов ценой более
-    # короткого префикса. Выбор задокументирован sensitivity-таблицей (cohort × n_sites × длина префикса).
+    prefix_mode: str = "landmark" # "landmark" | "fixed_k" | "preonset"
+    prefix_fixed_k: int = 6 # длина фиксированного префикса (шагов) для prefix_mode="fixed_k"
+    prefix_landmark_cycles: float = 10.0 # физический landmark N₀ (циклы) для prefix_mode="landmark".
+    # N₀=10 (а не 20): N₀=20 выбрасывал больше коротких сейсмо-опытов. ФАКТИЧЕСКАЯ landmark-когорта
+    # (по аудиту, а НЕ «~19/19»): raw archive 1093 опытов / 20 объектов → primary landmark cohort
+    # 826 опытов / 14 объектов / 13 площадок (исключено 267 опытов и 6 объектов, где onset попадает в
+    # окно N₀ или нет валидного префикса). В статье указывать обе цифры (raw vs landmark cohort).
+    # Выбор N₀ задокументирован sensitivity-таблицей (cohort × n_sites × длина префикса).
 
 
 def get_default_config() -> ExperimentConfig:

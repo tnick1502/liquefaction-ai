@@ -23,7 +23,7 @@ import numpy as np
 
 __all__ = ["g0_mpa", "vs_from_g0"]
 
-ATM = 0.1 * 1000.0  # атмосферное давление в кПа (как в digitrock)
+ATM = 0.1 * 1000.0 # атмосферное давление в кПа (как в digitrock)
 
 # Коэффициент типа грунта K_ground_type — середина диапазонов digitrock (dependence_Eur)
 _K_GROUND = {1: 0.75, 2: 0.75, 3: 0.80, 4: 0.825, 5: 0.90, 6: 0.975, 7: 1.15, 8: 1.30, 9: 0.75}
@@ -40,18 +40,18 @@ def _e50(e50ref: float, c: float, fi_deg: float, sigma_3: float, p_ref: float, m
 
 
 # --- эмпирические корреляции G0 (МПа), p_ref в МПа ---
-def _delia_sandy_silt(p, e):   return 358 * e ** -1.21 * (p * 1000) ** 0.57 * ATM ** 0.43 / 1000
-def _delia_clayey_silt(p, e):  return 358 * e ** -1.21 * (p * 1000) ** 0.57 * ATM ** 0.43 / 1000
-def _kallioglou(p, PI, e):     return (6290 - 80 * PI) * e ** -0.63 * (p * 1000) ** 0.5 / 1000
-def _sas(p):                   return (3.02 * (p * 1000) ** 0.68 + 0.82 * (p * 1000) ** 0.96) / 2
-def _sands(p, e):              return ((220 * (2.17 - e) ** 2 * (p * 1000) ** 0.623) / (1 + e)) * 0.5 / 1000
-def _hardin_black(p, e):       return 3231 * (2.97 - e) ** 2 / (1 + e) * (p * 1000) ** 0.5 / 1000
-def _marcuson_wahls(p, e):     return 445 * (4.4 - e) ** 2 / (1 + e) * (p * 1000) ** 0.5 / 1000
-def _kim_novac(p, e):          return 1576 * (2.97 + e) ** 2 / (1 + e) * (p * 1000) ** 0.5 / 1000
-def _kokusho_alluvial(p, e):   return 141 * (7.32 + e) ** 2 / (1 + e) * (p * 1000) ** 0.6 / 1000
-def _jamiolkowski(p, e):       return 600 * e ** -1.3 * (p * 1000) ** 0.5 * ATM ** 0.5 / 1000
-def _shibuya_tanaka(p, e):     return 5000 * e ** -1.3 * (p * 1000) ** 0.5 / 1000
-def _vrettos_savidis(p, e):    return 9600 * (1 / (1 + 1.2 * e ** 2)) * (p * 1000) ** 0.5 / 1000
+def _delia_sandy_silt(p, e): return 358 * e ** -1.21 * (p * 1000) ** 0.57 * ATM ** 0.43 / 1000
+def _delia_clayey_silt(p, e): return 358 * e ** -1.21 * (p * 1000) ** 0.57 * ATM ** 0.43 / 1000
+def _kallioglou(p, PI, e): return (6290 - 80 * PI) * e ** -0.63 * (p * 1000) ** 0.5 / 1000
+def _sas(p): return (3.02 * (p * 1000) ** 0.68 + 0.82 * (p * 1000) ** 0.96) / 2
+def _sands(p, e): return ((220 * (2.17 - e) ** 2 * (p * 1000) ** 0.623) / (1 + e)) * 0.5 / 1000
+def _hardin_black(p, e): return 3231 * (2.97 - e) ** 2 / (1 + e) * (p * 1000) ** 0.5 / 1000
+def _marcuson_wahls(p, e): return 445 * (4.4 - e) ** 2 / (1 + e) * (p * 1000) ** 0.5 / 1000
+def _kim_novac(p, e): return 1576 * (2.97 + e) ** 2 / (1 + e) * (p * 1000) ** 0.5 / 1000
+def _kokusho_alluvial(p, e): return 141 * (7.32 + e) ** 2 / (1 + e) * (p * 1000) ** 0.6 / 1000
+def _jamiolkowski(p, e): return 600 * e ** -1.3 * (p * 1000) ** 0.5 * ATM ** 0.5 / 1000
+def _shibuya_tanaka(p, e): return 5000 * e ** -1.3 * (p * 1000) ** 0.5 / 1000
+def _vrettos_savidis(p, e): return 9600 * (1 / (1 + 1.2 * e ** 2)) * (p * 1000) ** 0.5 / 1000
 def _clays(p, Ip, e):
     Ip = Ip if Ip and Ip > 0 else 1.0
     return ((((330 * (2.17 - e) ** 2 * p ** 0.5) * 1.4 / (1 + e)) + ((4000 * p) / (Ip ** 0.7))) / 2) * 0.5 / 1000
@@ -87,7 +87,7 @@ def _g0_scalar(p_ref, e, c, fi, K0, type_ground, Ip):
     elif tg in (1, 2, 3, 4, 5):
         g0 = (_delia_sandy_silt(p, e) + _kallioglou(p, 0, e) + _sas(p) + _sands(p, e)) / 4
         g0 *= (1 + (0.75 - tg * 0.15))
-    else:  # 6,7,8 — глины
+    else: # 6,7,8 — глины
         g0 = ((_hardin_black(p, e) + _marcuson_wahls(p, e) + _kim_novac(p, e) + _kokusho_alluvial(p, e)
                + _jamiolkowski(p, e) + _shibuya_tanaka(p, e) + _vrettos_savidis(p, e)
                + _kallioglou(p, PI, e) + _sas(p)) / 9) * 0.8 * 0.6 + _clays(p, PI, e) * 0.4

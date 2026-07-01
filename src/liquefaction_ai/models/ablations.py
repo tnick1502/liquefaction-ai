@@ -60,17 +60,17 @@ class NeuralODENoPhysics(nn.Module):
         self.nliq_head = nn.Linear(latent_dim, 1)
 
     def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        seq = batch["seq_in"]                       # (B, T, C): CSR, log_cycle_norm, delta_cycle_norm, ...
+        seq = batch["seq_in"] # (B, T, C): CSR, log_cycle_norm, delta_cycle_norm, ...
         B, T, _ = seq.shape
         csr = seq[..., 0]
         log_cyc = seq[..., 1]
-        dt = seq[..., 2].clamp(min=0.0)             # delta_cycle_norm как шаг интегрирования
+        dt = seq[..., 2].clamp(min=0.0) # delta_cycle_norm как шаг интегрирования
         z = self.z0_head(self.encoder(batch["static"]))
         means, logvars = [], []
         for t in range(T):
             drive = torch.stack([csr[:, t], log_cyc[:, t]], dim=-1)
             dz = self.f(torch.cat([z, drive], dim=-1))
-            z = z + dt[:, t:t + 1] * dz             # шаг Эйлера
+            z = z + dt[:, t:t + 1] * dz # шаг Эйлера
             means.append(torch.sigmoid(self.ppr_head(z).squeeze(-1)))
             logvars.append(torch.clamp(self.logvar_head(z).squeeze(-1), min=-6.0, max=2.0))
         traj_mean = torch.stack(means, dim=1)

@@ -15,8 +15,10 @@ from conftest import TABLES
 from liquefaction_ai.config import get_default_config
 from liquefaction_ai.evaluation.metrics import compute_metrics, stress_split
 
-_skip = pytest.mark.skipif(not (TABLES / "full_leaderboard.csv").exists(),
-                           reason="нет results/tables/full_leaderboard.csv")
+_HAS_PUBLICATION_RUN = ((TABLES / "full_leaderboard.csv").exists()
+                        and (TABLES.parent / "run_manifest.json").exists())
+_skip = pytest.mark.skipif(not _HAS_PUBLICATION_RUN,
+                           reason="нет полного publication run: leaderboard + run_manifest")
 PHYS = ["DPI-Flow", "DPI-EVT", "EVT-NeuralSSM"]
 
 

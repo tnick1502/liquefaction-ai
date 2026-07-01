@@ -85,7 +85,7 @@ def ensure_analysis_columns(soil_df: pd.DataFrame, load_df: pd.DataFrame,
         setdefault(soil_df, col, np.zeros(n))
     fractions = soil_df[gran_cols].to_numpy(dtype=float)
     pc = plaxis_classification(fractions)
-    has_gran = fractions.sum(axis=1) > 1.0           # есть измеренный грансостав
+    has_gran = fractions.sum(axis=1) > 1.0 # есть измеренный грансостав
     type_d50 = np.array([_TYPE_D50.get(int(t), 0.01) for t in tg])
     d50 = np.where(has_gran, pc["D50"].astype(float), type_d50)
     d10 = np.where(has_gran, pc["D10"].astype(float), type_d50 / 5.0)
@@ -247,10 +247,10 @@ def strict_pre_onset_prefix_mask(
     onset_hit = (r_obs >= onset_threshold) & (valid_mask > 0)
     has_onset = onset_hit.any(axis=1)
     onset_idx = np.where(has_onset, onset_hit.argmax(axis=1), seq_len).astype(int)
-    cut = onset_idx - int(margin)                                  # последний допустимый индекс = cut−1
+    cut = onset_idx - int(margin) # последний допустимый индекс = cut−1
     floor = np.minimum(int(min_len), np.where(has_onset, onset_idx, prefix_len))
-    cut = np.maximum(cut, floor)                                   # пол min_len, но не дальше onset
-    cut = np.clip(cut, 0, prefix_len)                              # не превышать prefix_len
+    cut = np.maximum(cut, floor) # пол min_len, но не дальше onset
+    cut = np.clip(cut, 0, prefix_len) # не превышать prefix_len
     mask = (idx < cut[:, None]) & (valid_mask > 0)
     return mask.astype(np.float32)
 
@@ -275,7 +275,7 @@ def landmark_prefix_mask(cycles: np.ndarray, valid_mask: np.ndarray, landmark_cy
     m = (np.asarray(cycles) <= float(landmark_cycles)) & (valid_mask > 0)
     if prefix_len is not None:
         step_idx = np.arange(m.shape[1])[None, :]
-        m = m & (step_idx < int(prefix_len))      # не больше первых prefix_len шагов
+        m = m & (step_idx < int(prefix_len)) # не больше первых prefix_len шагов
     return m.astype(np.float32)
 
 
@@ -295,7 +295,7 @@ def build_observed_prefix(
     Сформировать наблюдаемый префикс из измеренной траектории (без добавления шума).
 
     По умолчанию префикс обрезается строго до onset (см. :func:`strict_pre_onset_prefix_mask`),
-    что устраняет утечку метки через вход (P0-c).
+    что устраняет утечку метки через вход.
 
     :param r_obs: измеренная траектория PPR, форма (n, seq_len)
     :param valid_mask: маска валидной длины, форма (n, seq_len)

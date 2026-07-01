@@ -5,7 +5,16 @@
 (``metrics``) и базовые регрессионные метрики общего назначения (``regression``).
 """
 
-from liquefaction_ai.evaluation.ab_test import ab_flow_vs_gaussian, mixture_scores_per_sample
+from liquefaction_ai.evaluation.ab_test import (
+    ab_flow_vs_gaussian,
+    ab_flow_vs_gaussian_pooled,
+    mixture_scores_per_sample,
+)
+from liquefaction_ai.evaluation.manifest import (
+    build_run_manifest,
+    validate_run_manifest,
+    write_run_manifest,
+)
 from liquefaction_ai.evaluation.metrics import (
     METRIC_COLUMN_TRANSLATIONS,
     METRICS,
@@ -63,7 +72,12 @@ __all__ = [
     "collect_outputs",
     "compute_metrics",
     "ab_flow_vs_gaussian",
+    "ab_flow_vs_gaussian_pooled",
     "mixture_scores_per_sample",
+    "build_run_manifest",
+    "write_run_manifest",
+    "validate_run_manifest",
+    "validate_run_manifest",
     "expected_calibration_error",
     "filter_split",
     "grouped_metrics",

@@ -9,9 +9,9 @@
 синтетической генерации.
 
 Фракции (массовые доли, %) и верхние границы интервалов крупности (мм):
-    '10'   >10 мм (гравий),     '5'  5–10,   '2'  2–5,    '1'  1–2,     '05' 0.5–1,
-    '025'  0.25–0.5,            '01' 0.1–0.25,'005' 0.05–0.1,'001' 0.01–0.05,
-    '0002' 0.002–0.01,          '0000' <0.002 мм (глина).
+    '10' >10 мм (гравий), '5' 5–10, '2' 2–5, '1' 1–2, '05' 0.5–1,
+    '025' 0.25–0.5, '01' 0.1–0.25,'005' 0.05–0.1,'001' 0.01–0.05,
+    '0002' 0.002–0.01, '0000' <0.002 мм (глина).
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def _interp_dp(p_asc: np.ndarray, d_asc: np.ndarray, p_target: float) -> np.ndar
     n = p_asc.shape[0]
     mask = p_asc >= p_target
     any_mask = mask.any(axis=1)
-    idx = np.argmax(mask, axis=1)  # первый индекс, где проход >= p_target
+    idx = np.argmax(mask, axis=1) # первый индекс, где проход >= p_target
 
     rows = np.arange(n)
     idx_safe = np.clip(idx, 1, p_asc.shape[1] - 1)
@@ -121,8 +121,8 @@ def _interp_dp(p_asc: np.ndarray, d_asc: np.ndarray, p_target: float) -> np.ndar
     result = np.exp(log_d)
 
     # Граничные случаи
-    result = np.where(idx == 0, d_asc[0], result)          # p_target <= минимального прохода
-    result = np.where(~any_mask, d_asc[-1], result)         # p_target больше максимального прохода
+    result = np.where(idx == 0, d_asc[0], result) # p_target <= минимального прохода
+    result = np.where(~any_mask, d_asc[-1], result) # p_target больше максимального прохода
     return result
 
 
@@ -142,12 +142,12 @@ def plaxis_classification(fractions: np.ndarray) -> Dict[str, np.ndarray]:
     total = np.where(total < 1e-6, 1.0, total)
     fractions = fractions / total * 100.0
 
-    diameters = np.array([FRACTION_BOUNDS[k] for k in FRACTION_KEYS], dtype=np.float64)  # убывает
-    passing = np.cumsum(fractions[:, ::-1], axis=1)[:, ::-1]  # % мельче diameters[i]
+    diameters = np.array([FRACTION_BOUNDS[k] for k in FRACTION_KEYS], dtype=np.float64) # убывает
+    passing = np.cumsum(fractions[:, ::-1], axis=1)[:, ::-1] # % мельче diameters[i]
 
-    d_asc = diameters[::-1].copy()             # возрастает 0.002..20
+    d_asc = diameters[::-1].copy() # возрастает 0.002..20
     p_asc = np.clip(passing[:, ::-1], 0.0, 100.0)
-    p_asc = np.maximum.accumulate(p_asc, axis=1)  # гарантируем монотонность
+    p_asc = np.maximum.accumulate(p_asc, axis=1) # гарантируем монотонность
 
     d10 = _interp_dp(p_asc, d_asc, 10.0)
     d50 = _interp_dp(p_asc, d_asc, 50.0)
@@ -181,7 +181,7 @@ def define_type_ground(fractions: np.ndarray, Ip: np.ndarray, Ir: np.ndarray) ->
     fractions = np.asarray(fractions, dtype=np.float64)
     Ip = np.asarray(Ip, dtype=np.float64)
     Ir = np.asarray(Ir, dtype=np.float64)
-    acc = np.cumsum(fractions, axis=1)  # накопление от крупных фракций
+    acc = np.cumsum(fractions, axis=1) # накопление от крупных фракций
 
     sand_type = np.select(
         [acc[:, 2] > 25.0, acc[:, 4] > 50.0, acc[:, 5] > 50.0, acc[:, 6] >= 75.0],

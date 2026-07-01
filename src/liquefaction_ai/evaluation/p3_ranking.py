@@ -397,7 +397,7 @@ def publication_ranking_table(df: pd.DataFrame, reference_model: str, mode: str 
     admissible-фронт и admissible-score; raw-версии диагностические.
     """
     scored = compute_p3_score(df, reference_model, mode)
-    scored = compute_competence(scored, mode)          # gate компетентности (worst-режим + N_liq)
+    scored = compute_competence(scored, mode) # gate компетентности (worst-режим + N_liq)
     raw_col, adm_col = _SCORE_COLS[mode]
 
     # admissible-score обнуляется и для некомпетентных моделей (не только физически ненадёжных)

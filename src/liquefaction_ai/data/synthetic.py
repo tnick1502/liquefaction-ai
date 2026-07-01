@@ -79,7 +79,7 @@ def build_log_dense_cycles(n_max: np.ndarray, seq_len: int,
     каждого сценария. Монотонность по оси циклов обеспечивается накопительным максимумом.
 
     Поведение сетки задаётся ЯВНЫМИ аргументами (а не глобальным состоянием): при
-    ``landmark_n0 is not None`` строится общий early-cycle grid (#6) — первые ``landmark_k``
+    ``landmark_n0 is not None`` строится общий early-cycle grid — первые ``landmark_k``
     узлов одинаковы для всех опытов.
 
     :param n_max: массив максимальных значений N по сценариям, форма (n,)
@@ -405,7 +405,7 @@ def integrate_physics(
     for step in range(seq_len - 1):
         crr_step = hidden["crr_mix"][:, step]
         ratio = csr[:, step] / (crr_step + eps)
-        phi = np.logaddexp(0.0, 6.0 * (ratio - 0.92)) / 6.0   # устойчивый softplus (без overflow)
+        phi = np.logaddexp(0.0, 6.0 * (ratio - 0.92)) / 6.0 # устойчивый softplus (без overflow)
         g[:, step] = expit(hidden["kappa"] * (z[:, step] - hidden["z0"]))
 
         dz = (
@@ -492,7 +492,7 @@ def build_observations(
     )
     r_obs = np.clip(r_true + noise + outliers, 0.0, 1.05).astype(np.float32)
 
-    # Анти-утечка префикса (P0-c): обрезаем строго до ИСТИННОГО onset (r_true ≥ LIQ_THRESHOLD),
+    # Анти-утечка префикса: обрезаем строго до ИСТИННОГО onset (r_true ≥ LIQ_THRESHOLD),
     # чтобы вход не содержал момент разжижения. Старое поведение — первые prefix_len шагов.
     from liquefaction_ai.data.real_adapter import strict_pre_onset_prefix_mask, landmark_prefix_mask
     if landmark_cycles is not None:
@@ -593,7 +593,7 @@ def build_feature_matrices(
     ).astype(np.float32)
     delta_log_n = np.log1p(cycles[np.arange(n), last_prefix_idx]) - np.log1p(cycles[:, 0])
     prefix_slope = ((last_prefix - first_prefix) / np.maximum(delta_log_n, 1e-3)).astype(np.float32)
-    prefix_coverage = np.minimum(prefix_count / prefix_len, 1.0).astype(np.float32)   # ≤1 (landmark cap)
+    prefix_coverage = np.minimum(prefix_count / prefix_len, 1.0).astype(np.float32) # ≤1 (landmark cap)
 
     static_feature_names = (
         [
@@ -647,7 +647,7 @@ def build_feature_matrices(
             load_df["CSR_base"].to_numpy(),
             load_df["frequency"].to_numpy(),
             load_df["amp_scale"].to_numpy(),
-            load_df["nonstationarity"].to_numpy(),     # N_max убран (см. выше)
+            load_df["nonstationarity"].to_numpy(), # N_max убран (см. выше)
             soil_onehot,
             mode_onehot,
             # missingness-индикаторы (у синтетики колонок нет → нули)

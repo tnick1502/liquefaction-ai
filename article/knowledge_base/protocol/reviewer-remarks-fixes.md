@@ -102,3 +102,83 @@ date: 2026-06-28
 | 10 [P1] | пропуски → константы (`e=0.7`,`G=25`,…), статья «rather than fabricated defaults» неверна | Добавлены **missingness-индикаторы** `miss_e/miss_Ip/miss_K0/miss_vs/miss_gran` в статические признаки. Аудит на реальных данных вскрыл, что **Vs почти всегда из fallback** (G=25), а у значительной части опытов нет гранулометрии — индикаторы честно раскрывают суррогатность входов. |
 | 7 [P1] | censor-aware regression ≠ proper survival (нет AFT/hazard, IPCW/IBS/time-dependent AUC) | **Принято как limitation** (по решению): формулировка скромная — «right-censored event-time regression», БЕЗ survival-claim. Информативная цензура (разные протоколы остановки) и отсутствие IPCW/IBS — явный пункт limitations. Полный survival-объектив — future work. |
 | 13 [P2] | глобальная изотоника таргета использует будущее → PVR частично проверяет навязанное | **Принято как limitation** (по решению): глобальная монотонизация PPR-таргета — предположение; есть `causal_monotone_smooth` (поцикловой causal вариант, не использует будущее) для аудита (расхождение global vs causal по меткам мало). PVR трактуется как «соответствие архитектурному monotone-проекту», не независимая физическая истина. |
+
+---
+
+## Раунд N+2 — правки по замечаниям (только логика, ноутбуки не перезапускались)
+| # | Замечание | Оценка | Фикс |
+|---|---|---|---|
+| P0 | Сплит по `site_id`, но статистика/conformal/significance кластеризуют по `object` (2 скважины одной площадки = 2 «независимых» кластера) | **Верно** | Кластер везде → **`site_id`** (fallback object): `_SAMPLE_COLS`+`compute_metrics` пробрасывают `site_id`; conformal val-калибровка и `aggregate_object_conformal` группируют по site_id; `significance.paired_significance`/`object_cluster_bootstrap` → site_id. Проверено: n падает с 12 скважин до 6 площадок. |
+| P0 | 3_1 ROC/calibration/temperature на всех 229 метках (вкл. 9 unknown-by-H), а leaderboard — на 220 наблюдаемых | **Верно** | Ячейки 15/17/19 фильтруют по `risk_label_observed` (та же маска, что `compute_metrics`). |
+| P0 | Тест падает: DPI-Flow PVR 0.00873 из-за `clamp→1.0500001 > 1.05` | **Верно (числ.)** | `metrics.py`: проверка границы с допуском `1e-4` (`pred>1.05+eps`). Реальных нарушений нет → структурные модели снова PVR=0. |
+| P1 | `wo_monotone` = no-op (побитово = full): `monotone_residual_scale` делает кривую монотонной независимо от флага | **Верно** | При `use_monotone_clip=False` residual теперь **обычный аддитивный** (`+0.1·tanh`), проекция = bound-clamp → абляция реально измеряет вклад монотонности. |
+| P1 | Гиперпараметры выбираются по full `Traj_RMSE`, не continuation | **Верно** | 2_2/2_3/2_4: `SELECTION_METRIC="Traj_RMSE_continuation"`. |
+| P1 | `cv_grouped_run_meta.json` пишется до CV → ложная готовность | **Верно** | Запись перенесена в конец CV-ячейки (после summary), с `n_folds_done`. |
+| P2 | 3_2 — 2 эпохи, single-class OOD (AUROC NaN); вывод «структурные устойчивее» не подтверждён | **Верно** | Эпохи → publication; добавлен banner «exploratory, superseded by 3_6/3_4, conclusions diagnostic only». |
+| P2 | 3_3: кейсы-экстремумы, measured за концом опыта, «posteriors» = кросс-образцовые point estimates | **Верно** | Выбор → **репрезентативные** (медиана PPR_max); measured маскируется `valid_mask`; заголовок гистограммы честно переименован. |
+
+**Осталось (операционно, не код):** прогнать по порядку 3_1→3_3→3_4→3_5→3_6→3_7→3_8 (тогда 3_7/3_8 перестанут быть устаревшими, leaderboard будет на CV, а не на 2 test-site). Числа абляции prefix/onset в статье обновить ПОСЛЕ прогона (сейчас prefix слабо влияет на onset → honest reframe: onset ведут статические/site-признаки, prefix помогает траектории/N_liq).
+
+---
+
+## Раунд N+3 — инженерия кастомных моделей (N_liq EVT + калибровка DPI-Flow)
+
+**Диагностика (per-sample CV):** N_liq EVT-семейства в object-held-out CV — НОРМА (log-MAE на liq: DPI-EVT 0.31, EVT-SSM 0.31, DPI-Flow 0.34). Значение **0.84/1.7** — только на **single-split из 2 площадок** (3_1), не на CV. Причина хрупкости: N_liq брался лишь из пересечения кривой; при непересечении остаточная масса → горизонт 3000 → катастрофа на OOD.
+
+| Задача | Решение (выбор автора) | Код |
+|---|---|---|
+| N_liq EVT/DPI-EVT | **Head + consistency + report CV** | Добавлена выделенная `nliq_head` (MLP, флаг `use_nliq_head=True`, backward-compat через `**kwargs`) в базовый `EVTNeuralSSM` (наследует DPI-EVT). `_apply_nliq_head` даёт primary N_liq из головы; `_nliq_consistency_loss` (вес 0.10) тянет голову к пересечению кривой ТАМ, где событие произошло (label==1 & observed). `nliq_norm_curve` в выходах. Headline/competence-gate брать из **CV (3_4)**, single-split (3_1) — диагностика. |
+| DPI-Flow калибровка | **Conformal (headline)** | Headline-калибровка = **empirical site-held-out conformal coverage** (`aggregate_object_conformal`, уже в 3_4; выведена в 3_7). ~~Variance-scaling запас 1.15~~ → **откачен к 1.0 в Раунде N+4** (был test-informed). Никакой подгонки; полоса под site-shift выбирается только внутри outer-train, если нужна. |
+
+**⚠ Требует переобучения `2_3` (EVT-SSM) и `2_4` (DPI-EVT):** добавлен параметр `nliq_head` в архитектуру → старые `weights.pt` не загрузятся strict-режимом в 3_1 до перетренировки. Порядок: 2_3→2_4→3_1→3_3→3_4→…→3_8.
+**Честная оговорка для статьи:** N_liq теперь из головы, регуляризованной к физическому пересечению кривой (не строго лежит на кривой) — указать в methods/limitations.
+
+---
+
+## Раунд N+4 — критические правки (6 P0 + P1, только логика)
+
+| # | Замечание | Оценка | Фикс |
+|---|---|---|---|
+| 1 | **Prefix и event-label противоречат:** событие берётся из полной изотонической огибающей, префикс — из отдельного сглаживания раннего окна → 13 отрицательных с prefix≥0.95 и 4 положительных с onset внутри N₀ | **Верно** | `sustained_first_crossing` (порог удержан на `onset_sustain_cycles=3` **подряд** циклах) применяется к **СЫРЫМ** пикам для метки/N_liq (ретроспективный таргет) и к **сырым пикам причинного окна ≤ N₀** для причинного флага. **НИКАКОГО клиппинга входа** (прежний `min(prefix, порог)` был outcome-conditioned и лепил proxy-плато 0.949 — удалён). Причинный `event_in_prefix` (label-free) исключает образец из landmark risk set; расхождения причинного и ретро-критериев **аудируются счётчиками** (`audit_*`), не «чинятся». |
+| 2 | Когорта в config названа «~19/19», а по аудиту 1093/20 raw → 826/13 landmark | **Верно** | Комментарий config исправлен: raw **1093 опытов/20 объектов → landmark 826/14 объектов/13 площадок** (исключено 267/6). В статье — обе цифры. |
+| 3 | **Плотность потока некорректна после inner-calibration:** `calibration_steps>0` делает градиентные шаги по θ, якобиан которых НЕ входит в нормированную плотность → mixture-NLL невалиден | **Верно** | Headline DPI-Flow: **`calibration_steps=0`** (честная плотность); грид 2_2 → `[0]`. Эвристическая θ-доводка (1/2 шага) вынесена в **абляции** `calib_steps_1/calib_steps_2` (`ablation_study`, conformal-полоса, а не плотность). |
+| 4 | N_liq consistency может тянуть голову к горизонту на непересекающих кривых | **Верно** | `_nliq_consistency_loss`: target **detached**, вес гейтится `cross_mass≥0.5` (только где кривая реально пересекла) × `label` × `observed`. |
+| 5 | `calibration_shift_inflation=1.15` — test-informed подгонка (введена после наблюдения held-out недокрытия) | **Верно** | Откат к **1.0** (никакой подгонки). Honest headline = empirical site-held-out conformal coverage. Мислейбл «conformal s:» в 2_2/2_3 → «var-scale s:»; ablation `wo_conformal`→**`wo_varscale`**. |
+| 6 | Старые веса × новая арх.; preflight проверяет только static_dim; нет манифеста прогона | **Верно** | `test_scientific_claims`: preflight сверяет **полный state_dict (ключи+формы)** сконструированной из hyperparams модели с `weights.pt`. Добавлен **run manifest** (`evaluation/manifest.py` → `results/run_manifest.json`): git-commit(+dirty), config, SHA1-отпечаток данных, состав когорты, архитектуры; ячейка в 3_1. |
+| P1 | A/B `train_ab_pair` кластеризует по object, полная маска, single-split | **Верно** | `ab_test`: скоры на **строго post-prefix continuation**, кластер bootstrap по **site_id**, добавлена A/B-калибровка **`Cov90_abs_miscal`** (\|cov90−0.90\|), multi-fold `ab_flow_vs_gaussian_pooled` (пул per-sample по фолдам → один site-bootstrap). |
+| P1 | CRR-diversity, site-macro | **Верно** | `N_CRR_objects` считает **site_id**; добавлены **site-macro** `Traj_RMSE_continuation_siteMacro`, `N_liq_logMAE_siteMacro`, `N_sites_test` (каждая площадка весит одинаково — не доминируется крупными). |
+
+### Reframing (только текст статьи/доки, кода не требует)
+- **MC-mixture (`MC_SOTA`)** — опция, а не headline: заявлять как отдельный SOTA-эксперимент, не смешивать с основным сравнением.
+- **θ-uncertainty — условный латент, НЕ байесовская эпистемика:** разброс θ идёт из амортизированного гауссова/flow-постериора по входу, а не из апостериора по параметрам модели. В methods писать «conditional posterior over physical params», не «epistemic Bayesian uncertainty».
+- **N_liq head детерминирована** — при этом модель заявляет вероятностный прогноз: указать, что вероятностной является траектория PPR, а точечная N_liq выводится из головы (+интервал из континуальной кривой), это разные величины.
+- **`Onset_EarlyWarning_Rate` геймабелен** (можно занизить порог) — сопровождать caveat и парой с ложной тревогой; не headline-метрика.
+- **θ-интерпретируемость** — заявлять только с тестом восстановления (identifiability), иначе как «структурный индуктивный bias», не «интерпретируемые физпараметры».
+- **Численная сходимость ODE** — добавить контроль Euler vs Heun (`integrator` уже в гриде EVT) как sanity, а не точность.
+- **Survival-baseline** формулировать как «right-censored regression на N_liq», честно называть цензуру.
+
+**⚠ Требует перегенерации артефакта + переобучения (арх./данные менялись):** новый sustained-onset и причинный risk-set меняют данные → `data/prepare_dataset.ipynb` заново, затем 2_1..2_4, затем 3_1..3_8. Числа prefix/onset и абляций в статье обновить ПОСЛЕ прогона.
+
+---
+
+## Раунд N+5 — исправление ОШИБОК в раунде N+4 (по повторному критическому ревью)
+
+Четыре пункта раунда N+4 были сделаны неверно/недостаточно; исправлено:
+
+1. **Клип префикса был outcome-conditioned** (`grid < n_liq`, использовал будущую метку) и создавал proxy-плато ровно `0.949`. **Удалён.** Причинный префикс строится только из наблюдений ≤ N₀; образцы, где причинный префикс уже устойчиво пересёк порог, **исключаются** из landmark risk set через label-free `event_in_prefix`, а НЕ переписываются. Противоречия причинного и ретроспективного критериев считаются отдельно (`cohort_filter_counts.audit_*`).
+2. **Sustained-onset фактически не работал:** (а) усечённое окно `above[i:min(i+sustain,n)]` пропускало 1–2 хвостовые записи; (б) критерий применялся к УЖЕ монотонной `ppr_sm_pc`, где после первого пересечения кривая по построению ≥ порога → sustain был **no-op**. Теперь: функция вынесена как `sustained_first_crossing`, применяется к **сырым `ppr_peaks`**, требует **полное окно** из 3 подряд, с корректной обработкой терминального onset (≥2 последних цикла). Юнит-тесты: `tests/test_onset_criterion.py`.
+3. **Терминология:** метка/N_liq берутся из глобальной **некаузальной** `monotone_smooth` — это допустимо для ретроспективного ТАРГЕТА, но называть её «причинной» нельзя. В доке/статье: причинным является **только префикс** (вход); метка — retrospective target. Формулировки исправлены.
+4. **Primary nested CV всё ещё перебирал density-invalid DPI-Flow:** `cross_validation.NESTED_GRIDS["dpi_flow"]` имел `calibration_steps:[1,2]` (а фикс был только в одиночном 2_2). → **`calibration_steps` убран из грида (фиксирован 0)** для primary DPI-Flow; `dpi_evt` тоже → `[0]`. Шаги 1/2 остаются ТОЛЬКО абляцией (`ablation_study: calib_steps_1/2`), не в headline-density.
+
+---
+
+## Раунд N+6 — pre-final-run review (критическая проверка правок автора)
+
+Правки автора (consecutive-cycle sustain, terminal-ambiguous audit, расширенный manifest) — верное усиление. Найдено и исправлено перед финальным прогоном:
+
+1. **Скрытый баг маскировки onset в режиме `points_in_cycle`:** проверка «подряд идущих циклов» сравнивала СЫРЫЕ float-номера циклов пиков (`|Δ−1|≤0.25`). У реальных данных пики берутся как argmax внутри окна цикла, и около onset фаза пика дрожит: два СОСЕДНИХ цикла дают номера вида `k+0.9` и `(k+1)+0.1` → Δ≈0.2 → критерий **ложно отвергал бы реальный onset и цензурировал разжижение** ровно там, где волна искажается. → Последовательность теперь определяется по ЦЕЛОМУ номеру цикла `floor(cyc+ε)` (`_cycle_bins`/`_consecutive_cycles`), устойчиво к субцикловому дрожанию; настоящие пропуски циклов по-прежнему отвергаются. Тест `test_subcycle_phase_jitter_still_consecutive`. **Критично: без этого фикса финальный прогон в points_in_cycle-режиме занизил бы число позитивов.**
+2. **Терминально-неоднозначные образцы** (пересечение в последние 1–2 цикла, полного окна нет) держались как censored-негативы → шум метки на позитивном классе. → Конфиг `exclude_terminal_ambiguous=True` исключает их из размеченной когорты (флаг `onset_terminal_ambiguous` остаётся в meta; счётчики `terminal_onset_ambiguous`/`excluded_terminal_ambiguous`). Поставить False для sensitivity.
+3. **Stale-комментарий** в `extract_test` всё ещё описывал приём терминального onset как события (старое поведение) → синхронизирован с кодом (теперь — terminal-ambiguous audit).
+4. **Проверки утечки признаков:** подтверждено — `event_in_prefix`/`onset_terminal_ambiguous` снимаются из `load_rows` ДО `load_df`; `static_features` — явный allowlist, новая meta-колонка `onset_terminal_ambiguous` НЕ попадает во входы. `validate_run_manifest` экспортирован как publication-gate.
+
+**Проверка перед прогоном (обязательно посмотреть после `prepare_dataset`):** распечатать `population["cohort_filter_counts"]` — особенно `terminal_onset_ambiguous`, `excluded_terminal_ambiguous`, `audit_*`. Если `terminal_onset_ambiguous` велик (десятки), это сигнал, что запись опытов обрывается слишком близко к onset — задокументировать в статье и проверить чувствительность (`exclude_terminal_ambiguous=False`).

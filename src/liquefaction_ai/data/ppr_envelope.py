@@ -34,7 +34,7 @@ def extract_cycle_amplitude(
     """
     Пер-цикловая ОДИНОЧНАЯ амплитуда колебательного сигнала: ``(max − min) / 2`` в каждом цикле.
 
-    Для восстановления реальной истории нагружения CSR(N) из сырого девиатора (#3): в отличие от
+    Для восстановления реальной истории нагружения CSR(N) из сырого девиатора: в отличие от
     :func:`extract_upper_envelope` (верхний пик), берётся половина размаха цикла — фактическая
     амплитуда напряжения, которая для штормовых/переменно-амплитудных протоколов может меняться.
 
@@ -117,7 +117,7 @@ def extract_upper_envelope(
     bins = np.clip(np.ceil(cyc).astype(int), 1, n_total) - 1
     peaks = np.zeros(n_total)
     np.maximum.at(peaks, bins, pp)
-    for k in range(1, n_total):           # заполнить пустые циклы предыдущим пиком
+    for k in range(1, n_total): # заполнить пустые циклы предыдущим пиком
         if peaks[k] == 0.0 and peaks[k - 1] > 0.0:
             peaks[k] = peaks[k - 1]
     cyc_peaks = np.arange(1, n_total + 1, dtype=float)
@@ -169,7 +169,7 @@ def monotone_smooth(
             pad = kernel // 2
             padded = np.pad(iso, pad, mode="edge")
             iso = np.convolve(padded, np.ones(kernel) / kernel, mode="valid")
-        iso = np.maximum.accumulate(iso)        # восстановить монотонность после сглаживания
+        iso = np.maximum.accumulate(iso) # восстановить монотонность после сглаживания
     return np.clip(iso, clip[0], clip[1])
 
 
@@ -249,7 +249,7 @@ def landmark_aware_cycles(last_cycle: float, seq_len: int, landmark_cycles: floa
     k = int(min(max(k_early, 2), seq_len - 1))
     early = np.geomspace(1.0, n0, k)
     last = max(float(last_cycle), n0 * 1.01)
-    late = np.geomspace(n0, last, seq_len - k + 1)[1:]   # без дубля узла N₀
+    late = np.geomspace(n0, last, seq_len - k + 1)[1:] # без дубля узла N₀
     grid = np.concatenate([early, late]).astype(np.float32)
     return np.maximum.accumulate(grid)
 

@@ -34,7 +34,7 @@ def check_artifact_consistency(src_dir: str = "data/dataset") -> Tuple[bool, Lis
 
     def chk(cond: bool, msg: str):
         checks.append(bool(cond))
-        report.append(("OK   " if cond else "FAIL ") + msg)
+        report.append(("OK " if cond else "FAIL ") + msg)
 
     chk("risk_score_true" not in m.columns, "risk_score_true отсутствует в meta")
     chk(not any(c.upper() == "OCR" for c in m.columns), "OCR отсутствует в meta")

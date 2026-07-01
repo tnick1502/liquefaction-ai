@@ -60,9 +60,9 @@ class FTTransformer(nn.Module):
         :param batch: словарь батча (поля ``static``, ``prefix_summary``)
         :return: словарь выходов: ``risk_logit``, ``risk_prob``, ``nliq_pred``
         """
-        x = torch.cat([batch["static"], batch["prefix_summary"]], dim=-1)        # (B, F)
-        tokens = x.unsqueeze(-1) * self.feature_weight + self.feature_bias        # (B, F, d)
-        cls = self.cls_token.expand(x.shape[0], -1, -1)                           # (B, 1, d)
+        x = torch.cat([batch["static"], batch["prefix_summary"]], dim=-1) # (B, F)
+        tokens = x.unsqueeze(-1) * self.feature_weight + self.feature_bias # (B, F, d)
+        cls = self.cls_token.expand(x.shape[0], -1, -1) # (B, 1, d)
         h = self.encoder(torch.cat([cls, tokens], dim=1))
         cls_out = self.norm(h[:, 0])
         risk_logit = self.risk_head(cls_out).squeeze(-1)
@@ -127,7 +127,7 @@ class CatBoostBaseline:
         mtr = (otr.detach().cpu().numpy() > 0.5) if otr is not None else np.ones(len(ytr_nliq), bool)
         mv = (ov.detach().cpu().numpy() > 0.5) if ov is not None else np.ones(len(yv_nliq), bool)
         self.clf = CatBoostClassifier(loss_function="Logloss", **common)
-        self.clf.fit(Xtr[mtr], ytr_risk[mtr], eval_set=(Xv[mv], yv_risk[mv]))   # риск ТОЛЬКО по наблюдаемым
+        self.clf.fit(Xtr[mtr], ytr_risk[mtr], eval_set=(Xv[mv], yv_risk[mv])) # риск ТОЛЬКО по наблюдаемым
         # N_liq-РЕГРЕССОР: обычный RMSE не выражает право-цензуру. Стабилизированные non-liq имеют
         # лишь НИЖНЮЮ границу N_liq (censoring time), подавать их как ТОЧНЫЙ таргет нельзя (proposed-
         # модели используют односторонний censored loss). Поэтому регрессор учим ТОЛЬКО на разжижившихся

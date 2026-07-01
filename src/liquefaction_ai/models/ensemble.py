@@ -39,12 +39,12 @@ class EnsembleModel(nn.Module):
         result: Dict[str, torch.Tensor] = {}
 
         if "traj_mean" in outs[0]:
-            means = torch.stack([o["traj_mean"] for o in outs], dim=0)        # (K, B, T)
+            means = torch.stack([o["traj_mean"] for o in outs], dim=0) # (K, B, T)
             mean = means.mean(dim=0)
             result["traj_mean"] = mean
             if "traj_logvar" in outs[0]:
                 vars = torch.stack([torch.exp(o["traj_logvar"]) for o in outs], dim=0)
-                mix_var = vars.mean(dim=0) + means.var(dim=0, unbiased=False)  # алеаторная + эпистемическая
+                mix_var = vars.mean(dim=0) + means.var(dim=0, unbiased=False) # алеаторная + эпистемическая
                 result["traj_logvar"] = torch.log(mix_var.clamp_min(1e-6))
 
         if "risk_prob" in outs[0]:

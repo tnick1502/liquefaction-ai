@@ -48,6 +48,7 @@ def grid_search(
     device: torch.device,
     search_epochs: int = 2,
     score_metric: str = "Traj_RMSE",
+    scheduler: str = "cosine",
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Перебрать сетку гиперпараметров, оценить полный набор метрик и выбрать лучшую комбинацию.
@@ -72,11 +73,11 @@ def grid_search(
 
     rows: List[Dict[str, Any]] = []
     for params in iter_param_grid(grid):
-        set_global_seed(config.seed)   # одинаковая инициализация кандидатов → стабильный отбор
+        set_global_seed(config.seed) # одинаковая инициализация кандидатов → стабильный отбор
         model = build_fn(params).to(device)
         model, history = train_model(
             model, train_split, val_split, epochs=search_epochs,
-            model_name="grid-search", config=config, device=device, verbose=False,
+            model_name="grid-search", config=config, device=device, verbose=False, scheduler=scheduler,
         )
         outputs = collect_outputs(model, val_split, config, device)
         metrics, _ = compute_metrics("grid-search", outputs, val_split, config)

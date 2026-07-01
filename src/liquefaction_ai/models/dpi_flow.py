@@ -100,7 +100,7 @@ class ConditionalCouplingFlow(nn.Module):
         masks = []
         for i in range(n_layers):
             m = torch.zeros(latent_dim)
-            m[i % 2::2] = 1.0           # чередуем, какая половина «заморожена»
+            m[i % 2::2] = 1.0 # чередуем, какая половина «заморожена»
             masks.append(m)
         self.register_buffer("masks", torch.stack(masks))
         self.nets = nn.ModuleList([
@@ -111,7 +111,7 @@ class ConditionalCouplingFlow(nn.Module):
             )
             for _ in range(n_layers)
         ])
-        for net in self.nets:                      # zero-init последнего слоя → старт от identity
+        for net in self.nets: # zero-init последнего слоя → старт от identity
             nn.init.zeros_(net[-1].weight)
             nn.init.zeros_(net[-1].bias)
 
@@ -129,7 +129,7 @@ class ConditionalCouplingFlow(nn.Module):
             h_frozen = h * mask
             s, t = net(torch.cat([h_frozen, context], dim=-1)).chunk(2, dim=-1)
             active = 1.0 - mask
-            s = self.scale_clamp * torch.tanh(s) * active     # масштабируем только активную половину
+            s = self.scale_clamp * torch.tanh(s) * active # масштабируем только активную половину
             t = t * active
             h = h_frozen + active * (h * torch.exp(s) + t)
             log_det = log_det + s.sum(dim=-1)
@@ -157,8 +157,8 @@ def flow_kl_per_dim(latent: torch.Tensor, mu: torch.Tensor, raw_logvar: torch.Te
     :return: per-sample per-dim оценка KL, форма (batch,)
     """
     var = torch.exp(raw_logvar)
-    log_q0 = -0.5 * (((latent - mu) ** 2) / var + raw_logvar).sum(dim=-1)   # log N(z;μ,σ²) без const
-    log_prior = -0.5 * (theta ** 2).sum(dim=-1)                              # log N(θ;0,I) без const
+    log_q0 = -0.5 * (((latent - mu) ** 2) / var + raw_logvar).sum(dim=-1) # log N(z;μ,σ²) без const
+    log_prior = -0.5 * (theta ** 2).sum(dim=-1) # log N(θ;0,I) без const
     kl = (log_q0 - log_det - log_prior) / float(latent.shape[-1])
     return kl
 
@@ -286,7 +286,7 @@ class AnalyticalLiquefactionLayer(nn.Module):
         r_mono = torch.cummax(r, dim=1).values
         above = (r_mono >= threshold)
         has = above.any(dim=1)
-        idx = torch.argmax(above.to(torch.int64), dim=1)              # первый индекс пересечения (0 если нет)
+        idx = torch.argmax(above.to(torch.int64), dim=1) # первый индекс пересечения (0 если нет)
         idx0 = torch.clamp(idx - 1, min=0)
         ar = torch.arange(r.shape[0], device=r.device)
         r1 = r_mono[ar, idx]; r0 = r_mono[ar, idx0]
@@ -399,7 +399,7 @@ class DPIFlow(nn.Module):
         theta_dim: int = 31,
         hidden_dim: int = 160,
         probabilistic: bool = True,
-        calibration_steps: int = 2,
+        calibration_steps: int = 0,
         calibration_lr: float = 0.10,
         use_analytical_layer: bool = True,
         use_flow: bool = True,
@@ -422,7 +422,12 @@ class DPIFlow(nn.Module):
         :param theta_dim: размерность вектора физических параметров θ
         :param hidden_dim: размерность скрытого представления энкодера
         :param probabilistic: использовать ли вероятностную голову (репараметризацию)
-        :param calibration_steps: число шагов внутренней калибровки θ по префиксу
+        :param calibration_steps: число шагов ГРАДИЕНТНОГО уточнения θ по префиксу. ДЕФОЛТ 0.
+            ВАЖНО (flow-density): это уточнение (detach/straight-through, calibrate_theta) НЕ
+            учитывает свой якобиан, поэтому при steps>0 итоговый θ уже НЕ имеет заявленной плотности
+            нормализующего flow — это heuristic test-time refinement, а не часть нормированного
+            posterior. Для корректного flow-claim основной DPI-Flow запускается с steps=0; варианты
+            0/1/2 обязательно аблируются (см. ablation_study: calib_steps_1/2).
         :param calibration_lr: шаг градиентной калибровки θ
         :param use_analytical_layer: использовать ли аналитический ODE-слой (иначе black-box декодер)
         """
@@ -434,22 +439,22 @@ class DPIFlow(nn.Module):
         self.calibration_lr = calibration_lr
         self.use_analytical_layer = use_analytical_layer
         self.use_flow = use_flow
-        # Флаги абляций (P1): отключают отдельные компоненты вклада для component-contribution таблицы.
-        self.use_monotone_clip = use_monotone_clip            # монотонная проекция PPR (физика)
-        self.use_discriminative_risk = use_discriminative_risk  # дискрим. risk-голова + soft-AUC
-        self.use_censored_nliq = use_censored_nliq            # цензур-aware loss N_liq (vs обычный MSE)
-        # MC-микстура предиктива по θ∼flow (#3): обучение траектории как смеси (mixture-NLL +
+        # Флаги абляций: отключают отдельные компоненты вклада для component-contribution таблицы.
+        self.use_monotone_clip = use_monotone_clip # монотонная проекция PPR (физика)
+        self.use_discriminative_risk = use_discriminative_risk # дискрим. risk-голова + soft-AUC
+        self.use_censored_nliq = use_censored_nliq # цензур-aware loss N_liq (vs обычный MSE)
+        # MC-микстура предиктива по θ∼flow: обучение траектории как смеси (mixture-NLL +
         # опц. energy-CRPS) калибрует РАЗБРОС flow-постериора под предиктивную ошибку. 0 → выкл
         # (поведение по умолчанию не меняется; одиночный gaussian_nll).
-        self.mc_train_samples = int(mc_train_samples)        # сэмплов θ в обучающем mixture-лоссе
-        self.mc_crps_weight = float(mc_crps_weight)          # вес energy-CRPS поверх mixture-NLL
-        self.mc_predict_samples = int(mc_predict_samples)    # сэмплов θ в eval-предиктиве (predictive)
+        self.mc_train_samples = int(mc_train_samples) # сэмплов θ в обучающем mixture-лоссе
+        self.mc_crps_weight = float(mc_crps_weight) # вес energy-CRPS поверх mixture-NLL
+        self.mc_predict_samples = int(mc_predict_samples) # сэмплов θ в eval-предиктиве (predictive)
         # Принудительное стохастическое сэмплирование θ на инференсе (для MC-пропагации
         # неопределённости ЧЕРЕЗ conditional flow, а не deterministic posterior mean).
         self._force_sample = False
         self.prefix_len = prefix_len
         self.max_cycle_reference = max_cycle_reference
-        self.liq_threshold = liq_threshold   # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
+        self.liq_threshold = liq_threshold # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
         self.use_observed_aux_loss = use_observed_aux_loss
 
         context_dim = static_dim + prefix_dim + 2 * self.prefix_len
@@ -476,7 +481,7 @@ class DPIFlow(nn.Module):
                                            nn.Linear(hidden_dim, seq_len))
         nn.init.zeros_(self.traj_residual[-1].weight)
         nn.init.zeros_(self.traj_residual[-1].bias)
-        # Пост-hoc конформная калибровка интервалов: std *= exp(calib_log_scale) (ln s)
+        # Fold-local variance scaling интервалов: std *= exp(calib_log_scale) (это не conformal guarantee)
         self.register_buffer("calib_log_scale", torch.zeros(1))
 
         self.direct_decoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
@@ -529,7 +534,7 @@ class DPIFlow(nn.Module):
         if not self.probabilistic:
             kl = torch.zeros(mu.shape[0], device=mu.device, dtype=mu.dtype)
         elif self.use_flow:
-            kl = flow_kl_per_dim(latent, mu, raw_logvar, theta, log_det)   # корректный flow-KL с log-det
+            kl = flow_kl_per_dim(latent, mu, raw_logvar, theta, log_det) # корректный flow-KL с log-det
         else:
             kl = 0.5 * (torch.exp(raw_logvar) + mu.pow(2) - 1.0 - raw_logvar).mean(dim=1)
         return theta, mu, raw_logvar, kl
@@ -581,14 +586,19 @@ class DPIFlow(nn.Module):
 
         if self.use_analytical_layer:
             outputs = self.ode_layer.simulate(theta, batch["cycles"], batch["delta_cycles"], batch["csr"])
-            # Обучаемая коррекция поверх аналитики — МОНОТОННО-СОХРАНЯЮЩАЯ ПО ПОСТРОЕНИЮ: residual
-            # масштабирует НЕОТРИЦАТЕЛЬНЫЕ приращения базовой ODE-кривой множителем (1+0.1·tanh)∈[0.9,1.1],
-            # т.е. меняет ТЕМП накопления PPR на ±10%, но НИКОГДА не делает кривую убывающей. Поэтому
-            # физическая монотонность гарантирована независимо от post-hoc cummax (модель не может
-            # попасть в «physically unreliable» из-за residual). _project_traj оставлен как bound-safety.
+            # Обучаемая коррекция поверх аналитики. При включённой монотонности residual
+            # МОНОТОННО-СОХРАНЯЮЩИЙ ПО ПОСТРОЕНИЮ: масштабирует НЕОТРИЦАТЕЛЬНЫЕ приращения базовой
+            # ODE-кривой множителем (1+0.1·tanh)∈[0.9,1.1] — меняет темп накопления PPR на ±10%, но
+            # никогда не делает кривую убывающей. В абляции ``use_monotone_clip=False`` монотонность
+            # НЕ навязывается: применяется ОБЫЧНЫЙ аддитивный residual (может нарушить монотонность), и
+            # проекция сводится к bound-clamp — только тогда wo_monotone реально измеряет вклад
+            # монотонного допущения (иначе residual делает кривую монотонной, и абляция вырождается).
             tm = outputs["traj_mean"]
             if self.use_traj_residual:
-                tm = monotone_residual_scale(tm, self.traj_residual(encoded))
+                if self.use_monotone_clip:
+                    tm = monotone_residual_scale(tm, self.traj_residual(encoded))
+                else:
+                    tm = tm + 0.10 * torch.tanh(self.traj_residual(encoded))
             outputs["traj_mean"] = self._project_traj(tm)
             # N_liq ДОЛЖЕН соответствовать ФИНАЛЬНОЙ (post-residual + projection) траектории, а не
             # pre-residual ODE-выходу: residual смещает кривую (медиана |ΔN_liq|≈92 цикла), поэтому
@@ -681,7 +691,7 @@ class DPIFlow(nn.Module):
                 last = o
         finally:
             self._force_sample = prev
-        M = torch.stack(means, 0)                 # (K,B,T)
+        M = torch.stack(means, 0) # (K,B,T)
         pred_mean = M.mean(0)
         epistemic = M.var(0, unbiased=False)
         aleatoric = torch.stack(alea_vars, 0).mean(0)
@@ -693,13 +703,17 @@ class DPIFlow(nn.Module):
         out["risk_prob"] = risk_prob
         out["risk_logit"] = torch.log(risk_prob) - torch.log1p(-risk_prob)
         out["traj_epistemic_var"] = epistemic
-        if crrs:                                  # усредняем CRR по MC-сэмплам (для CRR-claim)
+        if crrs: # усредняем CRR по MC-сэмплам (для CRR-claim)
             out["crr"] = torch.stack(crrs, 0).mean(0)
         if nliqs:
-            nn_ = torch.stack(nliqs, 0).mean(0)
+            nn_samples = torch.stack(nliqs, 0)
+            nn_ = nn_samples.mean(0)
             out["nliq_norm"] = nn_
             mcr = torch.as_tensor(self.max_cycle_reference, device=nn_.device, dtype=nn_.dtype)
             out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
+            cyc_samples = torch.expm1(nn_samples * torch.log1p(mcr))
+            out["nliq_q05"] = torch.quantile(cyc_samples, 0.05, dim=0)
+            out["nliq_q95"] = torch.quantile(cyc_samples, 0.95, dim=0)
         return out
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -730,7 +744,7 @@ class DPIFlow(nn.Module):
                     mus.append(o["traj_mean"]); logvars.append(o["traj_logvar"])
             finally:
                 self._force_sample = prev
-            mc_means = torch.stack(mus, 0); mc_logvars = torch.stack(logvars, 0)   # (S, B, T)
+            mc_means = torch.stack(mus, 0); mc_logvars = torch.stack(logvars, 0) # (S, B, T)
             traj_loss = gaussian_mixture_nll(mc_means, mc_logvars, batch["r_obs"], batch["mask"])
             if self.mc_crps_weight > 0.0:
                 samples = mc_means + torch.exp(0.5 * mc_logvars) * torch.randn_like(mc_means)
