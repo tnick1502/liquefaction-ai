@@ -1,9 +1,9 @@
 """
-P0-a: кросс-валидация по ОБЪЕКТАМ (leakage-free) с доверительными интервалами.
+P0-a: кросс-валидация по ПЛОЩАДКАМ (leakage-free) с доверительными интервалами.
 
-Импортируемые функции для ноутбука 3_4_object_cv_and_ci. Два протокола:
+Импортируемые функции для оценочного ноутбука 3_0 (grouped CV + LOO). Два протокола:
   * primary — stratified grouped K-fold (make_grouped_cv_folds);
-  * secondary — leave-one-object-out (make_loo_object_folds).
+  * secondary — leave-one-site-out (legacy helper name: make_loo_object_folds).
 
 API:
     build_folds(meta, config, seed, loo=False, n_splits=5) -> list[fold-dict]
@@ -19,13 +19,11 @@ API:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import torch
 
 from liquefaction_ai.config import set_global_seed
 from liquefaction_ai.data.splits import (make_grouped_cv_folds, make_loo_object_folds,
@@ -35,7 +33,6 @@ from liquefaction_ai.evaluation.metrics import (collect_outputs, compute_metrics
                                                 simultaneous_conformal_coverage,
                                                 per_trajectory_nonconformity,
                                                 conformal_band_quantile)
-from liquefaction_ai.evaluation.p3_ranking import compute_p3_score
 from liquefaction_ai.training.persistence import load_model_metadata
 from liquefaction_ai.training.loop import train_model
 from liquefaction_ai import models as M
@@ -55,8 +52,9 @@ DEFAULT_MODELS = [
     ("tcn", "TCN", False, "torch"),
     ("catboost", "CatBoost", False, "fit"),
 ]
-# Опорная (reference) модель для P³-нормировки.
-P3_REFERENCE = "PINN"
+# Единая опорная модель P³ во всём evaluation pipeline. Fold-level score остаётся
+# диагностикой; публикационный score вычисляется один раз по агрегированным OOF-метрикам.
+P3_REFERENCE = "DPI-Flow"
 
 # Сетки для NESTED object-CV: селекция гиперпараметров ВНУТРИ каждого outer-фолда (по его
 # train/val), а не один раз глобально — устраняет selection leakage в outer-test. Компактные,
@@ -85,7 +83,8 @@ NESTED_GRIDS = {
 # prefix-conditioned forecasting (выбирать модель надо по тому, что она реально прогнозирует).
 NESTED_SELECT_METRIC = "Traj_RMSE_continuation"
 
-METRIC_KEYS = ["P3_Core", "N_liq_logMAE", "N_liq_logMAE_liq", "Traj_RMSE", "Traj_RMSE_continuation",
+METRIC_KEYS = ["N_liq_MAE", "N_liq_RMSE", "N_liq_logMAE", "N_liq_logRMSE",
+               "N_liq_logMAE_liq", "N_liq_n_observed", "Traj_RMSE", "Traj_RMSE_continuation",
                "Traj_RMSE_continuation_balanced", "Traj_RMSE_continuation_worst", "Traj_RMSE_worst",
                "AUROC", "AUPRC", "Brier", "ECE", "Coverage_90", "Coverage_90_splitconf", "Coverage_90_simul",
                "Coverage_90_splitconf_width", "Coverage_90_simul_width",
@@ -93,19 +92,62 @@ METRIC_KEYS = ["P3_Core", "N_liq_logMAE", "N_liq_logMAE_liq", "Traj_RMSE", "Traj
                "Onset_EarlyWarning_Rate", "Physics_Violation_Rate",
                "CRR_RMSE", "N_CRR_test", "N_CRR_objects",
                "CRR_Onset_Coherence_MAE", "N_liq_Coverage_90_liq", "N_liq_Interval_Width_90_liq",
-               "Traj_RMSE_continuation_siteMacro", "N_liq_logMAE_siteMacro", "N_sites_test"]
-# Метрики, передаваемые в P³: используем POST-PREFIX (continuation) траекторию как primary —
-# это соответствует prefix-conditioned forecasting (p3_ranking сам предпочтёт continuation_balanced).
-_P3_INPUT_KEYS = ["N_liq_logMAE", "Traj_RMSE", "Traj_RMSE_balanced", "Traj_RMSE_continuation",
-                  "Traj_RMSE_continuation_balanced", "Traj_RMSE_continuation_worst",
-                  "Brier", "AUPRC", "Physics_Violation_Rate"]
-
-_SAMPLE_COLS = ["repeat", "fold", "model", "sidx", "object", "site_id", "liq_label", "n_liq_observed",
+               "N_liq_Curve_Coherence_MAE", "Risk_Curve_Coherence_Rate",
+               "Traj_RMSE_continuation_siteMacro", "N_liq_logMAE_siteMacro", "N_sites_test",
+               "N_calibration_sites"]
+_SAMPLE_COLS = ["repeat", "fold", "model", "sidx", "object", "site_id", "soil_type", "load_mode",
+                "liq_label", "n_liq_observed", "N_liq_true", "N_liq_raw", "nliq_pred", "nliq_abs_err",
                 "risk_label_observed", "nliq_censor_valid", "continuation_valid", "regime",
                 "risk_prob_pred", "traj_rmse", "traj_rmse_continuation", "traj_sse_continuation",
                 "continuation_points", "coverage90", "coverage90_hits",
-                "nliq_log_err", "physics_violation", "interval_width", "onset_timing_bias_cyc",
-                "mean_pred_std_continuation", "nonconf_max", "conf_q_val", "conf_band_width"]
+                "nliq_log_err", "physics_violation", "physics_decrease_violation",
+                "physics_bounds_violation", "physics_nonfinite_violation", "interval_width",
+                "onset_timing_bias_cyc",
+                "traj_pred_max", "curve_crosses_threshold", "nliq_from_curve", "nliq_curve_gap",
+                "risk_curve_coherent", "mean_pred_std_continuation", "nonconf_max", "conf_q_val",
+                "conf_band_width", "n_calibration_sites"]
+
+
+def publication_model_kwargs(name: str, model_kwargs: Dict, config) -> Dict:
+    """Return self-contained model kwargs for the fixed publication protocol.
+
+    Saved model artifacts are useful initial architecture records, but they may predate a code
+    change. Critical estimand/uncertainty switches are therefore pinned here and serialized in every
+    CV row. Fold-specific grid choices are applied on top of this contract.
+    """
+    out = dict(model_kwargs)
+    if name in {"dpi_flow", "dpi_evt", "evt_ssm"}:
+        out["max_cycle_reference"] = float(config.max_cycle_reference)
+    if name == "dpi_flow":
+        out.update({
+            "probabilistic": True,
+            "use_flow": True,
+            "calibration_steps": 0,
+            "liq_threshold": float(config.liq_threshold),
+            "traj_residual_span": 0.10,
+            "use_free_increment": False,
+            "kl_weight": 0.02,
+        })
+    elif name == "dpi_evt":
+        out.update({
+            "probabilistic": True,
+            "use_flow": False,
+            "nliq_from_curve": True,
+            "report_nliq_from_curve": True,
+            "calibration_steps": 0,
+            "liq_threshold": float(config.liq_threshold),
+            "traj_residual_span": 0.10,
+            "use_free_increment": False,
+        })
+    elif name == "evt_ssm":
+        out["liq_threshold"] = float(config.liq_threshold)
+    return out
+
+
+def _record_selected_kwargs(model, model_kwargs: Dict, nested: bool) -> None:
+    """Attach fold-local architecture metadata without changing model behaviour."""
+    model._evaluation_model_kwargs = dict(model_kwargs)
+    model._evaluation_nested_selection = bool(nested)
 
 
 def build_folds(meta: pd.DataFrame, config, seed: int = 42, loo: bool = False,
@@ -135,18 +177,20 @@ def _train_one(name: str, disp: str, is_phys: bool, trainer: str, train, val,
         # конструируем и обучаем нативным .fit (без train_model / .to(device)).
         hp = json.loads((Path(models_dir) / name / "hyperparams.json").read_text(encoding="utf-8"))
         cls = getattr(M, hp["model_type"])
-        base = dict(hp["model_kwargs"])
+        base = publication_model_kwargs(name, hp["model_kwargs"], config)
         grid = NESTED_GRIDS.get(name) if nested else None
         if not grid:
             set_global_seed(seed + fold_id)
-            return cls(**base).fit(train, val)
+            model = cls(**base).fit(train, val)
+            _record_selected_kwargs(model, base, nested=False)
+            return model
         from itertools import product
         from liquefaction_ai.training.losses import risk_observation_mask
         keys = list(grid)
         obs = risk_observation_mask(val)
         mask = (obs.detach().cpu().numpy() > 0.5) if obs is not None else np.ones(len(val["label"]), bool)
         y = val["label"].detach().cpu().numpy()[mask]
-        best_score, best_model = float("inf"), None
+        best_score, best_model, best_params = float("inf"), None, None
         for values in product(*[grid[k] for k in keys]):
             params = {**base, **dict(zip(keys, values))}
             set_global_seed(seed + fold_id)
@@ -154,11 +198,14 @@ def _train_one(name: str, disp: str, is_phys: bool, trainer: str, train, val,
             p = candidate.forward_batch(val)["risk_prob"].detach().cpu().numpy()[mask]
             score = float(np.mean((p - y) ** 2))
             if score < best_score:
-                best_score, best_model = score, candidate
+                best_score, best_model, best_params = score, candidate, params
+        if best_model is None or best_params is None:
+            raise RuntimeError(f"nested selection produced no candidate for '{name}'")
+        _record_selected_kwargs(best_model, best_params, nested=True)
         return best_model
     hp, _ = load_model_metadata(models_dir, name)
     cls = getattr(M, hp["model_type"])
-    model_kwargs = hp["model_kwargs"]
+    model_kwargs = publication_model_kwargs(name, hp["model_kwargs"], config)
     grid = NESTED_GRIDS.get(name) if nested else None
     if grid:
         # Подбираем ручки, которые конструктор модели РЕАЛЬНО принимает (сверка с СИГНАТУРОЙ, а не с
@@ -175,7 +222,7 @@ def _train_one(name: str, disp: str, is_phys: bool, trainer: str, train, val,
     if grid:
         # Внутренняя селекция: короткий grid-search по train/val ТЕКУЩЕГО фолда (outer-test не виден).
         from liquefaction_ai.training.search import grid_search
-        base = {k: v for k, v in hp["model_kwargs"].items() if k not in grid}
+        base = {k: v for k, v in model_kwargs.items() if k not in grid}
         _, best = grid_search(lambda p: cls(**{**base, **p}), grid, train, val, config, device,
                               search_epochs=getattr(config, "grid_search_epochs", 8),
                               score_metric=NESTED_SELECT_METRIC)
@@ -188,13 +235,14 @@ def _train_one(name: str, disp: str, is_phys: bool, trainer: str, train, val,
     # по best-val (patience/min_delta из config). Потолок эпох высокий — реально остановит ES.
     model, _ = train_model(model, train, val, epochs=epochs, model_name=f"{disp}(f{fold_id})",
                            config=config, device=device, verbose=False, scheduler="cosine")
+    _record_selected_kwargs(model, model_kwargs, nested=bool(grid))
     return model
 
 
 def evaluate_fold(pop: Dict, config, fold_split: Dict, fold_id: int, device,
                   models: List = None, quick: bool = False, seed: int = 42,
                   models_dir: str = "models", nested: bool = False,
-                  strict: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                  strict: bool = True, p3_reference: str = P3_REFERENCE) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Обучить модели на одном фолде и вернуть (per-model метрики, per-sample выходы).
 
     Возвращаемые таблицы содержат поля ``repeat``/``fold`` для корректной агрегации repeated CV и
@@ -204,18 +252,20 @@ def evaluate_fold(pop: Dict, config, fold_split: Dict, fold_id: int, device,
     repeat = int(fold_split.get("repeat", 0))
     bench = prepare_benchmark_dataset(pop, config, device, precomputed_split=fold_split)
     train, val, test = bench["train"], bench["val"], bench["test"]
-    per_model, samples = {}, []
+    per_model, samples, selected_meta = {}, [], {}
     for name, disp, is_phys, trainer in models:
         try:
             if quick and trainer == "torch":
                 # дымовой режим: короткие demo-эпохи
                 hp, _ = load_model_metadata(models_dir, name)
                 cls = getattr(M, hp["model_type"]); set_global_seed(seed + fold_id)
-                model = cls(**hp["model_kwargs"]).to(device)
+                quick_kwargs = publication_model_kwargs(name, hp["model_kwargs"], config)
+                model = cls(**quick_kwargs).to(device)
                 ep = config.physics_epochs if is_phys else config.baseline_epochs
                 model, _ = train_model(model, train, val, epochs=ep, model_name=f"{disp}(f{fold_id})",
                                        config=config, device=device, verbose=False,
                                        scheduler="cosine" if is_phys else "none")
+                _record_selected_kwargs(model, quick_kwargs, nested=False)
             else:
                 model = _train_one(name, disp, is_phys, trainer, train, val, config, device,
                                    fold_id, seed, models_dir, nested=nested)
@@ -234,6 +284,11 @@ def evaluate_fold(pop: Dict, config, fold_split: Dict, fold_id: int, device,
                           f"Coverage может быть некорректным: {type(e).__name__}: {e}")
             test_out = collect_outputs(model, test, config, device)
             met, sdf = compute_metrics(disp, test_out, test, config)
+            _cal_group = "site_id" if "site_id" in val["meta"].columns else "object"
+            _n_cal_sites = int(val["meta"][_cal_group].nunique())
+            met["N_calibration_sites"] = _n_cal_sites
+            sdf = sdf.copy()
+            sdf["n_calibration_sites"] = _n_cal_sites
             # conformal-скоры считаем на POST-PREFIX (continuation) маске, как и headline-метрики:
             # наблюдаемый префикс модель видит как контекст и тривиально его накрывает.
             def _cont_mask(split):
@@ -300,10 +355,14 @@ def evaluate_fold(pop: Dict, config, fold_split: Dict, fold_id: int, device,
                     if strict:
                         raise RuntimeError(f"band-quantile '{disp}' fold {fold_id}: "
                                            f"{type(e).__name__}: {e}") from e
-                sdf = sdf.copy(); sdf["nonconf_max"] = _nc; sdf["conf_q_val"] = _qcal
+                sdf["nonconf_max"] = _nc; sdf["conf_q_val"] = _qcal
                 if "mean_pred_std_continuation" in sdf.columns:
                     sdf["conf_band_width"] = 2.0 * _qcal * sdf["mean_pred_std_continuation"]
             per_model[disp] = met
+            selected_meta[disp] = {
+                "nested": bool(getattr(model, "_evaluation_nested_selection", False)),
+                "kwargs": dict(getattr(model, "_evaluation_model_kwargs", {})),
+            }
             samples.append(_samples_frame(sdf, disp, fold_id, repeat))
         except Exception as e:
             # По умолчанию (strict=True) НЕ глотаем: молчаливый пропуск модели на фолде даёт ей
@@ -312,21 +371,14 @@ def evaluate_fold(pop: Dict, config, fold_split: Dict, fold_id: int, device,
                 raise RuntimeError(f"модель '{disp}' упала на fold {fold_id}: {type(e).__name__}: {e}") from e
             print(f" [WARN] модель '{disp}' пропущена на fold {fold_id}: {type(e).__name__}: {e}")
 
-    df_p3 = pd.DataFrame([{"model": d, **{k: per_model[d].get(k) for k in _P3_INPUT_KEYS}}
-                          for d in per_model])
-    try:
-        ref = P3_REFERENCE if P3_REFERENCE in df_p3["model"].values else df_p3["model"].iloc[0]
-        scored = compute_p3_score(df_p3, ref, "core")
-        p3 = dict(zip(scored["model"], scored["P3_Core_Raw_Score"]))
-    except Exception:
-        p3 = {d: float("nan") for d in per_model}
-
     rows = []
     for disp, met in per_model.items():
         row = {"repeat": repeat, "fold": fold_id,
                "test_object": str(fold_split.get("test_object", "")), "model": disp,
-               "P3_Core": p3.get(disp, float("nan"))}
-        row.update({k: met.get(k) for k in METRIC_KEYS if k != "P3_Core"})
+               "P3_reference": p3_reference,
+               "nested_selection_applied": selected_meta[disp]["nested"],
+               "selected_model_kwargs": json.dumps(selected_meta[disp]["kwargs"], sort_keys=True, default=str)}
+        row.update({k: met.get(k) for k in METRIC_KEYS})
         rows.append(row)
     return pd.DataFrame(rows), pd.concat(samples, ignore_index=True)
 
@@ -335,8 +387,7 @@ def aggregate_cv(raw_df: pd.DataFrame, metric_keys: Optional[List[str]] = None) 
     """Свести per-fold метрики в mean и SD между фолдами; inferential CI считаются site-bootstrap."""
     cols = [c for c in (metric_keys or METRIC_KEYS) if c in raw_df.columns]
     agg = raw_df.groupby("model")[cols].agg(["mean", "std", "count"])
-    # n_folds = число строк-фолдов модели (а НЕ count ненулевого P3_Core: у CatBoost P3 может быть
-    # NaN → раньше n_folds=0). Берём размер группы, который не зависит от наличия конкретной метрики.
+    # n_folds = число строк-фолдов модели, а не count произвольной метрики, которая может быть NaN.
     fold_counts = raw_df.groupby("model").size()
     rows = []
     for model in agg.index:
@@ -347,7 +398,64 @@ def aggregate_cv(raw_df: pd.DataFrame, metric_keys: Optional[List[str]] = None) 
             rec[f"{c}_mean"] = round(mean, 4)
             rec[f"{c}_fold_sd"] = round(std, 4)
         rows.append(rec)
-    return pd.DataFrame(rows).sort_values("P3_Core_mean", ascending=False).reset_index(drop=True)
+    result = pd.DataFrame(rows)
+    sort_col = "Traj_RMSE_continuation_mean" if "Traj_RMSE_continuation_mean" in result.columns else None
+    if sort_col is not None:
+        result = result.sort_values(sort_col)
+    return result.reset_index(drop=True)
+
+
+def nliq_tail_tables(samples_df: pd.DataFrame, top_k_per_model: int = 20,
+                     catastrophic_cycles: float = 1000.0) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Build auditable N_liq tail/coherence tables from one complete OOF pass.
+
+    The detailed table keeps the largest valid censored errors per model. The summary exposes
+    median/p95/max error and counts catastrophic early-onset predictions, together with agreement
+    between the risk head and the model's own trajectory crossing.
+    """
+    required = {"model", "nliq_abs_err", "nliq_pred", "N_liq_true", "liq_label"}
+    missing = sorted(required - set(samples_df.columns))
+    if missing:
+        raise ValueError(f"N_liq tail audit requires columns: {missing}")
+    df = samples_df.copy()
+    if "repeat" in df.columns:
+        df = df[df["repeat"] == df["repeat"].min()].copy()
+    err = pd.to_numeric(df["nliq_abs_err"], errors="coerce")
+    df = df[np.isfinite(err)].copy()
+    df["nliq_abs_err"] = pd.to_numeric(df["nliq_abs_err"], errors="coerce")
+    if df.empty:
+        raise ValueError("N_liq tail audit has no valid censored observations")
+    df["catastrophic_nliq_error"] = df["nliq_abs_err"] >= float(catastrophic_cycles)
+    df["outcome"] = np.where(df["liq_label"].to_numpy() > 0.5, "liquefied", "non_liquefied")
+
+    detail = (df.sort_values(["model", "nliq_abs_err"], ascending=[True, False])
+                .groupby("model", group_keys=False).head(int(top_k_per_model)).copy())
+    detail["tail_rank"] = detail.groupby("model")["nliq_abs_err"].rank(method="first", ascending=False).astype(int)
+    detail_cols = [
+        "model", "tail_rank", "repeat", "fold", "site_id", "object", "soil_type", "load_mode",
+        "regime", "outcome", "N_liq_raw", "N_liq_true", "nliq_pred", "nliq_abs_err",
+        "nliq_log_err", "risk_prob_pred", "traj_pred_max", "curve_crosses_threshold",
+        "nliq_from_curve", "nliq_curve_gap", "risk_curve_coherent", "catastrophic_nliq_error",
+    ]
+    detail = detail[[c for c in detail_cols if c in detail.columns]].reset_index(drop=True)
+
+    rows = []
+    for model, g in df.groupby("model"):
+        e = g["nliq_abs_err"].to_numpy(dtype=float)
+        coherent = (pd.to_numeric(g["risk_curve_coherent"], errors="coerce").dropna().to_numpy()
+                    if "risk_curve_coherent" in g.columns else np.array([], dtype=float))
+        rows.append({
+            "model": model,
+            "n_valid": int(len(e)),
+            "N_liq_MAE": float(np.mean(e)),
+            "N_liq_median_AE": float(np.median(e)),
+            "N_liq_p95_AE": float(np.quantile(e, 0.95)),
+            "N_liq_max_AE": float(np.max(e)),
+            f"N_error_ge_{int(catastrophic_cycles)}": int(np.sum(e >= catastrophic_cycles)),
+            "risk_curve_coherence_rate": float(np.mean(coherent)) if coherent.size else float("nan"),
+        })
+    summary = pd.DataFrame(rows).sort_values("N_liq_p95_AE", ascending=False).reset_index(drop=True)
+    return detail, summary
 
 
 def aggregate_object_conformal(samples_df: pd.DataFrame, level: float = 0.90,

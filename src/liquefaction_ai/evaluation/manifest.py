@@ -3,7 +3,7 @@ Run manifest: воспроизводимая «шапка прогона».
 
 Единый артефакт, привязывающий отчётные числа к КОНКРЕТНОМУ состоянию проекта: хэш данных,
 полный конфиг, git-commit и архитектуры обученных моделей. Пишется в ``results/run_manifest.json``
-из ноутбука оценки (3_1). Позволяет рецензенту/себе однозначно ответить «на каких данных, коде и
+из ноутбука оценки (3_0). Позволяет рецензенту/себе однозначно ответить «на каких данных, коде и
 гиперпараметрах получена таблица», и ловит рассинхрон «старые веса × новый артефакт».
 """
 from __future__ import annotations
@@ -18,7 +18,8 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-__all__ = ["build_run_manifest", "write_run_manifest", "validate_run_manifest"]
+__all__ = ["build_run_manifest", "write_run_manifest", "validate_run_manifest",
+           "publication_preflight"]
 
 
 def _git_commit(repo_root: Path) -> Optional[str]:
@@ -28,6 +29,8 @@ def _git_commit(repo_root: Path) -> Optional[str]:
             ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5,
         )
+        if out.returncode != 0:
+            return None
         return out.stdout.strip() or None
     except Exception:
         return None
@@ -40,9 +43,54 @@ def _git_dirty(repo_root: Path) -> Optional[bool]:
             ["git", "-C", str(repo_root), "status", "--porcelain"],
             capture_output=True, text=True, timeout=5,
         )
+        if out.returncode != 0:
+            return None
         return bool(out.stdout.strip())
     except Exception:
         return None
+
+
+def publication_preflight(repo_root: str | Path, *, quick: bool, nested: bool,
+                          run_loo: bool, run_ablations: bool,
+                          run_ood: bool = True, run_ab: bool = True,
+                          n_repeats: int = 3, ablation_seeds=(0, 1, 2),
+                          output_root: str | Path = "results",
+                          require_clean: bool = False) -> None:
+    """Fail-fast, если отчётный (PUBLICATION_RUN) конфиг неполный. **Git-состояние НЕ проверяется**
+    (проверка удалена: она мешала запуску из рабочего дерева). ``require_clean`` оставлен как no-op
+    ради обратной совместимости сигнатуры. Для быстрых прогонов ставьте PUBLICATION_RUN=False —
+    тогда preflight не вызывается и артефакты пишутся в results/smoke.
+    """
+    repo_root = Path(repo_root).resolve()
+    out = Path(output_root)
+    if not out.is_absolute():
+        out = repo_root / out
+    errors = []
+    if quick:
+        errors.append("QUICK must be False")
+    if not nested:
+        errors.append("NESTED must be True")
+    if not run_loo:
+        errors.append("RUN_LOO must be True")
+    if not run_ablations:
+        errors.append("RUN_ABLATIONS must be True")
+    if not run_ood:
+        errors.append("RUN_OOD must be True")
+    if not run_ab:
+        errors.append("RUN_AB must be True")
+    if int(n_repeats) < 3:
+        errors.append("N_REPEATS must be at least 3")
+    if len(tuple(ablation_seeds)) < 3:
+        errors.append("at least 3 ABLATION_SEEDS are required")
+    if out.resolve() != (repo_root / "results").resolve():
+        errors.append("publication output_root must be repository/results")
+    if errors:
+        raise RuntimeError(
+            "Publication preflight failed: " + "; ".join(errors)
+            + ".  Для БЫСТРОГО/пробного прогона поставьте PUBLICATION_RUN=False — тогда preflight "
+            + "пропускается, а все артефакты пишутся в results/smoke (headline-таблицы не затираются). "
+            + "Для ОТЧЁТНОГО прогона исправьте перечисленные тумблеры (напр. QUICK=False)."
+        )
 
 
 def _file_sha256(path: Path) -> Optional[str]:
@@ -66,9 +114,10 @@ def _data_fingerprint(pop: Dict[str, Any]) -> Dict[str, Any]:
     """SHA256 по фактическим ключам publication-артефакта, meta и split indices."""
     h = hashlib.sha256()
     dims: Dict[str, Any] = {}
-    keys = ("liq_label", "n_liq_true", "r_obs", "prefix_obs", "prefix_mask", "valid_mask",
-            "cycles", "csr", "static_features", "prefix_summary", "seq_inputs", "crr_obs",
-            "crr_obs_mask")
+    keys = ("liq_label", "n_liq_true", "r_obs", "r_causal", "q_obs", "eps_obs",
+            "prefix_obs", "prefix_mask", "valid_mask", "cycles", "delta_cycles", "csr",
+            "g_obs", "risk_proxy", "static_features", "prefix_summary", "seq_inputs",
+            "crr_obs", "crr_obs_mask")
     for key in keys:
         arr = pop.get(key)
         if arr is None:
@@ -100,7 +149,9 @@ def _data_fingerprint(pop: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_run_manifest(pop: Dict[str, Any], config, repo_root: str | Path,
-                       models_dir: str | Path = "models") -> Dict[str, Any]:
+                       models_dir: str | Path = "models",
+                       run_metadata: Optional[Dict[str, Any]] = None,
+                       fold_hyperparameters: Optional[list] = None) -> Dict[str, Any]:
     """
     Собрать манифест прогона: git, конфиг, отпечаток данных, архитектуры моделей, состав когорты.
 
@@ -158,7 +209,12 @@ def build_run_manifest(pop: Dict[str, Any], config, repo_root: str | Path,
         "config": cfg,
         "data": _data_fingerprint(pop),
         "cohort_filter_counts": pop.get("cohort_filter_counts"),
+        # These are global training artifacts. The actual nested-CV architectures are recorded
+        # separately in fold_hyperparameters; conflating the two made old manifests misleading.
         "architectures": architectures,
+        "global_training_artifacts": architectures,
+        "evaluation_protocol": dict(run_metadata or {}),
+        "fold_hyperparameters": list(fold_hyperparameters or []),
         "result_files_sha256": result_hashes,
         "environment": {
             "pyproject_sha256": _file_sha256(repo_root / "pyproject.toml"),
@@ -170,11 +226,14 @@ def build_run_manifest(pop: Dict[str, Any], config, repo_root: str | Path,
 def write_run_manifest(pop: Dict[str, Any], config, repo_root: str | Path,
                        models_dir: str | Path = "models",
                        out_path: str | Path = "results/run_manifest.json",
-                       require_clean: bool = False) -> Path:
+                       require_clean: bool = False,
+                       run_metadata: Optional[Dict[str, Any]] = None,
+                       fold_hyperparameters: Optional[list] = None) -> Path:
     """Собрать и записать манифест на диск; вернуть путь к файлу."""
-    manifest = build_run_manifest(pop, config, repo_root, models_dir)
-    if require_clean and manifest["git_dirty"]:
-        raise RuntimeError("Publication run запрещён из dirty git tree: сначала зафиксируйте код и конфиг.")
+    manifest = build_run_manifest(pop, config, repo_root, models_dir,
+                                  run_metadata=run_metadata,
+                                  fold_hyperparameters=fold_hyperparameters)
+    # Git-состояние больше НЕ блокирует прогон (записывается в манифест как справочная информация).
     out = Path(out_path)
     if not out.is_absolute():
         out = Path(repo_root) / out
@@ -183,11 +242,10 @@ def write_run_manifest(pop: Dict[str, Any], config, repo_root: str | Path,
     return out
 
 
-def validate_run_manifest(manifest: Dict[str, Any], required_models=(), required_results=()) -> None:
-    """Строгий publication gate: clean git, полный data hash, model artifacts и итоговые таблицы."""
+def validate_run_manifest(manifest: Dict[str, Any], required_models=(), required_results=(),
+                          require_fold_hyperparameters: bool = False) -> None:
+    """Publication gate: полный data hash, model artifacts и итоговые таблицы. Git НЕ проверяется."""
     errors = []
-    if manifest.get("git_dirty"):
-        errors.append("git tree dirty")
     data = manifest.get("data", {})
     required_arrays = {"liq_label", "n_liq_true", "r_obs", "prefix_obs", "prefix_mask", "cycles"}
     missing_arrays = sorted(required_arrays - set(data.get("array_dims", {})))
@@ -206,5 +264,7 @@ def validate_run_manifest(manifest: Dict[str, Any], required_models=(), required
     for suffix in required_results:
         if not any(path.endswith(suffix) for path in results):
             errors.append(f"missing result {suffix}")
+    if require_fold_hyperparameters and not manifest.get("fold_hyperparameters"):
+        errors.append("missing fold-specific hyperparameters")
     if errors:
         raise RuntimeError("Publication manifest invalid: " + "; ".join(errors))

@@ -18,7 +18,7 @@ DPI-EVT — объединённая модель: идентификация ф
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict
 
 import torch
 import torch.nn as nn
@@ -28,9 +28,11 @@ from liquefaction_ai.models.dpi_flow import ConditionalCouplingFlow, flow_kl_per
 from liquefaction_ai.models.evt_ssm import EVTNeuralSSM
 from liquefaction_ai.models.heads import physics_summary
 from liquefaction_ai.training.losses import (energy_crps, gaussian_nll, gaussian_mixture_nll,
+                                             interpolated_crossing,
                                              masked_bce_with_logits, masked_censored_nliq_loss, masked_mean,
                                              masked_mse, monotone_clip, monotone_residual_scale,
-                                             nliq_censor_mask, risk_observation_mask, soft_auc_loss)
+                                             normalized_free_increments, nliq_censor_mask,
+                                             risk_observation_mask, soft_auc_loss)
 
 __all__ = ["DPIEvtNet"]
 
@@ -42,9 +44,11 @@ class DPIEvtNet(EVTNeuralSSM):
                  max_cycle_reference: float, hidden_dim: int = 144, probabilistic: bool = True,
                  use_flow: bool = True, crr_from_damage: bool = True, crr_mode: str = None,
                  nliq_from_curve: bool = True, calibration_steps: int = 0, calibration_lr: float = 0.05,
-                 use_traj_residual: bool = False, liq_threshold: float = 0.95,
+                 use_traj_residual: bool = False, traj_residual_span: float = 0.10,
+                 use_free_increment: bool = False, liq_threshold: float = 0.95,
                  use_observed_aux_loss: bool = True,
                  mc_train_samples: int = 0, mc_crps_weight: float = 0.0, mc_predict_samples: int = 0,
+                 report_nliq_from_curve: bool = True, nliq_head_aux_weight: float = 0.10,
                  **kwargs):
         """
         :param crr_mode: "damage" | "empirical" | "hybrid" | "decoupled" (см. модульную документацию)
@@ -52,6 +56,9 @@ class DPIEvtNet(EVTNeuralSSM):
         :param calibration_steps: число шагов дифференцируемой калибровки θ по префиксу (0 = выкл)
         :param use_traj_residual: малый zero-init резидуал поверх траектории движка
         :param liq_threshold: порог PPR для определения разжижения (для N_liq из кривой)
+        :param report_nliq_from_curve: публиковать физическое пересечение PPR как N_liq; direct head
+            при этом остаётся auxiliary-головой
+        :param nliq_head_aux_weight: вес censored-loss auxiliary N_liq-головы
         """
         super().__init__(static_dim, prefix_dim, seq_dim, seq_len, prefix_len, max_cycle_reference,
                          hidden_dim=hidden_dim, **kwargs)
@@ -70,6 +77,8 @@ class DPIEvtNet(EVTNeuralSSM):
         self.mc_train_samples = int(mc_train_samples)
         self.mc_crps_weight = float(mc_crps_weight)
         self.mc_predict_samples = int(mc_predict_samples)
+        self.report_nliq_from_curve = bool(report_nliq_from_curve)
+        self.nliq_head_aux_weight = float(nliq_head_aux_weight)
         self._force_sample = False
         self.logvar_head = nn.Linear(hidden_dim, 33)
         # Conditional RealNVP с latent-зависимым coupling и log-det (вместо диагонального flow).
@@ -79,6 +88,13 @@ class DPIEvtNet(EVTNeuralSSM):
                                            nn.Linear(hidden_dim, seq_len))
         nn.init.zeros_(self.traj_residual[-1].weight)
         nn.init.zeros_(self.traj_residual[-1].bias)
+        self.traj_residual_span = float(traj_residual_span)
+        # Выразительный монотонный канал: gate задаёт ОБЩУЮ неотрицательную массу коррекции,
+        # softmax-голова распределяет её по сетке. Масштаб не зависит от seq_len; gate=-6 даёт
+        # почти no-op (~0.0025 PPR суммарно). Монотонность и ru≤1 сохранены по построению.
+        self.use_free_increment = bool(use_free_increment)
+        self.free_increment_head = nn.Linear(hidden_dim, seq_len)
+        self.free_increment_gate = nn.Parameter(torch.tensor(-6.0))
 
     # ---------- DPI: идентификация θ ----------
     def infer_theta(self, encoded):
@@ -173,16 +189,20 @@ class DPIEvtNet(EVTNeuralSSM):
             dn = dcyc[:, step + 1]
             dz1, dr1, dc1 = derivatives(z_curr, r_curr, c_curr, g_step, step)
             if self.integrator == "heun":
-                z_e = torch.clamp(z_curr + dn * dz1, 0.0, 0.999); r_e = torch.clamp(r_curr + dn * dr1, 0.0, 1.02)
+                z_e = torch.clamp(z_curr + dn * dz1, 0.0, 0.999); r_e = torch.clamp(r_curr + dn * dr1, 0.0, 1.0)
                 c_e = torch.tanh(params["c_decay"] * c_curr + dc1)
                 dz2, dr2, dc2 = derivatives(z_e, r_e, c_e, trigger(z_e), step)
                 dz_s, dr_s, dc_s = 0.5 * (dz1 + dz2), 0.5 * (dr1 + dr2), 0.5 * (dc1 + dc2)
             else:
                 dz_s, dr_s, dc_s = dz1, dr1, dc1
-            z_curr = torch.clamp(z_curr + dn * dz_s, 0.0, 0.999); r_curr = torch.clamp(r_curr + dn * dr_s, 0.0, 1.02)
+            z_curr = torch.clamp(z_curr + dn * dz_s, 0.0, 0.999)
+            # Урон необратим: без проекции нейронная поправка dz_c<0 роняет z и триггер g на хвосте.
+            z_curr = torch.maximum(z_curr, zs[-1])
+            r_curr = torch.clamp(r_curr + dn * dr_s, 0.0, 1.0)
             c_curr = torch.tanh(params["c_decay"] * c_curr + dc_s)
             zs.append(z_curr); rs.append(r_curr); cs.append(c_curr)
-        return torch.stack(zs, 1), torch.stack(rs, 1), torch.stack(cs, 1), torch.stack(gs, 1)
+        # Поглощающее событие: триггер g неубывающий (z уже спроецирован; cummax — явная гарантия).
+        return torch.stack(zs, 1), torch.stack(rs, 1), torch.stack(cs, 1), torch.cummax(torch.stack(gs, 1), dim=1).values
 
     # ---------- дифференцируемая калибровка θ по префиксу (DPI-identification) ----------
     def calibrate_theta(self, latent, encoded, batch):
@@ -206,13 +226,17 @@ class DPIEvtNet(EVTNeuralSSM):
 
     # ---------- N_liq из кривой PPR ----------
     def _nliq_from_curve(self, r, cycles, beta: float = 25.0):
-        """Дифференцируемый момент пересечения порога ru монотонной кривой PPR. Возвращает (N_liq, pdf, mass)."""
+        """Дифференцируемый момент пересечения порога ru монотонной кривой PPR. Возвращает (N_liq, pdf, mass).
+
+        N_liq считается ЖЁСТКОЙ линейной интерполяцией пересечения (``interpolated_crossing``): оценка
+        лежит ТОЧНО на кривой между узлами-скобками и не смещена размазыванием ``(pdf·cycles).sum()``
+        по редким поздним узлам лог-сетки (систематический сдвиг тайминга у DPI-EVT). Мягкие pdf/mass
+        по-прежнему возвращаются для supervision CRR-в-момент-разжижения (cross_pdf/cross_mass)."""
         p = torch.sigmoid(beta * (r - self.liq_threshold)) # монотонно растёт (r монотонна)
         dp = torch.clamp(p[:, 1:] - p[:, :-1], min=0.0)
-        pdf = torch.cat([p[:, :1], dp], dim=1) # масса пересечения по шагам
+        pdf = torch.cat([p[:, :1], dp], dim=1) # мягкая масса пересечения по шагам (для CRR@crossing)
         mass = pdf.sum(dim=1)
-        resid = torch.clamp(1.0 - mass, min=0.0) # не пересёк → цензура на последнем цикле
-        nliq = (pdf * cycles).sum(dim=1) + resid * cycles[:, -1]
+        nliq = interpolated_crossing(r, cycles, self.liq_threshold, beta=beta)
         return nliq, pdf, mass
 
     def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -225,11 +249,16 @@ class DPIEvtNet(EVTNeuralSSM):
         crr_dyn, crr_out, crr_cons = self._compute_crr_pair(encoded, params, batch["cycles"])
 
         z, r, c, g = self._engine(encoded, params, crr_dyn, batch)
-        if self.use_traj_residual:
-            # МОНОТОННО-СОХРАНЯЮЩАЯ коррекция (масштаб приращений ±10%, не уровней): кривая остаётся
-            # неубывающей по построению, residual не может сделать модель «physically unreliable».
-            r = monotone_residual_scale(r, self.traj_residual(encoded))
-        r = monotone_clip(r)
+        if self.use_traj_residual or self.use_free_increment:
+            # МОНОТОННО-СОХРАНЯЮЩАЯ коррекция: ±span масштаб темпа + опц. свободный неотрицательный
+            # аддитивный канал. Кривая остаётся неубывающей по построению (не «physically unreliable»).
+            resid = self.traj_residual(encoded) if self.use_traj_residual else torch.zeros_like(r)
+            free = None
+            if self.use_free_increment:
+                free = normalized_free_increments(
+                    self.free_increment_head(encoded), self.free_increment_gate)
+            r = monotone_residual_scale(r, resid, span=self.traj_residual_span, free_increment=free)
+        r = monotone_clip(r, hi=1.0) # ru≤1 физически (не 1.05)
 
         mcr = torch.as_tensor(self.max_cycle_reference, device=r.device, dtype=r.dtype)
         if self.nliq_from_curve:
@@ -238,8 +267,13 @@ class DPIEvtNet(EVTNeuralSSM):
             nliq_curve = self.soft_first_hitting(r, g, batch["cycles"])
             cross_pdf = torch.zeros_like(r); cross_mass = torch.zeros(r.shape[0], device=r.device)
         nliq_norm_curve = torch.log1p(nliq_curve) / torch.log1p(mcr)
-        # Выделенная N_liq-голова (robust на OOD) заменяет/уточняет пересечение; consistency в лоссе.
-        nliq, nliq_norm, nliq_norm_curve = self._apply_nliq_head(encoded, nliq_norm_curve, mcr)
+        # Direct head остаётся auxiliary-предиктором. Headline DPI-EVT публикует физически проверяемое
+        # пересечение финальной PPR-кривой; это исключает скрытое рассогласование «N_liq не лежит на PPR».
+        nliq_head, nliq_norm_head, nliq_norm_curve = self._apply_nliq_head(encoded, nliq_norm_curve, mcr)
+        if self.report_nliq_from_curve:
+            nliq, nliq_norm = nliq_curve, nliq_norm_curve
+        else:
+            nliq, nliq_norm = nliq_head, nliq_norm_head
         summary = physics_summary(r, z, g, nliq_norm)
         risk_prior = 6.0 * (0.50 * r.amax(dim=1) + 0.25 * g.amax(dim=1) + 0.25 * z.amax(dim=1) - 0.75)
         risk_logit = (self.risk_clf(encoded).squeeze(-1) + self.prior_gate * risk_prior
@@ -254,6 +288,7 @@ class DPIEvtNet(EVTNeuralSSM):
             "traj_mean": r, "ru": r, "damage": z, "traj_logvar": traj_logvar,
             "risk_logit": risk_logit, "risk_prob": torch.sigmoid(risk_logit),
             "nliq": nliq, "nliq_norm": nliq_norm, "nliq_norm_curve": nliq_norm_curve,
+            "nliq_head": nliq_head, "nliq_norm_head": nliq_norm_head,
             "z": z, "g": g, "c": c, "crr": crr_out, "kl": kl,
             "crr_consistency": crr_cons, "cross_pdf": cross_pdf, "cross_mass": cross_mass,
         }
@@ -295,10 +330,23 @@ class DPIEvtNet(EVTNeuralSSM):
             out["crr"] = torch.stack(crrs, 0).mean(0)
         if nliqs:
             nn_samples = torch.stack(nliqs, 0)
-            nn_ = nn_samples.mean(0)
-            out["nliq_norm"] = nn_
-            mcr = torch.as_tensor(self.max_cycle_reference, device=nn_.device, dtype=nn_.dtype)
-            out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
+            mcr = torch.as_tensor(self.max_cycle_reference, device=out["traj_mean"].device,
+                                  dtype=out["traj_mean"].dtype)
+            if self.report_nliq_from_curve:
+                # Point estimate согласуем с опубликованной MC-средней траекторией. Квантили ниже
+                # остаются квантилями индивидуальных crossing и сохраняют эпистемическую вариацию.
+                nliq_point, cross_pdf, cross_mass = self._nliq_from_curve(
+                    out["traj_mean"], batch["cycles"],
+                )
+                out["nliq"] = nliq_point
+                out["nliq_norm"] = torch.log1p(nliq_point) / torch.log1p(mcr)
+                out["nliq_norm_curve"] = out["nliq_norm"]
+                out["cross_pdf"] = cross_pdf
+                out["cross_mass"] = cross_mass
+            else:
+                nn_ = nn_samples.mean(0)
+                out["nliq_norm"] = nn_
+                out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
             cyc_samples = torch.expm1(nn_samples * torch.log1p(mcr))
             out["nliq_q05"] = torch.quantile(cyc_samples, 0.05, dim=0)
             out["nliq_q95"] = torch.quantile(cyc_samples, 0.95, dim=0)
@@ -334,6 +382,14 @@ class DPIEvtNet(EVTNeuralSSM):
                      else out["risk_logit"].sum() * 0.0)
         nliq_loss = masked_censored_nliq_loss(out["nliq_norm"], batch["n_liq_norm"],
                                               batch["label"], nliq_censor_mask(batch))
+        # При curve-first output direct head обучается отдельно как auxiliary fallback. Не дублируем
+        # этот loss в legacy head-first режиме, где основной nliq_loss уже приложен к той же голове.
+        if self.report_nliq_from_curve and getattr(self, "use_nliq_head", False):
+            nliq_head_loss = masked_censored_nliq_loss(
+                out["nliq_norm_head"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch),
+            )
+        else:
+            nliq_head_loss = torch.zeros((), device=out["traj_mean"].device)
         switch_reg = torch.abs(out["g"][:, 1:] - out["g"][:, :-1]).mean()
         state_smooth = (torch.abs(out["traj_mean"][:, 2:] - 2 * out["traj_mean"][:, 1:-1] + out["traj_mean"][:, :-2]).mean()
                         + torch.abs(out["z"][:, 2:] - 2 * out["z"][:, 1:-1] + out["z"][:, :-2]).mean())
@@ -364,6 +420,7 @@ class DPIEvtNet(EVTNeuralSSM):
         # consistency: N_liq-голова ≈ физическое пересечение кривой (где событие произошло)
         nliq_consistency = self._nliq_consistency_loss(out, batch)
         loss = (traj_loss + 0.80 * risk_loss + 0.30 * rank_loss + 0.25 * nliq_loss
+                + self.nliq_head_aux_weight * nliq_head_loss
                 + 0.10 * nliq_consistency
                 + 0.02 * switch_reg + 0.01 * state_smooth + 0.02 * kl_loss
                 + 0.01 * out["crr_consistency"].mean() + 0.05 * joint

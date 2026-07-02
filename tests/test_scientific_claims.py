@@ -100,9 +100,8 @@ def test_pipeline_notebooks_present():
         "2_model_training/2_2_dpi_flow.ipynb",
         "2_model_training/2_3_evt_neural_ssm.ipynb",
         "2_model_training/2_4_dpi_evt.ipynb",
-        "3_evaluations/3_1_core_metrics.ipynb",
-        "3_evaluations/3_2_ablations_ood.ipynb",
-        "3_evaluations/3_3_case_studies.ipynb",
+        "3_evaluations/3_1_full_evaluation.ipynb",
+        "3_evaluations/3_2_case_studies.ipynb",
         "4_topology/4_1_dpi_flow_latent_topology.ipynb",
         "4_topology/4_2_topological_early_warning.ipynb",
         "4_topology/4_3_evt_neural_ssm_topological_regularization.ipynb",
@@ -133,15 +132,28 @@ def test_notebook_pipeline_is_complete():
     expected = [
         "2_model_training/2_2_dpi_flow.ipynb",
         "2_model_training/2_4_dpi_evt.ipynb",
-        "3_evaluations/3_1_core_metrics.ipynb",
-        "3_evaluations/3_4_object_cv_and_ci.ipynb",
-        "3_evaluations/3_5_significance_tests.ipynb",
-        "3_evaluations/3_6_ablations.ipynb",
-        "3_evaluations/3_7_publication_figures.ipynb",
-        "3_evaluations/3_8_consistency_and_p3_sensitivity.ipynb",
+        # Единый оценочный ноутбук (grouped CV + LOO): заменил 3_1/3_2/3_4…3_8.
+        "3_evaluations/3_1_full_evaluation.ipynb",
+        "3_evaluations/3_2_case_studies.ipynb",
     ]
     for rel in expected:
         assert (nb / rel).exists(), f"нет ноутбука пайплайна: {rel}"
+
+
+def test_full_evaluation_notebook_wires_publication_protocol():
+    import json
+
+    path = REPO_ROOT / "notebooks" / "3_evaluations" / "3_1_full_evaluation.ipynb"
+    notebook = json.loads(path.read_text(encoding="utf-8"))
+    source = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+    assert "QUICK          = False" in source
+    assert "RUN_LOO        = True" in source
+    assert "build_folds(meta, config, seed=42, loo=True)" in source
+    assert "publication_preflight" in source
+    assert "p3_reference=REF" in source
+    assert "drop_duplicates('object')" not in source
+    assert "nliq_tail_tables" in source
+    assert "artifact_ok, artifact_report = check_artifact_consistency" in source
 
 
 def test_readme_mentions_three_structured_models():
@@ -177,7 +189,7 @@ def test_crr_sample_count_disclosed():
     from liquefaction_ai.training.persistence import load_model_metadata, load_weights_into
 
     if not _artifact_weights_dims_match("dpi_evt"):
-        pytest.skip("artifact/weights static_dim расходятся — нужна регенерация данных + переобучение")
+        pytest.skip("artifact/weights несовместимы с текущей архитектурой — нужно переобучение")
     pop, cfg = load_population_artifact(REAL_OBJECTS)
     test = prepare_benchmark_dataset(pop, cfg, torch.device("cpu"))["test"]
     hp, _ = load_model_metadata(REPO_ROOT / "models", "dpi_evt")

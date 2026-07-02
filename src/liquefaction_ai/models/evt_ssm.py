@@ -19,7 +19,8 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, gaussian_nll,
+from liquefaction_ai.training.losses import (gaussian_nll,
+                                             interpolated_crossing,
                                              masked_bce_with_logits,
                                              masked_censored_nliq_loss, masked_mean, monotone_clip,
                                              nliq_censor_mask, observed_aux_loss,
@@ -55,6 +56,8 @@ class EVTNeuralSSM(nn.Module):
         liq_threshold: float = 0.95, # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
         use_observed_aux_loss: bool = True,
         use_nliq_head: bool = True,
+        report_nliq_from_curve: bool = True,
+        nliq_head_aux_weight: float = 0.10,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -112,6 +115,10 @@ class EVTNeuralSSM(nn.Module):
         # контекста, а consistency-регуляризатор в лоссе тянет её к физическому пересечению кривой там,
         # где событие реально произошло (label==1). Флаг → backward-compatible (требует переобучения).
         self.use_nliq_head = use_nliq_head
+        # Curve-first репортинг: публикуемый N_liq = физическое пересечение PPR-кривой (лежит на ней →
+        # coherence-gap=0, как у DPI-Flow/DPI-EVT). Direct head остаётся auxiliary-предиктором.
+        self.report_nliq_from_curve = bool(report_nliq_from_curve)
+        self.nliq_head_aux_weight = float(nliq_head_aux_weight)
         self.nliq_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(),
                                        nn.Linear(hidden_dim // 2, 1))
         # Fold-local variance scaling: std *= exp(calib_log_scale), без conformal guarantee
@@ -306,14 +313,18 @@ class EVTNeuralSSM(nn.Module):
             if self.integrator == "heun":
                 # Интегратор Хойна (RK2): прогноз → коррекция по среднему наклону
                 z_e = torch.clamp(z_curr + dn * dz1, 0.0, 0.999)
-                r_e = torch.clamp(r_curr + dn * dr1, 0.0, 1.02)
+                r_e = torch.clamp(r_curr + dn * dr1, 0.0, 1.0)
                 c_e = torch.tanh(params["c_decay"] * c_curr + dc1)
                 dz2, dr2, dc2 = derivatives(z_e, r_e, c_e, trigger(z_e), step)
                 dz_step, dr_step, dc_step = 0.5 * (dz1 + dz2), 0.5 * (dr1 + dr2), 0.5 * (dc1 + dc2)
             else:
                 dz_step, dr_step, dc_step = dz1, dr1, dc1
             z_curr = torch.clamp(z_curr + dn * dz_step, 0.0, 0.999)
-            r_curr = torch.clamp(r_curr + dn * dr_step, 0.0, 1.02)
+            # Урон необратим: нейронная поправка dz_corr может быть отрицательной, поэтому без явной
+            # проекции z (а значит и триггер g=σ(κ(z−z0))) немонотонно СПАДАЕТ на хвосте — артефакт,
+            # при котором «разжиженный» образец частично «разразжижается». Фиксируем неубывание.
+            z_curr = torch.maximum(z_curr, z_states[-1])
+            r_curr = torch.clamp(r_curr + dn * dr_step, 0.0, 1.0)
             c_curr = torch.tanh(params["c_decay"] * c_curr + dc_step)
             z_states.append(z_curr)
             r_states.append(r_curr)
@@ -323,8 +334,11 @@ class EVTNeuralSSM(nn.Module):
         r = torch.stack(r_states, dim=1)
         c = torch.stack(c_states, dim=1)
         g = torch.stack(g_states, dim=1)
-        # Проекция на физически допустимую (монотонную неубывающую) траекторию
-        r = monotone_clip(r)
+        # Событие разжижения поглощающее: триггер g не должен убывать. z уже спроецирован на неубывание,
+        # cummax — явная гарантия монотонности выходного/публикуемого триггера (устойчива к правкам trigger()).
+        g = torch.cummax(g, dim=1).values
+        # Проекция PPR на монотонную неубывающую и физически ограниченную ru≤1 (не 1.05) траекторию.
+        r = monotone_clip(r, hi=1.0)
         # N_liq из кривой PPR (момент пересечения порога) — физически-согласованная оценка,
         mcr = torch.as_tensor(self.max_cycle_reference, device=r.device, dtype=r.dtype)
         if self.nliq_from_curve:
@@ -333,8 +347,13 @@ class EVTNeuralSSM(nn.Module):
             nliq_curve = self.soft_first_hitting(r, g, cycles)
             cross_pdf = torch.zeros_like(r); cross_mass = torch.zeros(r.shape[0], device=r.device)
         nliq_norm_curve = torch.log1p(nliq_curve) / torch.log1p(mcr)
-        # ...которую заменяет/уточняет выделенная голова (robust на OOD); consistency в лоссе.
-        nliq, nliq_norm, nliq_norm_curve = self._apply_nliq_head(encoded, nliq_norm_curve, mcr)
+        # Direct head — auxiliary-предиктор (robust на OOD). Публикуем физическое пересечение кривой:
+        # оно лежит на PPR по построению → coherence-gap=0 (единообразно с DPI-Flow/DPI-EVT).
+        nliq_head, nliq_norm_head, nliq_norm_curve = self._apply_nliq_head(encoded, nliq_norm_curve, mcr)
+        if self.report_nliq_from_curve:
+            nliq, nliq_norm = nliq_curve, nliq_norm_curve
+        else:
+            nliq, nliq_norm = nliq_head, nliq_norm_head
         summary = physics_summary(r, z, g, nliq_norm)
         # Дискриминативный риск (ранжирование) + физический prior через обучаемый гейт + калибровка
         risk_prior = 6.0 * (0.50 * r.amax(dim=1) + 0.25 * g.amax(dim=1) + 0.25 * z.amax(dim=1) - 0.75)
@@ -350,6 +369,8 @@ class EVTNeuralSSM(nn.Module):
             "nliq": nliq,
             "nliq_norm": nliq_norm,
             "nliq_norm_curve": nliq_norm_curve,
+            "nliq_head": nliq_head,
+            "nliq_norm_head": nliq_norm_head,
             "z": z,
             "g": g,
             "c": c,
@@ -383,7 +404,10 @@ class EVTNeuralSSM(nn.Module):
                    if "cross_mass" in outputs else torch.ones_like(batch["label"]))
         w = batch["label"] * obs * crossed
         target = outputs["nliq_norm_curve"].detach() # stop-grad на кривую-цель
-        diff = (outputs["nliq_norm"] - target) ** 2
+        # Curve-first наследники публикуют nliq_norm_curve, но direct head всё равно должен получать
+        # consistency supervision как auxiliary fallback.
+        head = outputs.get("nliq_norm_head", outputs["nliq_norm"])
+        diff = (head - target) ** 2
         return (diff * w).sum() / w.sum().clamp_min(1.0)
 
     def _nliq_from_curve(self, r: torch.Tensor, cycles: torch.Tensor, beta: float = 25.0):
@@ -399,10 +423,11 @@ class EVTNeuralSSM(nn.Module):
         """
         p = torch.sigmoid(beta * (r - self.liq_threshold))
         dp = torch.clamp(p[:, 1:] - p[:, :-1], min=0.0)
-        pdf = torch.cat([p[:, :1], dp], dim=1)
+        pdf = torch.cat([p[:, :1], dp], dim=1) # мягкая масса пересечения (для CRR@crossing / consistency)
         mass = pdf.sum(dim=1)
-        resid = torch.clamp(1.0 - mass, min=0.0)
-        nliq = (pdf * cycles).sum(dim=1) + resid * cycles[:, -1]
+        # N_liq — ЖЁСТКАЯ линейная интерполяция пересечения порога (лежит точно на кривой, не смещена
+        # размазыванием (pdf·cycles) по лог-сетке). Согласовано с DPI-EVT и метрикой coherence.
+        nliq = interpolated_crossing(r, cycles, self.liq_threshold, beta=beta)
         return nliq, pdf, mass
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -429,13 +454,21 @@ class EVTNeuralSSM(nn.Module):
                      else outputs["risk_logit"].sum() * 0.0) # прямая оптимизация AUROC
         nliq_loss = masked_censored_nliq_loss(outputs["nliq_norm"], batch["n_liq_norm"],
                                               batch["label"], nliq_censor_mask(batch))
+        # Curve-first: основной nliq_loss обучает КРИВУЮ (repored). Direct head обучается отдельно как
+        # auxiliary fallback (в head-first режиме он уже под основным nliq_loss → не дублируем).
+        if self.report_nliq_from_curve and getattr(self, "use_nliq_head", False):
+            nliq_head_loss = masked_censored_nliq_loss(
+                outputs["nliq_norm_head"], batch["n_liq_norm"], batch["label"], nliq_censor_mask(batch),
+            )
+        else:
+            nliq_head_loss = torch.zeros((), device=outputs["traj_mean"].device)
         switch_reg = torch.abs(outputs["g"][:, 1:] - outputs["g"][:, :-1]).mean()
         state_smoothness = (
             torch.abs(outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]).mean()
             + torch.abs(outputs["z"][:, 2:] - 2.0 * outputs["z"][:, 1:-1] + outputs["z"][:, :-2]).mean()
         )
         boundedness = (
-            torch.relu(outputs["traj_mean"] - 1.02)
+            torch.relu(outputs["traj_mean"] - 1.0)  # ru≤1 (согласовано с проекцией monotone_clip hi=1.0)
             + torch.relu(-outputs["traj_mean"])
             + torch.relu(outputs["z"] - 1.0)
             + torch.relu(-outputs["z"])
@@ -472,6 +505,7 @@ class EVTNeuralSSM(nn.Module):
             + 0.80 * risk_loss
             + 0.30 * rank_loss
             + 0.25 * nliq_loss
+            + self.nliq_head_aux_weight * nliq_head_loss
             + 0.10 * nliq_consistency
             + 0.02 * switch_reg
             + 0.01 * state_smoothness

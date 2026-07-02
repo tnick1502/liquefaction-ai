@@ -1,7 +1,7 @@
 """
 P1: абляции DPI-Flow (component-contribution) с метриками ПО 3 СОСТОЯНИЯМ опыта.
 
-Импортируемые функции для ноутбука 3_6_ablations. Каждая абляция 1:1 отключает один заявленный
+Импортируемые функции для оценочного ноутбука 3_0 (component-ablations). Каждая абляция 1:1 отключает один заявленный
 компонент вклада; обучение/оценка — на объектном (leakage-free) фолде (тот же протокол, что P0).
 
 API:
@@ -21,6 +21,7 @@ from liquefaction_ai.config import set_global_seed
 from liquefaction_ai.data.splits import prepare_benchmark_dataset
 from liquefaction_ai.evaluation.metrics import (collect_outputs, compute_metrics,
                                                 fit_interval_scale, stress_split)
+from liquefaction_ai.evaluation.cross_validation import publication_model_kwargs
 from liquefaction_ai.models.dpi_flow import DPIFlow
 from liquefaction_ai.training.persistence import load_model_metadata
 from liquefaction_ai.training.loop import train_model
@@ -54,6 +55,17 @@ VARIANTS = [
     ("calib_steps_2", {"calibration_steps": 2}, True, [], None),
     ("wo_risk_softauc", {"use_discriminative_risk": False}, True, [], None),
     ("wo_censored_nliq", {"use_censored_nliq": False}, True, [], None),
+    # Отдельно измеряет вклад stable-only no-cross penalty в тяжёлый хвост N_liq. Unfinished non-liq
+    # не входят в этот компонент ни в full, ни в абляцию; меняется только вес компонента.
+    ("wo_crossing_margin", {"crossing_margin_weight": 0.0}, True, [], None),
+    ("wo_traj_residual", {"use_traj_residual": False}, True, [], None),
+    # Sensitivity of the optional monotone decoder controls. These are not forced into headline;
+    # they quantify whether their effect exceeds fold/site variability.
+    ("free_increment", {"use_free_increment": True}, True, [], None),
+    ("residual_span_05", {"use_traj_residual": True, "traj_residual_span": 0.05}, True, [], None),
+    ("residual_span_20", {"use_traj_residual": True, "traj_residual_span": 0.20}, True, [], None),
+    ("kl_zero", {"kl_weight": 0.0}, True, [], None),
+    ("kl_005", {"kl_weight": 0.05}, True, [], None),
     ("miss_vs", {}, True, VS_FEATURES, None),
     ("miss_grainsize", {}, True, GRAIN_FEATURES, None),
     ("no_crr_features", {}, True, CRR_DERIVED_FEATURES, None),
@@ -67,7 +79,8 @@ METRIC_KEYS = ["N_liq_logMAE", "N_liq_logMAE_liq", "Traj_RMSE", "Traj_RMSE_conti
                "Traj_RMSE_liq", "Traj_RMSE_stab", "Traj_RMSE_nostab",
                "Traj_RMSE_balanced", "Traj_RMSE_worst",
                "AUPRC", "AUROC", "Brier", "ECE", "Coverage_90",
-               "Calibration_Error", "Physics_Violation_Rate", "Traj_CRPS"]
+               "Calibration_Error", "Physics_Violation_Rate", "Traj_CRPS",
+               "N_liq_Curve_Coherence_MAE", "Risk_Curve_Coherence_Rate"]
 
 
 def _zero_features(bench: dict, names: List[str], feat_names: List[str]) -> None:
@@ -83,10 +96,13 @@ def _zero_features(bench: dict, names: List[str], feat_names: List[str]) -> None
 
 def run_ablation_fold(pop: dict, config, fold_split: dict, fold_id: int, feat_names: List[str],
                       device, quick: bool = False, seed: int = 42, only: Optional[str] = None,
-                      models_dir: str = "models", tag: str = "grouped") -> pd.DataFrame:
+                      models_dir: str = "models", tag: str = "grouped",
+                      base_kwargs: Optional[dict] = None) -> pd.DataFrame:
     """Прогнать все (или один) варианты абляции на одном объектном фолде."""
-    hp, _ = load_model_metadata(models_dir, "dpi_flow")
-    base_kwargs = dict(hp["model_kwargs"])
+    if base_kwargs is None:
+        hp, _ = load_model_metadata(models_dir, "dpi_flow")
+        base_kwargs = hp["model_kwargs"]
+    base_kwargs = publication_model_kwargs("dpi_flow", base_kwargs, config)
     epochs = config.physics_epochs if quick else getattr(config, "publication_physics_epochs", 80)
     rows = []
     for name, overrides, use_conf, drop_feats, stress in VARIANTS:
@@ -118,22 +134,86 @@ def run_ablation_fold(pop: dict, config, fold_split: dict, fold_id: int, feat_na
             with torch.no_grad():
                 model.calib_log_scale.zero_()
         met, _ = compute_metrics(f"abl:{name}", collect_outputs(model, test, config, device), test, config)
-        row = {"tag": tag, "fold": fold_id, "ablation": name}
+        row = {"tag": tag, "fold": fold_id, "seed": int(seed), "ablation": name}
         row.update({k: met.get(k) for k in METRIC_KEYS})
         rows.append(row)
     return pd.DataFrame(rows)
 
 
 def aggregate_ablations(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate seed repeats within folds before reporting between-site-fold variability."""
     cols = [c for c in METRIC_KEYS if c in raw_df.columns]
-    agg = raw_df.groupby("ablation")[cols].agg(["mean", "std", "count"])
+    fold_level = raw_df.groupby(["ablation", "fold"], as_index=False)[cols].mean(numeric_only=True)
+    agg = fold_level.groupby("ablation")[cols].agg(["mean", "std", "count"])
+    n_seeds = (raw_df.groupby("ablation")["seed"].nunique()
+               if "seed" in raw_df.columns else pd.Series(1, index=agg.index))
+    n_runs = raw_df.groupby("ablation").size()
     rows = []
     for abl in agg.index:
-        rec = {"ablation": abl, "n_folds": int(agg.loc[abl, (cols[0], "count")])}
+        rec = {"ablation": abl,
+               "n_folds": int(fold_level.loc[fold_level["ablation"] == abl, "fold"].nunique()),
+               "n_seeds": int(n_seeds.loc[abl]),
+               "n_runs": int(n_runs.loc[abl])}
         for c in cols:
             mean = float(agg.loc[abl, (c, "mean")]); cnt = int(agg.loc[abl, (c, "count")])
             std = float(agg.loc[abl, (c, "std")]) if cnt > 1 else 0.0
             rec[f"{c}_mean"] = round(mean, 4)
             rec[f"{c}_fold_sd"] = round(std, 4)
         rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def paired_ablation_summary(raw_df: pd.DataFrame, baseline: str = "full",
+                            margins: Optional[dict] = None,
+                            n_boot: int = 5000, seed: int = 42) -> pd.DataFrame:
+    """Paired fold/seed deltas with a predeclared practical-equivalence audit.
+
+    Positive ``delta_worse`` always means the variant is worse than ``baseline``. Seed repeats are
+    averaged within each outer fold before the fold-cluster bootstrap, so seed replicates are not
+    treated as independent sites.
+    """
+    margins = margins or {
+        "Traj_RMSE_continuation": 0.005,
+        "Traj_RMSE_worst": 0.005,
+        "N_liq_logMAE": 0.02,
+        "Brier": 0.002,
+        "AUPRC": 0.005,
+    }
+    keys = [c for c in margins if c in raw_df.columns]
+    base = raw_df[raw_df["ablation"] == baseline]
+    if base.empty:
+        raise ValueError(f"baseline ablation '{baseline}' is absent")
+    join = [c for c in ("tag", "fold", "seed") if c in raw_df.columns]
+    rng = np.random.default_rng(seed)
+    rows = []
+    for variant in sorted(set(raw_df["ablation"]) - {baseline}):
+        cur = raw_df[raw_df["ablation"] == variant]
+        pair = cur.merge(base, on=join, suffixes=("_variant", "_baseline"), validate="one_to_one")
+        for metric in keys:
+            a = pd.to_numeric(pair[f"{metric}_variant"], errors="coerce")
+            b = pd.to_numeric(pair[f"{metric}_baseline"], errors="coerce")
+            # Lower-is-better metrics: variant-baseline. AUPRC: baseline-variant.
+            pair_metric = pair[join].copy()
+            pair_metric["delta"] = (b - a) if metric == "AUPRC" else (a - b)
+            pair_metric = pair_metric.dropna(subset=["delta"])
+            fold_delta = pair_metric.groupby("fold")["delta"].mean().to_numpy(dtype=float)
+            if fold_delta.size == 0:
+                continue
+            draws = np.array([
+                np.mean(rng.choice(fold_delta, size=len(fold_delta), replace=True))
+                for _ in range(int(n_boot))
+            ])
+            lo, hi = np.quantile(draws, [0.025, 0.975])
+            margin = float(margins[metric])
+            rows.append({
+                "ablation": variant,
+                "metric": metric,
+                "n_folds": int(len(fold_delta)),
+                "n_seeds": int(pair_metric["seed"].nunique()) if "seed" in pair_metric else 1,
+                "delta_worse_mean": float(np.mean(fold_delta)),
+                "delta_worse_ci95_low": float(lo),
+                "delta_worse_ci95_high": float(hi),
+                "equivalence_margin": margin,
+                "practically_equivalent": bool(lo >= -margin and hi <= margin),
+            })
     return pd.DataFrame(rows)

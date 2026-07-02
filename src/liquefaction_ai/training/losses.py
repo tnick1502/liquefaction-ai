@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -17,7 +17,9 @@ import torch.nn.functional as F
 __all__ = ["masked_mean", "masked_mse", "masked_mae", "gaussian_nll", "gaussian_mixture_nll",
            "masked_bce_with_logits", "energy_crps", "clone_state_dict",
            "observed_aux_loss", "soft_auc_loss", "monotone_clip", "beta_nll", "censored_nliq_loss",
-           "masked_censored_nliq_loss", "risk_observation_mask", "nliq_censor_mask"]
+           "masked_censored_nliq_loss", "risk_observation_mask", "nliq_censor_mask",
+           "interpolated_crossing", "crossing_margin_loss", "monotone_residual_scale",
+           "normalized_free_increments"]
 
 
 def risk_observation_mask(batch: Dict[str, torch.Tensor]):
@@ -140,7 +142,8 @@ def monotone_clip(traj: torch.Tensor, lo: float = 0.0, hi: float = 1.05) -> torc
     return torch.clamp(torch.cummax(traj, dim=1).values, lo, hi)
 
 
-def monotone_residual_scale(traj: torch.Tensor, residual: torch.Tensor, span: float = 0.10) -> torch.Tensor:
+def monotone_residual_scale(traj: torch.Tensor, residual: torch.Tensor, span: float = 0.10,
+                            free_increment: torch.Tensor = None) -> torch.Tensor:
     """
     МОНОТОННО-СОХРАНЯЮЩАЯ обучаемая коррекция траектории PPR(N).
 
@@ -154,12 +157,114 @@ def monotone_residual_scale(traj: torch.Tensor, residual: torch.Tensor, span: fl
     :param traj: базовая (неубывающая) траектория, форма (batch, seq_len)
     :param residual: выход residual-головы, форма (batch, seq_len)
     :param span: предел относительной коррекции темпа (0.10 = ±10%)
+    :param free_increment: опциональный ВЫРАЗИТЕЛЬНЫЙ канал — НЕОТРИЦАТЕЛЬНЫЕ аддитивные приращения
+        (batch, seq_len), вычисляемые моделью (напр. softplus·sigmoid). Позволяет монотонному декодеру
+        добавлять инкременты там, где физика недооценивает рост, сохраняя неубывание по построению
+        (сумма неотрицательных приращений). Итог всё равно проецируется clamp(≤1). ``None`` → выкл.
     :return: скорректированная неубывающая траектория той же формы
     """
+    if not 0.0 <= float(span) < 1.0:
+        raise ValueError(f"span must satisfy 0 <= span < 1, got {span}")
     base0 = traj[:, :1]
     dr = torch.clamp(traj[:, 1:] - traj[:, :-1], min=0.0)
     gate = 1.0 + span * torch.tanh(residual[:, 1:])
-    return torch.cat([base0, base0 + torch.cumsum(dr * gate, dim=1)], dim=1)
+    incr = dr * gate
+    if free_increment is not None:
+        incr = incr + torch.clamp(free_increment[:, 1:], min=0.0) # модель даёт ≥0; clamp — страховка
+    return torch.cat([base0, base0 + torch.cumsum(incr, dim=1)], dim=1)
+
+
+def normalized_free_increments(logits: torch.Tensor, raw_gate: torch.Tensor) -> torch.Tensor:
+    """Distribute one learned non-negative correction mass over trajectory increments.
+
+    The total mass is ``softplus(raw_gate)`` regardless of grid length. The first trajectory point
+    has no preceding increment and therefore receives exactly zero.
+    """
+    if logits.ndim != 2:
+        raise ValueError(f"logits must have shape (batch, time), got {tuple(logits.shape)}")
+    if logits.shape[1] < 2:
+        return torch.zeros_like(logits)
+    weights = torch.softmax(logits[:, 1:], dim=1)
+    return torch.cat([
+        torch.zeros_like(logits[:, :1]),
+        F.softplus(raw_gate) * weights,
+    ], dim=1)
+
+
+def interpolated_crossing(
+    r: torch.Tensor,
+    cycles: torch.Tensor,
+    threshold: float = 0.95,
+    beta: float = 25.0,
+) -> torch.Tensor:
+    """
+    N_liq = цикл пересечения порога монотонной огибающей PPR, ЛИНЕЙНОЙ интерполяцией между узлами-
+    скобками. Forward-значение лежит точно на кривой и не смещено на лог-сетке. Backward использует
+    гладкую CDF первого достижения, поэтому градиент существует и до фактического пересечения.
+
+    :param r: траектория PPR (batch, seq_len); :param cycles: сетка циклов (batch, seq_len)
+    :param threshold: порог разжижения
+    :param beta: крутизна гладкой CDF для backward-прохода
+    :return: straight-through оценка N_liq (batch,)
+    """
+    r_mono = torch.cummax(r, dim=1).values
+    above = r_mono >= threshold
+    has = above.any(dim=1)
+    idx = torch.argmax(above.to(torch.int64), dim=1)
+    idx0 = torch.clamp(idx - 1, min=0)
+    ar = torch.arange(r.shape[0], device=r.device)
+    r1 = r_mono[ar, idx]; r0 = r_mono[ar, idx0]
+    c1 = cycles[ar, idx]; c0 = cycles[ar, idx0]
+    dr = r1 - r0
+    # ``dr`` положителен для настоящей скобки. Для первого узла/вырожденной скобки значение цикла
+    # всё равно равно c0==c1; единичный safe denominator предотвращает 0/0, не меняя forward.
+    safe_dr = torch.where(dr > 0.0, dr, torch.ones_like(dr))
+    frac = torch.clamp((threshold - r0) / safe_dr, 0.0, 1.0)
+    hard = torch.where(has, c0 + frac * (c1 - c0), cycles[:, -1])
+
+    # Smooth surrogate только для backward. В частности, у пока непересекающей кривой residual mass
+    # зависит от PPR и даёт N_liq-loss возможность сдвинуть будущий crossing с горизонта.
+    cdf = torch.sigmoid(float(beta) * (r_mono - threshold))
+    prev = torch.cat([torch.zeros_like(cdf[:, :1]), cdf[:, :-1]], dim=1)
+    event_mass = torch.clamp(cdf - prev, min=0.0)
+    residual_mass = torch.clamp(1.0 - cdf[:, -1], min=0.0, max=1.0)
+    soft = (event_mass * cycles).sum(dim=1) + residual_mass * cycles[:, -1]
+    return soft + (hard - soft).detach()
+
+
+def crossing_margin_loss(
+    traj: torch.Tensor,
+    label: torch.Tensor,
+    threshold: float = 0.95,
+    margin: float = 0.0,
+    observed: torch.Tensor = None,
+    stable: torch.Tensor = None,
+) -> torch.Tensor:
+    """
+    Stable-only no-cross penalty для завершённых non-liq испытаний.
+
+    Штрафуется только ложное пересечение у ``regime_stable``. Liquefied не получают искусственного
+    требования превысить ``threshold + margin``: в реальных записях испытание часто заканчивается
+    непосредственно у onset, а сглаженная целевая PPR может не иметь положительного запаса. Unfinished
+    non-liq также не штрафуются, поскольку при продолжении опыта PPR ещё мог бы расти.
+
+    :param traj: предсказанная траектория PPR (batch, seq_len)
+    :param label: бинарная метка разжижения (batch,)
+    :param margin: необязательный запас ниже порога для stable-кривых (по умолчанию 0)
+    :param observed: fallback-маска известного бинарного исхода, если ``stable`` не передан
+    :param stable: явная маска завершённых non-liq испытаний
+    :return: скалярный штраф
+    """
+    m = traj.amax(dim=1)
+    non = (label <= 0.5).to(traj.dtype)
+    if stable is not None:
+        stable_non = non * (stable > 0.5).to(traj.dtype)
+    elif observed is not None:
+        stable_non = non * (observed > 0.5).to(traj.dtype)
+    else:
+        stable_non = non
+    penalty = torch.clamp(m - (threshold - margin), min=0.0) * stable_non
+    return penalty.sum() / torch.clamp(stable_non.sum(), min=1.0)
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

@@ -13,6 +13,7 @@
 Наиболее востребованные объекты реэкспортируются на верхний уровень пакета.
 """
 
+from liquefaction_ai.accel import configure_performance, describe_device, resolve_device
 from liquefaction_ai.config import DEMO_PALETTE, ExperimentConfig, get_default_config, set_global_seed
 from liquefaction_ai.data import (
     generate_population,
@@ -32,4 +33,7 @@ __all__ = [
     "load_population_artifact",
     "prepare_benchmark_dataset",
     "train_model",
+    "resolve_device",
+    "configure_performance",
+    "describe_device",
 ]

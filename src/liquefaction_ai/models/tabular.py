@@ -22,7 +22,6 @@ from typing import Dict
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from liquefaction_ai.training.losses import (masked_bce_with_logits, masked_censored_nliq_loss,
                                              nliq_censor_mask, risk_observation_mask)
 

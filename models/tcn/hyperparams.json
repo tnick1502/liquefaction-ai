@@ -18,7 +18,7 @@
       "hidden_dim": 96
     }
   },
-  "epochs": 97,
+  "epochs": 108,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,

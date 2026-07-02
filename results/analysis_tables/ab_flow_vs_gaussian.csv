@@ -1,3 +1,0 @@
-metric,flow,gaussian,diff_gauss_minus_flow,ci95_low,ci95_high,P(flow_better)
-Traj_mixNLL,-0.7579,-0.8986,-0.1407,-0.29,0.0548,0.034
-Traj_mixCRPS,0.0655,0.0632,-0.0023,-0.0063,0.0025,0.155

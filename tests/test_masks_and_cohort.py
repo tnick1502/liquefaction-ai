@@ -75,8 +75,8 @@ def test_cv_groups_by_site_not_object():
             assert sa.isdisjoint(sb), f"site утёк между {a} и {bset}: {sa & sb}"
 
 
-def test_n_folds_counts_group_size_not_nonnull_p3():
-    # CatBoost с NaN P3_Core на всех фолдах должен иметь n_folds=число строк, а не 0.
+def test_n_folds_counts_group_size_not_nonnull_metric():
+    # Модель с NaN в неприменимой метрике должна иметь n_folds=число строк, а не 0.
     raw = pd.DataFrame({
         "model": ["CatBoost"] * 3 + ["DPI-Flow"] * 3,
         "fold": [0, 1, 2, 0, 1, 2],
@@ -106,6 +106,7 @@ def test_measured_csr_amplitude_and_indicators_present():
     assert a2[-1] > a2[0] * 1.3, "переменная амплитуда не восстановлена"
     # #10 индикаторы пропусков объявлены в статических признаках
     src = inspect.getsource(synthetic.build_feature_matrices)
+    # K0/Vs доопределяются формулой, но provenance прямого измерения сохраняется индикатором.
     for ind in ("miss_e", "miss_Ip", "miss_K0", "miss_vs", "miss_gran"):
         assert ind in src, f"{ind} нет в признаках"
 

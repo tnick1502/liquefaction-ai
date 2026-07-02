@@ -24,10 +24,13 @@ import torch.nn.functional as F
 
 from liquefaction_ai.models.blocks import ResidualMLP
 from liquefaction_ai.models.heads import RiskHead, SeqLogvarHead, physics_summary
-from liquefaction_ai.training.losses import (beta_nll, censored_nliq_loss, energy_crps, gaussian_nll,
-                                             gaussian_mixture_nll, masked_bce_with_logits, masked_mse,
+from liquefaction_ai.training.losses import (crossing_margin_loss,
+                                             energy_crps, gaussian_nll,
+                                             gaussian_mixture_nll, interpolated_crossing,
+                                             masked_bce_with_logits, masked_mean, masked_mse,
                                              masked_censored_nliq_loss, monotone_clip,
-                                             monotone_residual_scale, nliq_censor_mask, observed_aux_loss,
+                                             monotone_residual_scale, normalized_free_increments,
+                                             nliq_censor_mask, observed_aux_loss,
                                              risk_observation_mask, soft_auc_loss)
 
 __all__ = ["ConditionalAffineFlow", "ConditionalCouplingFlow", "flow_kl_per_dim",
@@ -265,13 +268,11 @@ class AnalyticalLiquefactionLayer(nn.Module):
         """
         Дифференцируемая оценка числа циклов до разжижения N_liq из **кривой PPR**.
 
-        N_liq — момент пересечения порога ``threshold`` монотонной кривой порового давления
-        PPR(N) (физический критерий разжижения). Масса пересечения берётся как приращения
-        сглаженного индикатора ``sigmoid(beta·(PPR−threshold))`` по монотонной огибающей PPR;
-        если кривая порог не пересекает (нет разжижения в окне опыта), масса
-        остаётся на последнем цикле → N_liq = N_max. Триггер ``g`` намеренно **не**
-        используется: он давал ложное раннее срабатывание у неразжижившихся опытов и завышал
-        ошибку N_liq.
+        N_liq — линейно интерполированный момент пересечения порога ``threshold`` монотонной
+        огибающей PPR(N). Если пересечения нет, возвращается последний цикл сетки. Триггер ``g``
+        намеренно **не** используется: он давал ложное раннее срабатывание у неразжижившихся
+        опытов и завышал ошибку N_liq. Forward точен на кусочно-линейной кривой, backward использует
+        гладкую CDF первого достижения из общего ``interpolated_crossing``.
 
         :param r: траектория PPR, форма (batch, seq_len)
         :param g: траектория триггера (не используется; оставлен для совместимости вызова)
@@ -280,27 +281,7 @@ class AnalyticalLiquefactionLayer(nn.Module):
         :param beta: крутизна сглаженного пересечения
         :return: оценка N_liq, форма (batch,)
         """
-        # Forward: точное первое пересечение с линейной интерполяцией. Backward: гладкая CDF первого
-        # достижения. Straight-through конструкция сохраняет физически точное forward-значение, но
-        # даёт градиент даже когда текущая предсказанная кривая ещё не пересекла threshold.
-        r_mono = torch.cummax(r, dim=1).values
-        above = (r_mono >= threshold)
-        has = above.any(dim=1)
-        idx = torch.argmax(above.to(torch.int64), dim=1) # первый индекс пересечения (0 если нет)
-        idx0 = torch.clamp(idx - 1, min=0)
-        ar = torch.arange(r.shape[0], device=r.device)
-        r1 = r_mono[ar, idx]; r0 = r_mono[ar, idx0]
-        c1 = cycles[ar, idx]; c0 = cycles[ar, idx0]
-        frac = torch.clamp((threshold - r0) / torch.clamp(r1 - r0, min=1e-6), 0.0, 1.0)
-        n_cross = c0 + frac * (c1 - c0)
-        hard = torch.where(has, n_cross, cycles[:, -1])
-
-        cdf = torch.sigmoid(float(beta) * (r_mono - threshold))
-        prev = torch.cat([torch.zeros_like(cdf[:, :1]), cdf[:, :-1]], dim=1)
-        event_mass = torch.clamp(cdf - prev, min=0.0)
-        residual_mass = torch.clamp(1.0 - cdf[:, -1], min=0.0, max=1.0)
-        soft = (event_mass * cycles).sum(dim=1) + residual_mass * cycles[:, -1]
-        return soft + (hard - soft).detach()
+        return interpolated_crossing(r, cycles, threshold=threshold, beta=beta)
 
     def simulate(self, theta: torch.Tensor, cycles: torch.Tensor, delta_cycles: torch.Tensor, csr: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -354,7 +335,7 @@ class AnalyticalLiquefactionLayer(nn.Module):
             dr = (1.0 - g_curr) * pre_event + g_curr * post_event
 
             z_next = torch.clamp(z_curr + delta_cycles[:, step + 1] * dz, min=0.0, max=0.999)
-            r_next = torch.clamp(r_curr + delta_cycles[:, step + 1] * dr, min=0.0, max=1.02)
+            r_next = torch.clamp(r_curr + delta_cycles[:, step + 1] * dr, min=0.0, max=1.0)
             z_states.append(z_next)
             r_states.append(r_next)
 
@@ -404,6 +385,8 @@ class DPIFlow(nn.Module):
         use_analytical_layer: bool = True,
         use_flow: bool = True,
         use_traj_residual: bool = True,
+        traj_residual_span: float = 0.10,
+        use_free_increment: bool = False,
         liq_threshold: float = 0.95,
         use_observed_aux_loss: bool = True,
         use_monotone_clip: bool = True,
@@ -412,6 +395,9 @@ class DPIFlow(nn.Module):
         mc_train_samples: int = 0,
         mc_crps_weight: float = 0.0,
         mc_predict_samples: int = 0,
+        crossing_margin_weight: float = 0.10,
+        crossing_margin: float = 0.0,
+        kl_weight: float = 0.02,
     ):
         """
         :param static_dim: размерность статических признаков
@@ -456,6 +442,14 @@ class DPIFlow(nn.Module):
         self.max_cycle_reference = max_cycle_reference
         self.liq_threshold = liq_threshold # порог пересечения PPR = определению разжижения в данных (ru≥0.95)
         self.use_observed_aux_loss = use_observed_aux_loss
+        # Stable-only no-cross penalty адресует катастрофический хвост N_liq у завершённых non-liq.
+        # Unfinished и liquefied не затрагиваются. Вес 0 выключает компонент.
+        self.crossing_margin_weight = float(crossing_margin_weight)
+        self.crossing_margin = float(crossing_margin)
+        # Вес flow-KL. Density-objective потока конфликтует с физическим фитом на малой выборке:
+        # эмпирически при probabilistic=True он размывает точечную траекторию. Малый/нулевой вес
+        # приближает к резкому mean-фиту, сохраняя архитектуру потока. Абляционная ручка.
+        self.kl_weight = float(kl_weight)
 
         context_dim = static_dim + prefix_dim + 2 * self.prefix_len
         self.context_encoder = ResidualMLP(context_dim, hidden_dim=hidden_dim, depth=3, dropout=0.10)
@@ -481,6 +475,13 @@ class DPIFlow(nn.Module):
                                            nn.Linear(hidden_dim, seq_len))
         nn.init.zeros_(self.traj_residual[-1].weight)
         nn.init.zeros_(self.traj_residual[-1].bias)
+        self.traj_residual_span = float(traj_residual_span)
+        # Выразительный монотонный канал (см. DPI-EVT): gate задаёт ОБЩУЮ массу коррекции,
+        # softmax-голова распределяет её по сетке. Поэтому масштаб не зависит от seq_len, а gate=-6
+        # действительно даёт почти no-op (~0.0025 PPR суммарно).
+        self.use_free_increment = bool(use_free_increment)
+        self.free_increment_head = nn.Linear(hidden_dim, seq_len)
+        self.free_increment_gate = nn.Parameter(torch.tensor(-6.0))
         # Fold-local variance scaling интервалов: std *= exp(calib_log_scale) (это не conformal guarantee)
         self.register_buffer("calib_log_scale", torch.zeros(1))
 
@@ -569,8 +570,8 @@ class DPIFlow(nn.Module):
     def _project_traj(self, tm: torch.Tensor) -> torch.Tensor:
         """Проекция траектории PPR. С монотонностью (физика) или только bounded-clamp (абляция)."""
         if self.use_monotone_clip:
-            return monotone_clip(tm)
-        return torch.clamp(tm, -0.02, 1.05)
+            return monotone_clip(tm, hi=1.0) # ru≤1 физически (не 1.05)
+        return torch.clamp(tm, -0.02, 1.0)
 
     def forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
@@ -594,11 +595,16 @@ class DPIFlow(nn.Module):
             # проекция сводится к bound-clamp — только тогда wo_monotone реально измеряет вклад
             # монотонного допущения (иначе residual делает кривую монотонной, и абляция вырождается).
             tm = outputs["traj_mean"]
-            if self.use_traj_residual:
+            if self.use_traj_residual or self.use_free_increment:
+                free = None
+                if self.use_free_increment:
+                    free = normalized_free_increments(
+                        self.free_increment_head(encoded), self.free_increment_gate)
+                resid = self.traj_residual(encoded) if self.use_traj_residual else torch.zeros_like(tm)
                 if self.use_monotone_clip:
-                    tm = monotone_residual_scale(tm, self.traj_residual(encoded))
+                    tm = monotone_residual_scale(tm, resid, span=self.traj_residual_span, free_increment=free)
                 else:
-                    tm = tm + 0.10 * torch.tanh(self.traj_residual(encoded))
+                    tm = tm + 0.10 * torch.tanh(resid)
             outputs["traj_mean"] = self._project_traj(tm)
             # N_liq ДОЛЖЕН соответствовать ФИНАЛЬНОЙ (post-residual + projection) траектории, а не
             # pre-residual ODE-выходу: residual смещает кривую (медиана |ΔN_liq|≈92 цикла), поэтому
@@ -707,10 +713,19 @@ class DPIFlow(nn.Module):
             out["crr"] = torch.stack(crrs, 0).mean(0)
         if nliqs:
             nn_samples = torch.stack(nliqs, 0)
-            nn_ = nn_samples.mean(0)
-            out["nliq_norm"] = nn_
-            mcr = torch.as_tensor(self.max_cycle_reference, device=nn_.device, dtype=nn_.dtype)
-            out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
+            mcr = torch.as_tensor(self.max_cycle_reference, device=pred_mean.device, dtype=pred_mean.dtype)
+            if self.use_analytical_layer:
+                # Headline point estimate обязан лежать на публикуемой MC-средней PPR-кривой.
+                # Среднее времён crossing в общем случае не равно crossing средней траектории.
+                nliq_point = self.ode_layer.soft_first_hitting(
+                    pred_mean, out["g"], batch["cycles"], threshold=self.liq_threshold,
+                )
+                out["nliq"] = nliq_point
+                out["nliq_norm"] = torch.log1p(nliq_point) / torch.log1p(mcr)
+            else:
+                nn_ = nn_samples.mean(0)
+                out["nliq_norm"] = nn_
+                out["nliq"] = torch.expm1(nn_ * torch.log1p(mcr))
             cyc_samples = torch.expm1(nn_samples * torch.log1p(mcr))
             out["nliq_q05"] = torch.quantile(cyc_samples, 0.05, dim=0)
             out["nliq_q95"] = torch.quantile(cyc_samples, 0.95, dim=0)
@@ -773,11 +788,27 @@ class DPIFlow(nn.Module):
             rank_loss = torch.zeros((), device=outputs["traj_mean"].device)
         # Саморегуляризаторы (без участия истинных латентных состояний)
         monotonicity = torch.relu(outputs["crr"][:, 1:] - outputs["crr"][:, :-1]).mean()
-        boundedness = (torch.relu(outputs["traj_mean"] - 1.02) + torch.relu(-outputs["traj_mean"])).mean()
+        boundedness = (torch.relu(outputs["traj_mean"] - 1.0) + torch.relu(-outputs["traj_mean"])).mean()
         smoothness = torch.abs(
             outputs["traj_mean"][:, 2:] - 2.0 * outputs["traj_mean"][:, 1:-1] + outputs["traj_mean"][:, :-2]
         ).mean()
         kl_loss = outputs["kl"].mean() if self.probabilistic else torch.zeros(1, device=outputs["traj_mean"].device).squeeze()
+        # Stable-only no-cross penalty: явная regime-маска исключает unfinished non-liq независимо от
+        # будущих изменений семантики risk_label_observed.
+        if self.crossing_margin_weight > 0.0:
+            margin_loss = crossing_margin_loss(outputs["traj_mean"], batch["label"],
+                                               threshold=self.liq_threshold,
+                                               margin=self.crossing_margin,
+                                               observed=_robs,
+                                               stable=batch.get("regime_stable"))
+        else:
+            margin_loss = torch.zeros((), device=outputs["traj_mean"].device)
+        # Data-референсное подавление ложного роста PPR у НЕразжижающихся опытов (как в DPI-EVT/EVT-SSM):
+        # односторонний штраф превышения ИЗМЕРЕННОЙ кривой. Безопасно для правоцензурированных (штраф
+        # только в пределах наблюдения). Держит non-liq траектории плотно у наблюдаемых и снимает
+        # архитектурный перекос flow+ODE к завышению плато у стабильных опытов.
+        noliq = (1.0 - batch["label"]).unsqueeze(1)
+        overshoot = masked_mean(torch.relu(outputs["traj_mean"] - batch["r_obs"]) * noliq, batch["mask"])
 
         loss = (
             traj_loss
@@ -787,7 +818,9 @@ class DPIFlow(nn.Module):
             + 0.03 * monotonicity
             + 0.03 * boundedness
             + 0.01 * smoothness
-            + 0.02 * kl_loss
+            + self.kl_weight * kl_loss
+            + 0.20 * overshoot
+            + self.crossing_margin_weight * margin_loss
         )
         if self.use_observed_aux_loss:
             loss = loss + observed_aux_loss(outputs, batch, use_states=self.use_analytical_layer)

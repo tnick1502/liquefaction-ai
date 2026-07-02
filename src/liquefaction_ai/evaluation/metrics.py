@@ -100,9 +100,19 @@ METRICS: Dict[str, "MetricInfo"] = {
     "N_liq_MAE": MetricInfo(
         "N_liq_MAE", "MAE of N_liq",
         "Censored mean absolute error of the predicted number of cycles to liquefaction N_liq. "
-        "Liquefied samples use absolute error; non-liquefied stabilized samples penalise only "
-        "too-early predictions; unfinished non-liquefied samples are excluded.",
+        "Liquefied samples use absolute error; every valid right-censored non-liquefied sample "
+        "penalises only predictions earlier than its observed censoring time.",
         "cycles", lower_is_better=True, fmt=".1f"),
+    "N_liq_Curve_Coherence_MAE": MetricInfo(
+        "N_liq_Curve_Coherence_MAE", "N_liq/curve coherence MAE",
+        "Mean absolute gap between the reported N_liq and the first interpolated ru-threshold "
+        "crossing of the model's own published mean PPR trajectory.",
+        "cycles", lower_is_better=True, fmt=".1f"),
+    "Risk_Curve_Coherence_Rate": MetricInfo(
+        "Risk_Curve_Coherence_Rate", "Risk/curve coherence rate",
+        "Fraction of samples for which risk>=0.5 agrees with whether the model's mean PPR trajectory "
+        "crosses the liquefaction threshold within the forecast horizon.",
+        "–", lower_is_better=False),
     "AUROC": MetricInfo(
         "AUROC", "AUROC",
         "Area under the ROC curve for liquefaction-risk classification; ability to rank liquefying "
@@ -150,7 +160,8 @@ METRICS: Dict[str, "MetricInfo"] = {
     "Physics_Violation_Rate": MetricInfo(
         "Physics_Violation_Rate", "Monotonicity-assumption violation rate",
         "Fraction of predicted PPR(N) curves that break the undrained monotonic-accumulation modelling "
-        "assumption: ru either decreases or leaves [0, 1.05]. This is the assumption adopted here (and "
+        "assumption anywhere on the forecast grid: ru either decreases or leaves [0, 1]. This is the "
+        "assumption adopted here (and "
         "enforced structurally for the proposed models through monotone projection) for undrained cyclic "
         "loading, NOT a universal physical law. A zero value for structurally-constrained models is a "
         "feasibility guarantee, not independent empirical evidence of better physics.",
@@ -555,6 +566,29 @@ def safe_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> Tuple[float, 
     return float(auroc), float(auprc), float(brier)
 
 
+def _interpolated_crossing_numpy(
+    traj: np.ndarray,
+    cycles: np.ndarray,
+    threshold: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Первое threshold-crossing mean-траектории с той же линейной интерполяцией, что в моделях."""
+    r = np.maximum.accumulate(np.asarray(traj, dtype=float), axis=1)
+    cyc = np.asarray(cycles, dtype=float)
+    above = r >= float(threshold)
+    has = above.any(axis=1)
+    idx = above.argmax(axis=1)
+    out = cyc[:, -1].copy()
+    for i in np.flatnonzero(has):
+        j = int(idx[i])
+        if j == 0:
+            out[i] = cyc[i, 0]
+            continue
+        dr = r[i, j] - r[i, j - 1]
+        frac = np.clip((float(threshold) - r[i, j - 1]) / dr, 0.0, 1.0) if dr > 0 else 0.0
+        out[i] = cyc[i, j - 1] + frac * (cyc[i, j] - cyc[i, j - 1])
+    return out, has
+
+
 def compute_metrics(
     model_name: str,
     outputs: Dict[str, np.ndarray],
@@ -603,6 +637,14 @@ def compute_metrics(
     sample_df["risk_prob_pred"] = y_prob
     sample_df["liq_label"] = y_true
     sample_df["nliq_pred"] = nliq_pred
+    # Meta хранит фактический raw event/censor time, который может лежать за headline-горизонтом H.
+    # Разделяем raw и оценочный target явно: иначе строка показывает true=5000 при ошибке,
+    # корректно рассчитанной относительно H=3000.
+    if "N_liq_true" in sample_df.columns:
+        sample_df["N_liq_raw"] = sample_df["N_liq_true"].to_numpy()
+    elif "n_liq_raw" in split:
+        sample_df["N_liq_raw"] = split["n_liq_raw"].cpu().numpy()
+    sample_df["N_liq_true"] = nliq_true
 
     nliq_err = nliq_pred - nliq_true
     log_pred = np.log1p(np.maximum(nliq_pred, 0.0))
@@ -692,6 +734,26 @@ def compute_metrics(
         metrics["Traj_MSE"] = mse
         metrics["Traj_MAE"] = mae
         metrics["Traj_RMSE"] = rmse
+
+        sample_df["traj_pred_max"] = np.max(pred, axis=1)
+        if "cycles" in split:
+            curve_nliq, curve_crosses = _interpolated_crossing_numpy(
+                pred, split["cycles"].cpu().numpy(), config.liq_threshold,
+            )
+            curve_gap = np.abs(nliq_pred - curve_nliq)
+            risk_curve_coherent = (y_prob >= 0.5) == curve_crosses
+            metrics["N_liq_Curve_Coherence_MAE"] = float(np.mean(curve_gap))
+            metrics["Risk_Curve_Coherence_Rate"] = float(np.mean(risk_curve_coherent))
+            sample_df["curve_crosses_threshold"] = curve_crosses.astype(float)
+            sample_df["nliq_from_curve"] = curve_nliq
+            sample_df["nliq_curve_gap"] = curve_gap
+            sample_df["risk_curve_coherent"] = risk_curve_coherent.astype(float)
+        else:
+            metrics["N_liq_Curve_Coherence_MAE"] = float("nan")
+            metrics["Risk_Curve_Coherence_Rate"] = float("nan")
+            for key in ("curve_crosses_threshold", "nliq_from_curve", "nliq_curve_gap",
+                        "risk_curve_coherent"):
+                sample_df[key] = np.nan
 
         sample_mask_count = np.maximum(mask.sum(axis=1), 1.0)
         sample_df["traj_rmse"] = np.sqrt(np.sum(((pred - true) ** 2) * mask, axis=1) / sample_mask_count)
@@ -790,17 +852,23 @@ def compute_metrics(
             float(np.max(_present_cont)) if _present_cont else float("nan")
         )
 
-        # Физические нарушения: доля предсказаний с «невозможной» кривой PPR(N) — заметно
-        # убывающей (ru должна монотонно расти) или выходящей за физические границы [0, 1.05].
-        # ЧИСЛЕННЫЙ ДОПУСК: clamp(..., 1.05) может дать 1.0500001 из-за float-округления — это НЕ
-        # реальное нарушение границы. Проверяем с eps, иначе структурные модели ложно получают PVR>0.
-        _pvr_tol = 1e-4
+        # Строгий контракт headline-моделей: конечная PPR-кривая не убывает и лежит в [0, 1]
+        # НА ВСЁМ прогнозном горизонте. Наблюдательная mask здесь намеренно не используется: иначе
+        # физически невозможный forecast-tail после конца записи был бы невидим для admissibility gate.
+        # Малый eps нужен только против float-roundoff, а не как разрешённое физическое отклонение.
+        _pvr_tol = 1e-5
         diffs = pred[:, 1:] - pred[:, :-1]
-        decreasing = ((diffs < -0.02) * mask[:, 1:]).sum(axis=1) > 0
-        out_of_bounds = (((pred > 1.05 + _pvr_tol) | (pred < -0.02 - _pvr_tol)) * mask).sum(axis=1) > 0
-        violation = decreasing | out_of_bounds
+        finite = np.isfinite(pred)
+        finite_steps = finite[:, 1:] & finite[:, :-1]
+        decreasing = np.any((diffs < -_pvr_tol) & finite_steps, axis=1)
+        out_of_bounds = np.any(((pred > 1.0 + _pvr_tol) | (pred < -_pvr_tol)) & finite, axis=1)
+        nonfinite = np.any(~finite, axis=1)
+        violation = decreasing | out_of_bounds | nonfinite
         metrics["Physics_Violation_Rate"] = float(violation.mean())
         sample_df["physics_violation"] = violation.astype(float)
+        sample_df["physics_decrease_violation"] = decreasing.astype(float)
+        sample_df["physics_bounds_violation"] = out_of_bounds.astype(float)
+        sample_df["physics_nonfinite_violation"] = nonfinite.astype(float)
 
         if "traj_logvar" in outputs:
             std = np.maximum(np.sqrt(np.exp(outputs["traj_logvar"])), 1e-6)
@@ -872,6 +940,8 @@ def compute_metrics(
         metrics["Traj_MSE_continuation"] = float("nan")
         metrics["Traj_MAE_continuation"] = float("nan")
         metrics["Traj_RMSE_continuation"] = float("nan")
+        metrics["N_liq_Curve_Coherence_MAE"] = float("nan")
+        metrics["Risk_Curve_Coherence_Rate"] = float("nan")
         metrics["Physics_Violation_Rate"] = float("nan")
         for level in (80, 90, 95):
             metrics[f"Coverage_{level}"] = float("nan")
@@ -883,6 +953,9 @@ def compute_metrics(
         sample_df["traj_rmse_continuation"] = np.nan
         sample_df["interval_width"] = np.nan
         sample_df["physics_violation"] = np.nan
+        sample_df["physics_decrease_violation"] = np.nan
+        sample_df["physics_bounds_violation"] = np.nan
+        sample_df["physics_nonfinite_violation"] = np.nan
 
     # Восстановление границы CRR(N): уникальная способность физически-структурированных моделей
     # (DPI-Flow / EVT-NeuralSSM / DPI-EVT). Сравнение с измеренной кривой потенциала разжижения, где она есть.

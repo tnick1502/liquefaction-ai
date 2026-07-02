@@ -345,6 +345,12 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
     if _cross_i >= 0 and len(_cp):
         liq = 1
         n_liq = float(_cp[int(_cross_i)]) # цикл устойчивого пересечения (поцикловое разрешение)
+        # Publication trajectory target должен быть совместим с тем же onset-критерием. Изотоническое
+        # сглаживание может усреднить короткий подтверждённый блок ru>=threshold обратно ниже порога,
+        # создав невозможную пару label=1 и max(target PPR)<threshold. После onset фиксируем только
+        # ретроспективную TARGET-огибающую; причинный r_causal/prefix этим не затрагивается.
+        ppr_sm_pc[int(_cross_i):] = np.maximum(ppr_sm_pc[int(_cross_i):], LIQ_THRESHOLD)
+        ppr_sm_pc = np.maximum.accumulate(ppr_sm_pc)
     else:
         # нет пересечения → событие не наступило в окне; N_liq право-цензурирован на ФАКТическом
         # последнем наблюдённом цикле (наблюдённая длительность = нижняя граница N_liq), а НЕ на
@@ -392,9 +398,12 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         grid = coarse_grid.astype(np.float32)
         r = coarse_r.astype(np.float32)
         mask = coarse_mask.astype(np.float32)
-        prefix_r = r.copy()
         r_causal = (np.interp(grid, _cp, ppr_causal_pc).astype(np.float32)
                     if len(_cp) else np.zeros(seq_len, np.float32))
+        # Причинный префикс и в НЕ-landmark режимах (fixed_k/preonset): вход модели — односторонняя
+        # причинная огибающая r_causal (только прошлое), а НЕ ретроспективная r (та подглядывает
+        # будущие пики через изотонику/cummax → outcome-leakage в контекст).
+        prefix_r = r_causal.copy()
 
     # q(N) и ε(N) переносятся на ФИНАЛЬНУЮ сетку напрямую из поцикловых пиков, без двойного
     # ресэмплинга. Это сохраняет физическое раннее разрешение так же, как для PPR.
@@ -445,20 +454,35 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
     tw = gv(tr, "transverse_waves_velocity", None)
     _G_dyn = gv(tr, "G", None)
     _E = _modulus_mpa(gv(tr, "E0", None)) or _modulus_mpa(gv(tp, "E0", None)) or _modulus_mpa(gv(tp, "E", None))
-    _vs_measured = 1.0
+    # Vs всегда численно определён, но происхождение различается: прямое динамическое измерение,
+    # оценка через статический E или константный fallback G=25 MPa. Provenance сохраняется в miss_vs.
+    _vs_direct = 0.0
     if tw and float(tw) > 0:
         Vs = float(tw) * 31.6228
+        _vs_direct = 1.0
     elif _G_dyn and float(_G_dyn) > 0:
         Vs = float((float(_G_dyn) * 1e6 / (float(rho) * 1e3)) ** 0.5)
-    elif _E is not None: # статический E0/E → G → Vs (формула)
+        _vs_direct = 1.0
+    elif _E is not None:                                  # статический E0/E → G=E/(2(1+ν)) → Vs
         G_mpa = float(_E) / (2 * (1 + float(nu)))
         Vs = float((G_mpa * 1e6 / (float(rho) * 1e3)) ** 0.5)
     else:
         Vs = float((25.0 * 1e6 / (float(rho) * 1e3)) ** 0.5)
-        _vs_measured = 0.0 # ни одного источника — зашитый G=25 (fabricated)
     Vs = float(np.clip(Vs, 40, 600))
     sigma_eff = float(sigma_1)
     fines, clay, Cu = fines_clay_cu(phys, tg, Ip)
+    # K0: из ведомости, иначе формула Джекки K0 = 1 − sin(φ), затем fallback 0.5. Источник сохраняется,
+    # поскольку формульное/fallback значение не эквивалентно прямому измерению.
+    _k0 = gv(tp, "K0", None); _fi = gv(tp, "fi", None)
+    _k0_direct = 0.0
+    if _k0 not in (None, "") and float(_k0) > 0:
+        K0_val = float(_k0)
+        _k0_direct = 1.0
+    elif _fi not in (None, "") and float(_fi) > 0:
+        K0_val = float(round(1.0 - np.sin(np.pi * float(_fi) / 180.0), 3))
+    else:
+        K0_val = 0.5
+    K0_val = float(np.clip(K0_val, 0.2, 1.0))
 
     soil = dict(
         laboratory_number=gv(phys, "laboratory_number", ""), borehole=gv(phys, "borehole", ""),
@@ -471,7 +495,7 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         xi=float((gv(tp, "damping_ratio", 1.5) or 1.5) / 100.0),
         sigma_eff=sigma_eff, permeability=PERM_BY_TYPE.get(tg, 1e-7),
         fines_content=fines, clay_fraction=clay, Cu=Cu,
-        K0=float(gv(tp, "K0", 0.5) or 0.5), static_shear_ratio=0.0,
+        K0=K0_val, static_shear_ratio=0.0,
         ige=str(gv(phys, "ige", "") or ""), # ИГЭ — для группировки кривых CRR
     )
 
@@ -495,15 +519,14 @@ def extract_test(data_obj, handler_obj, test_type: str, seq_len: int,
         g = gv(phys, f"granulometric_{key}", None)
         soil[col] = 0.0 if g in (None, "") else float(g)
 
-    # ИНДИКАТОРЫ ПРОПУСКОВ: 1 = свойство ИМПУТИРОВано константой (а не измерено). Делает явным
-    # то, что статья ошибочно отрицала («rather than fabricated defaults»): модель видит, какие входы
-    # суррогатные, и может это учесть; отдельно позволяет оценить чувствительность к импутации.
+    # Индикатор 1 означает «нет прямого измерения»: значение импутировано формулой или fallback.
+    # Формульное обогащение сохраняет численную полноту, provenance-индикатор — качество источника.
     _gran_present = any(gv(phys, f"granulometric_{k}", None) not in (None, "") for k in GRAN)
     soil.update(dict(
         miss_e=0.0 if e is not None else 1.0,
         miss_Ip=0.0 if Ip is not None else 1.0,
-        miss_K0=0.0 if gv(tp, "K0", None) is not None else 1.0,
-        miss_vs=float(1.0 - _vs_measured),
+        miss_K0=float(1.0 - _k0_direct),
+        miss_vs=float(1.0 - _vs_direct),
         miss_gran=0.0 if _gran_present else 1.0,
     ))
 

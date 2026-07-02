@@ -20,10 +20,9 @@ from __future__ import annotations
 from typing import Dict, Optional, Sequence
 
 import numpy as np
-from matplotlib.colors import to_rgba
 
 from liquefaction_ai.viz.figure_io import MplFig, new_figure, save_figure
-from liquefaction_ai.viz.theme import DIVERGING, GRID, INK, QUALITATIVE, SEQUENTIAL, plain_log_axis
+from liquefaction_ai.viz.theme import GRID, INK, QUALITATIVE, SEQUENTIAL, plain_log_axis
 
 __all__ = ["data_overview_panel", "crr_physics_panel", "model_leaderboard_panel"]
 

@@ -12,6 +12,7 @@ from liquefaction_ai.evaluation.ab_test import (
 )
 from liquefaction_ai.evaluation.manifest import (
     build_run_manifest,
+    publication_preflight,
     validate_run_manifest,
     write_run_manifest,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "ab_flow_vs_gaussian_pooled",
     "mixture_scores_per_sample",
     "build_run_manifest",
+    "publication_preflight",
     "write_run_manifest",
     "validate_run_manifest",
     "validate_run_manifest",

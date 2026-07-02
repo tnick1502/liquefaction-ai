@@ -51,3 +51,19 @@ def test_publication_manifest_gate_rejects_missing_artifacts(tmp_path):
     manifest["git_dirty"] = False
     with pytest.raises(RuntimeError, match="missing model"):
         validate_run_manifest(manifest, required_models=("dpi_flow",))
+
+
+def test_manifest_records_actual_fold_hyperparameters(tmp_path):
+    folds = [{"protocol": "grouped", "repeat": 0, "fold": 0, "model": "DPI-Flow",
+              "selected_model_kwargs": '{"hidden_dim": 128}'}]
+    manifest = build_run_manifest(
+        _population(), {"seed": 1}, tmp_path,
+        run_metadata={"quick": False, "nested": True, "p3_reference": "DPI-Flow"},
+        fold_hyperparameters=folds,
+    )
+    assert manifest["evaluation_protocol"]["nested"] is True
+    assert manifest["fold_hyperparameters"] == folds
+    manifest["git_dirty"] = False
+    with pytest.raises(RuntimeError, match="missing result"):
+        validate_run_manifest(manifest, required_results=("cv_grouped_raw.csv",),
+                              require_fold_hyperparameters=True)

@@ -1,7 +1,7 @@
 """
 P0-b: статистическая значимость и доверительные интервалы поверх per-sample выходов CV.
 
-Чистый numpy/pandas (без scipy/sklearn). Используется ноутбуком 3_5_significance_tests.
+Чистый numpy/pandas (без scipy/sklearn). Используется оценочным ноутбуком 3_0 (значимость).
 
 Вход — DataFrame per-sample (строка на (fold, model, образец); пара (fold, sidx) одинакова для
 всех моделей ⇒ корректное парное сравнение). Колонки: fold, model, sidx, liq_label,

@@ -11,7 +11,7 @@
     "use_trigger_head": true,
     "structured_post_event": true,
     "liq_threshold": 0.95,
-    "hidden_dim": 192,
+    "hidden_dim": 128,
     "integrator": "euler",
     "use_crr_damage": false
   },
@@ -34,14 +34,14 @@
     },
     "score_metric": "Traj_RMSE_continuation",
     "best": {
-      "hidden_dim": 192,
+      "hidden_dim": 128,
       "integrator": "euler",
       "use_crr_damage": false
     }
   },
-  "epochs": 31,
+  "epochs": 35,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 0.7
+  "calib_scale": 1.2
 }

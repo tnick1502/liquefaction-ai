@@ -17,14 +17,14 @@ DPI-Flow). Все модели реализуют контракт ``forward_bat
 from __future__ import annotations
 
 import math
-from typing import Dict, Tuple
+from typing import Dict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from liquefaction_ai.training.losses import (gaussian_nll, masked_bce_with_logits,
-                                             masked_censored_nliq_loss, masked_mean,
+                                             masked_censored_nliq_loss,
                                              nliq_censor_mask, risk_observation_mask)
 
 __all__ = ["DeepStateBaseline", "RealNVPFlow", "NeuralSplineFlow"]

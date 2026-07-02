@@ -388,7 +388,7 @@ def integrate_physics(
       где pre/post_event содержат член накопления (1 − r)^p, медленный
       логарифмический приток β / (N + τ) и диссипацию −γ·r.
 
-    Состояния отсекаются в физичные границы: z ∈ [0, 0.9995], r ∈ [0, 1.02].
+    Состояния отсекаются в физичные границы: z ∈ [0, 0.9995], r ∈ [0, 1.0].
 
     :param hidden: словарь скрытых параметров ODE (из :func:`build_hidden_parameters`)
     :param csr: история CSR(N), форма (n, seq_len)
@@ -426,7 +426,7 @@ def integrate_physics(
         dr = (1.0 - g[:, step]) * pre_event + g[:, step] * post_event
 
         z[:, step + 1] = np.clip(z[:, step] + delta_cycles[:, step + 1] * dz, 0.0, 0.9995)
-        r[:, step + 1] = np.clip(r[:, step] + delta_cycles[:, step + 1] * dr, 0.0, 1.02)
+        r[:, step + 1] = np.clip(r[:, step] + delta_cycles[:, step + 1] * dr, 0.0, 1.0)
 
     g[:, -1] = expit(hidden["kappa"] * (z[:, -1] - hidden["z0"]))
     return z, r, g
@@ -490,7 +490,7 @@ def build_observations(
     outliers = (rng.random(size=r_true.shape) < 0.0025).astype(np.float32) * rng.normal(
         loc=0.06, scale=0.025, size=r_true.shape
     )
-    r_obs = np.clip(r_true + noise + outliers, 0.0, 1.05).astype(np.float32)
+    r_obs = np.clip(r_true + noise + outliers, 0.0, 1.0).astype(np.float32)
 
     # Анти-утечка префикса: обрезаем строго до ИСТИННОГО onset (r_true ≥ LIQ_THRESHOLD),
     # чтобы вход не содержал момент разжижения. Старое поведение — первые prefix_len шагов.
@@ -623,7 +623,7 @@ def build_feature_matrices(
         ]
         + [f"soil_{name}" for name in SOIL_NAMES]
         + [f"mode_{name}" for name in LOAD_NAMES]
-        # missingness-индикаторы (есть только у реальных данных; у синтетики = 0, не мешают)
+        # Индикаторы отсутствия прямого измерения; у синтетики колонок нет → нули.
         + ["miss_e", "miss_Ip", "miss_K0", "miss_vs", "miss_gran"]
     )
 

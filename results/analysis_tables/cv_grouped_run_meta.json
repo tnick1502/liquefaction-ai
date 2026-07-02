@@ -1,8 +1,0 @@
-{
-  "prefix_strict_preonset": true,
-  "seed": 42,
-  "n_splits": 5,
-  "n_repeats": 3,
-  "mc_samples_eval": 8,
-  "ts": "2026-06-30 17:04"
-}

@@ -141,7 +141,7 @@ def _isotonic_nondecreasing(y: np.ndarray, y_min: float, y_max: float) -> np.nda
 def monotone_smooth(
     ppr_peaks: np.ndarray,
     smoothing: float = 1.0,
-    clip: Tuple[float, float] = (0.0, 1.05),
+    clip: Tuple[float, float] = (0.0, 1.0),
 ) -> np.ndarray:
     """
     Построить гладкую неубывающую линию по пикам PPR.
@@ -176,7 +176,7 @@ def monotone_smooth(
 def causal_monotone_smooth(
     ppr_peaks: np.ndarray,
     window: int = 3,
-    clip: Tuple[float, float] = (0.0, 1.05),
+    clip: Tuple[float, float] = (0.0, 1.0),
 ) -> np.ndarray:
     """Односторонняя робастная огибающая для prospective-аудитов без доступа к будущим циклам.
 
@@ -260,7 +260,7 @@ def smooth_ppr_trajectory(
     seq_len: int,
     points_in_cycle: Optional[int] = None,
     smoothing: float = 1.0,
-    clip: Tuple[float, float] = (0.0, 1.05),
+    clip: Tuple[float, float] = (0.0, 1.0),
     return_peaks: bool = False,
 ):
     """

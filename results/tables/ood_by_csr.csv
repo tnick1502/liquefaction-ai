@@ -1,5 +1,0 @@
-CSR_bin,samples,mean_traj_rmse,mean_nliq_log_err,physics_violation_rate,AUROC
-CSR≤0.12,108,0.1262,0.0,0.0,
-0.12–0.18,74,0.0754,0.9436,0.0,0.8272
-0.18–0.25,35,0.0882,0.2352,0.0286,
-CSR>0.25,12,0.3548,0.2416,0.0833,

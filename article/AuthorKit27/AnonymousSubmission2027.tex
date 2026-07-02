@@ -48,7 +48,7 @@ constrained parameters through a \emph{conditional coupling (RealNVP) flow} and 
 \emph{differentiable analytical CRR/damage/PPR layer}, guaranteeing feasible monotone accumulation;
 a censoring-aware objective uses exact event times and right-censored non-events, and a Monte-Carlo
 predictive propagates uncertainty through the flow. The archive contains \textbf{1{,}093 raw tests across
-20 sites}; the strict landmark benchmark contains \textbf{790 tests across 14 sites} after excluding both
+20 sites}; the strict landmark benchmark contains \textbf{812 tests across 14 sites} after excluding both
 events and censoring before the landmark. We evaluate all models with nested object-held-out cross-validation,
 object-cluster uncertainty intervals, post-prefix metrics, and explicit physical-regime stratification.
 \end{abstract}
@@ -90,7 +90,7 @@ onset-forecasting formulation} for cyclic liquefaction tests; (ii) a \textbf{con
 plus differentiable analytical layer} that guarantees feasible monotone accumulation while producing
 risk, $N_{\mathrm{liq}}$ and a CRR curve from one latent state; (iii) a \textbf{censoring-aware
 objective} that separates exact events, right-censored event times, and by-horizon risk observability;
-(iv) an \textbf{object-held-out landmark benchmark} on 790 tests from a 1{,}093-test archive with strong tabular, sequence and
+(iv) an \textbf{object-held-out landmark benchmark} on 812 tests from a 1{,}093-test archive with strong tabular, sequence and
 physics-informed baselines and object-cluster confidence intervals; and (v) a \textbf{transparent
 uncertainty/physics evaluation}. Under honest evaluation, DPI-Flow is not best on every individual metric;
 it is the best \emph{physically admissible} Pareto balance---a more defensible and, we argue, more useful
@@ -214,8 +214,8 @@ deterministic posterior-mean readout.
 
 \section{Experimental Setup}
 \paragraph{Data.} The raw archive contains 1{,}093 real cyclic tests across 20 sites. The strict landmark
-risk set contains 790 tests across 14 sites (460 liquefied, 330 non-liquefying); 97 events and 206 censored
-tests occur before the landmark and are excluded. The by-3000 risk label is known for 460 positives and
+risk set contains 812 tests across 14 sites (490 liquefied, 322 non-liquefying); 137 events and 144 censored
+tests occur before the landmark and are excluded. The by-3000 risk label is known for 490 positives and
 263 negatives. A measured CRR curve is available for a subset of sites; Vs is derived from small-strain $G_0$, grain-size and
 PLAXIS classification from sieve data. Shear-wave velocity is measured directly on only a minority of
 specimens, and grain-size on roughly half; the rest require missing-value handling rather than fabricated
