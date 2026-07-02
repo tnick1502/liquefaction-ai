@@ -1,6 +1,11 @@
 {
   "raw_specimens": 1093,
   "raw_objects": 20,
-  "excluded_event_before_N0": 77,
-  "excluded_censored_before_N0": 190
+  "excluded_event_in_prefix_causal": 120,
+  "excluded_event_before_N0": 137,
+  "excluded_censored_before_N0": 144,
+  "audit_prefix_crossed_but_target_after_N0": 0,
+  "audit_target_by_N0_but_prefix_not_crossed": 161,
+  "terminal_onset_ambiguous": 0,
+  "excluded_terminal_ambiguous": 0
 }

@@ -11,10 +11,9 @@
     "probabilistic": true,
     "use_analytical_layer": true,
     "liq_threshold": 0.95,
-    "hidden_dim": 192,
-    "calibration_steps": 2,
-    "calibration_lr": 0.1,
-    "use_traj_residual": true
+    "hidden_dim": 128,
+    "calibration_steps": 0,
+    "use_traj_residual": false
   },
   "search": {
     "grid": {
@@ -24,29 +23,23 @@
         192
       ],
       "calibration_steps": [
-        1,
-        2
-      ],
-      "calibration_lr": [
-        0.05,
-        0.1
+        0
       ],
       "use_traj_residual": [
         true,
         false
       ]
     },
-    "score_metric": "Traj_RMSE",
+    "score_metric": "Traj_RMSE_continuation",
     "best": {
-      "hidden_dim": 192,
-      "calibration_steps": 2,
-      "calibration_lr": 0.1,
-      "use_traj_residual": true
+      "hidden_dim": 128,
+      "calibration_steps": 0,
+      "use_traj_residual": false
     }
   },
-  "epochs": 30,
+  "epochs": 56,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
-  "calib_scale": 0.7
+  "calib_scale": 1.8
 }

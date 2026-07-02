@@ -1,26 +1,81 @@
 {
   "raw_specimens": 1093,
-  "analytic_risk_set": 826,
-  "excluded_before_N0_total": 267,
-  "excluded_event_before_N0": 77,
-  "excluded_censored_before_N0": 190,
-  "n_liq": 480,
-  "n_nonliq": 346,
+  "analytic_risk_set": 812,
+  "excluded_before_N0_total": 281,
+  "excluded_event_before_N0": 137,
+  "excluded_censored_before_N0": 144,
+  "n_liq": 490,
+  "n_nonliq": 322,
   "n_objects": 14,
+  "n_sites": 13,
   "raw_objects": 20,
   "modes": {
-    "seismic": 461,
-    "storm": 365
+    "seismic": 449,
+    "storm": 363
   },
-  "crr_samples": 360,
+  "crr_samples": 349,
   "crr_objects": 5,
-  "risk_observed": 743,
-  "risk_pos": 480,
+  "crr_sites": 5,
+  "terminal_onset_ambiguous_raw": 0,
+  "terminal_onset_ambiguous_analytic": 0,
+  "audit_prefix_crossed_but_target_after_N0": 0,
+  "audit_target_by_N0_but_prefix_not_crossed": 161,
+  "event_nliq_quantiles": {
+    "0.0": 10.25,
+    "0.25": 60.25,
+    "0.5": 129.25,
+    "0.75": 176.1999969482422,
+    "1.0": 664.25
+  },
+  "site_object_map": {
+    "3 й хорошевский пр д вл 5": [
+      "Потенциал разжижения/852-23 3-й Хорошевский пр-д, вл. 5 (ВГК-5)- plaxis (96)",
+      "Штормовое разжижение/856-23 3-й Хорошевский пр-д, вл. 5 (ВГК-6) - Plaxis (96)"
+    ],
+    "_веткина_шереметьевская_plaxis": [
+      "Сейсмо/38_26_Веткина_Шереметьевская_Plaxis"
+    ],
+    "ад москва казань": [
+      "Потенциал разжижения/338-24 АД Москва - Казань - мех"
+    ],
+    "б садовая 8": [
+      "Штормовое разжижение/255-24 Б. Садовая 8 - plaxis (35)"
+    ],
+    "дубнинская": [
+      "Потенциал разжижения/333-24 Дубнинская - Plaxis G0"
+    ],
+    "ленинградское шоссе": [
+      "Штормовое разжижение/638-24 Ленинградское шоссе"
+    ],
+    "молодогвардейская 2": [
+      "Потенциал разжижения/132-26 Молодогвардейская 2 этап"
+    ],
+    "руза гора": [
+      "Штормовое разжижение/818-23 Руза гора - plaxis (48)"
+    ],
+    "строгино 2 1": [
+      "Потенциал разжижения/25-26 Строгино 2.1 - Plaxis"
+    ],
+    "тушино": [
+      "Штормовое разжижение/613-23 Тушино - plaxis (23)"
+    ],
+    "ул б татарская": [
+      "Штормовое разжижение/196-24 ул. Б. Татарская"
+    ],
+    "усиление эстакады": [
+      "Штормовое разжижение/252-24 Усиление эстакады"
+    ],
+    "шаболовская": [
+      "Штормовое разжижение/390-24 Шаболовская -Plaxis (66)"
+    ]
+  },
+  "risk_observed": 753,
+  "risk_pos": 490,
   "risk_neg": 263,
-  "risk_censored": 83,
-  "nliq_censor_valid": 826,
+  "risk_censored": 59,
+  "nliq_censor_valid": 812,
   "regime_stable": 263,
-  "regime_unfinished": 83,
+  "regime_unfinished": 59,
   "prospective_horizon_audit": {
     "n_early_flat": 263.0,
     "n_later_cross": 0.0,

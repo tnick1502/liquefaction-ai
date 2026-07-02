@@ -13,9 +13,9 @@
     "nliq_from_curve": true,
     "liq_threshold": 0.95,
     "use_traj_residual": false,
-    "hidden_dim": 192,
-    "crr_mode": "hybrid",
-    "calibration_steps": 1
+    "hidden_dim": 128,
+    "crr_mode": "decoupled",
+    "calibration_steps": 0
   },
   "search": {
     "grid": {
@@ -34,13 +34,13 @@
         1
       ]
     },
-    "score_metric": "Traj_RMSE",
+    "score_metric": "Traj_RMSE_continuation",
     "best": {
-      "hidden_dim": 192,
-      "crr_mode": "hybrid",
-      "calibration_steps": 1
+      "hidden_dim": 128,
+      "crr_mode": "decoupled",
+      "calibration_steps": 0
     }
   },
-  "epochs": 41,
-  "calib_scale": 1.4000000000000001
+  "epochs": 44,
+  "calib_scale": 1.8
 }

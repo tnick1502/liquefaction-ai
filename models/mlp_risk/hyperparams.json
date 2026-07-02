@@ -4,7 +4,7 @@
   "model_kwargs": {
     "static_dim": 38,
     "prefix_dim": 6,
-    "hidden_dim": 128
+    "hidden_dim": 64
   },
   "search": {
     "grid": {
@@ -15,10 +15,10 @@
     },
     "score_metric": "Brier",
     "best": {
-      "hidden_dim": 128
+      "hidden_dim": 64
     }
   },
-  "epochs": 28,
+  "epochs": 32,
   "learning_rate": 0.002,
   "weight_decay": 0.0001,
   "batch_size": 256,
